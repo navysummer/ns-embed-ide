@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/ns-project", "crates/ns-build", "crates/ns-debug", "crates/ns-ide"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/navysummer/ns-embed-ide"
+
+[workspace.dependencies]
+anyhow = "1"
+base64 = "0.22"
+directories = "6"
+futures = "0.3"
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+unicode-segmentation = "1"
+
+ns-build = { path = "crates/ns-build" }
+ns-debug = { path = "crates/ns-debug" }
+ns-project = { path = "crates/ns-project" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,19 @@
+[package]
+name = "ns-ide"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ns-embed-ide"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+directories.workspace = true
+futures.workspace = true
+gpui.workspace = true
+ns-build.workspace = true
+ns-debug.workspace = true
+ns-project.workspace = true
+unicode-segmentation.workspace = true
