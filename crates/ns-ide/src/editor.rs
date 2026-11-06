@@ -35,6 +35,9 @@ pub struct BreakpointContextMenu {
     /// Window-relative position for the menu.
     pub x: Pixels,
     pub y: Pixels,
+    /// Identifier-like token under the cursor, used to prefill a watchpoint
+    /// expression. Empty when the cursor is not on a token.
+    pub word: String,
 }
 
 actions!(
@@ -159,6 +162,31 @@ impl Editor {
         } else {
             self.text[self.selection.clone()].to_string()
         }
+    }
+
+    /// The identifier-like token under the cursor (letters, digits, `_`, `.`,
+    /// `->`, `[`, `]`), trimmed to its edges. Used to propose watchpoint
+    /// expressions and watch-expression evaluation.
+    pub fn word_under_cursor(&self) -> String {
+        let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '.' | '[' | ']' | '-');
+        let before = self.text[..self.cursor]
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| is_word(*c))
+            .last()
+            .map(|(index, _)| index)
+            .unwrap_or(self.cursor);
+        let after = self.text[self.cursor..]
+            .char_indices()
+            .take_while(|(_, c)| is_word(*c))
+            .last()
+            .map(|(index, c)| self.cursor + index + c.len_utf8())
+            .unwrap_or(self.cursor);
+        let mut token = &self.text[before..after];
+        token = token
+            .trim_start_matches(|c: char| matches!(c, '.' | '-' | '[' | ']'))
+            .trim_end_matches(|c: char| matches!(c, '.' | '-' | '[' | ']'));
+        token.to_string()
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -516,7 +544,7 @@ impl Editor {
         let line = self.line_for_y(event.position.y, top);
 
         let menu_width = px(220.);
-        let menu_height = px(170.);
+        let menu_height = px(200.);
         let right_edge = bounds.left() + bounds.size.width;
         let bottom_edge = bounds.top() + bounds.size.height;
         let mut x = event.position.x;
@@ -528,7 +556,12 @@ impl Editor {
             y = (bottom_edge - menu_height).max(px(0.));
         }
 
-        cx.emit(BreakpointContextMenu { line, x, y });
+        cx.emit(BreakpointContextMenu {
+            line,
+            x,
+            y,
+            word: self.word_under_cursor(),
+        });
         cx.notify();
     }
 
@@ -1234,5 +1267,36 @@ mod tests {
         let text = "a你b";
         assert_eq!(clamp_boundary(text, 2), 1);
         assert_eq!(clamp_boundary(text, 4), 4);
+    }
+
+    #[test]
+    fn word_under_cursor_trims_member_and_index_edges() {
+        // Helper mirroring the token scan so the cursor placement can be tested
+        // without constructing a full view.
+        fn word(text: &str, cursor: usize) -> String {
+            let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '.' | '[' | ']' | '-');
+            let before = text[..cursor]
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| is_word(*c))
+                .last()
+                .map(|(index, _)| index)
+                .unwrap_or(cursor);
+            let after = text[cursor..]
+                .char_indices()
+                .take_while(|(_, c)| is_word(*c))
+                .last()
+                .map(|(index, c)| cursor + index + c.len_utf8())
+                .unwrap_or(cursor);
+            text[before..after]
+                .trim_start_matches(|c: char| matches!(c, '.' | '-' | '[' | ']'))
+                .trim_end_matches(|c: char| matches!(c, '.' | '-' | '[' | ']'))
+                .to_string()
+        }
+        let text = "if (flags.bits && obj->count) {";
+        assert_eq!(word(text, 8), "flags.bits");
+        // `->` splits the member access, so only the member name is returned.
+        assert_eq!(word(text, 24), "count");
+        assert_eq!(word(text, 4), "flags.bits");
     }
 }

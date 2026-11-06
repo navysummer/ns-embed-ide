@@ -10,7 +10,9 @@ pub mod project;
 pub mod recents;
 pub mod toolchain;
 
-pub use breakpoints::{Breakpoint, BreakpointKind, BreakpointStore, breakpoints_path};
+pub use breakpoints::{
+    Breakpoint, BreakpointKind, BreakpointStore, WatchAccess, Watchpoint, breakpoints_path,
+};
 pub use language::Language;
 pub use project::{
     BuildSection, CompilerSection, CONFIG_FILE, DebuggerSection, FlasherSection, NewProjectSpec,

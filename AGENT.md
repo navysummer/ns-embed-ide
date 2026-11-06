@@ -405,13 +405,16 @@ period = 0                    # 仿真周期参数（可选）
 - **F7.1 编辑器内断点子集**：行号槽点击切换、F9 切换当前行、`Cmd/Ctrl+Shift+F9` 清除全部、断点随项目保存到 `.ns-ide/breakpoints.json`（重新打开恢复）、独立“断点”面板（按文件分组、勾选启用/禁用、点击跳转源码、删除单条、清除全部、启用计数、显示条件表达式）、状态栏启用计数。
 - **F7.1 右键菜单**：编辑器内右键 — 添加断点 / 启用·禁用断点 / 编辑条件… / 删除断点 / 清除本文件断点（菜单随该行是否存在断点动态切换）。
 - **F7.1 条件断点**：条件随断点持久化并**真正下发到调试器**（`condition`，e2e 用例验证命中与不命中的路径）；面板以「条件 · 表达式」显示。
-- **M4 调试切片（宿主机构件）**：**LLDB DAP 适配器（lldb-dap）**，`NS_DEBUG_ADAPTER` 可覆盖、自动发现（PATH + xcrun + Command Line Tools 路径）。`F5`/顶部「调试」构建并启动会话；`Shift+F5` 停止；`F10` 步过 / `F11` 步入 / `Shift+F11` 跳出；命中断点后：命中行高亮（jade 底色 + ▶ 标记 + 反汇编中 PC 行高亮）、调用栈面板（点击帧跳转源码）、变量面板（**作用域切换：Locals/Globals/Registers，变量可递归展开**）、调试控制台（程序输出）；**内存视图（hex dump + ASCII，地址输入、64/128/256 字节）、反汇编视图（从 PC 读取 24 条并高亮当前指令）**；调试中增删/启停/清除断点**即时同步**到适配器；条件断点经 `condition` 下发并命中（e2e 验证）；会话结束自动清理高亮。
+  - **命中次数断点**：第 N 次命中才暂停（DAP `hitCondition`，e2e 用例 `dap_breakpoint_results_reported_and_hit_condition_pauses` 验证第 2 次命中才停）。
+  - **日志断点**：不暂停，将日志消息（支持 `{expr}` 占位）经 DAP `logMessage` 输出到调试控制台。
+  - **断点状态（已验证/命中/未绑定/未同步/失效/已禁用）逐行展示**：`setBreakpoints` 响应中每个断点的 `verified`/`reason` 由适配器解析为 `BreakpointResults`，启动与运行时重新同步时写入断点存储并持久化；命中断点后 `mark_hit` 标记为「命中」，继续运行后自动清除；文件被删除/重命名或源码缩短导致行号越界时，同步前自动重新校验并标记「失效」且显示原因（不再下发给适配器，恢复后自动重新同步）；面板新增「状态」列（玉色=已验证、朱色=命中/未绑定、金色=未同步/失效、灰=已禁用），并在属性摘要后显示未绑定/失效原因；右键「编辑断点属性…」可同屏编辑条件/命中次数/日志消息。
+  - **观察点（数据断点，DAP `dataBreakpointInfo` + `setDataBreakpoints`）**：断点面板下方「观察点」区新增/编辑/删除/启用·禁用观测表达式（如 `marker`、`obj.field`），点击访问类型徽章在**读取 / 写入 / 读写**间循环；变量面板每行右侧「👁」一键把变量加入观察点，编辑器右键「添加观察点（数据断点）…」以光标所在标识符预填；命令面板「添加观察点（数据断点）…」。实现要点：每次暂停后清空旧的适配器 `dataId` 并重新解析（`dataBreakpointInfo` 只传 `variablesReference`，因此先在 Locals/Globals 变量列表中找到表达式所在作用域，找不到再退回 frame/global 上下文），解析完成后一次性下发 `setDataBreakpoints`；`setDataBreakpoints` 响应按请求顺序回填每个观察点的已验证/未绑定状态与原因；观察点随 `.ns-ide/breakpoints.json` 持久化（`watchpoints` 字段），继续运行/会话结束时清除「命中」标记。e2e 用例 `dap_watchpoint_resolves_and_stops_on_write` 验证解析 dataId、下发写入观察点、继续后在写入处停下。
+- **M4 调试切片（宿主机构件）**：**LLDB DAP 适配器（lldb-dap）**，`NS_DEBUG_ADAPTER` 可覆盖、自动发现（PATH + xcrun + Command Line Tools 路径）。`F5`/顶部「调试」构建并启动会话；`Shift+F5` 停止；`F10` 步过 / `F11` 步入 / `Shift+F11` 跳出；命中断点后：命中行高亮（jade 底色 + ▶ 标记 + 反汇编中 PC 行高亮）、调用栈面板（点击帧跳转源码）、变量面板（**作用域切换：Locals/Globals/Registers，变量可递归展开**）、调试控制台（程序输出）；**内存视图（hex dump + ASCII，地址输入、64/128/256 字节）、反汇编源码混排视图（从 PC 读取 24 条指令并高亮当前指令；带源码行映射的指令之间插入可点击的源码行头部——`file:line` + 源码文本，点击跳转到该文件该行的编辑器；映射来源为 lldb-dap `disassemble` 响应的 `line`/`location`，源码文本按需从打开的编辑器文本或磁盘读取；无映射的尾部/溢出指令保持裸行不插头部）**；调试中增删/启停/清除断点**即时同步**到适配器；条件断点经 `condition` 下发并命中（e2e 验证）；会话结束自动清理高亮。
 - **构建**：debug 配置自动加 `-g`（native）/`-C debuginfo=2`（rustc），产物调试可用。
 
 🚧 未完成（不得声称已实现）：
 
-- **M4 调试（其余）**：嵌入式目标 attach（OpenOCD / ST-Link / J-Link / pyOCD，需要硬件，未实现）、断点 verified/pending 逐行状态、命中次数断点、日志断点、硬件断点、观察点、反汇编源码混排（instruction→源码行映射展示）。
-- **F7.1 其余**：断点状态（已验证/pending/命中/失效）的逐行展示；命中次数断点（DAP `hitCondition`）。
+- **M4 调试（其余）**：嵌入式目标 attach（OpenOCD / ST-Link / J-Link / pyOCD，需要硬件，未实现）、硬件断点（`BreakpointKind::Hardware` 已定义但未下发）。
 - **M5–M12**：烧写、运行编排、仿真、LSP、设备库、ZR 完善、工具链管理、辅助功能。
 
 ---

@@ -13,10 +13,13 @@ use gpui::{
     Window, actions, div, prelude::*, px, rgb,
 };
 use ns_build::{BuildOutcome, Diagnostic, Severity};
-use ns_debug::{self, DebugBreakpoint, DebugCommand, DebugConfig, DebugMessage, Frame, Scope, Variable};
+use ns_debug::{
+    self, DebugBreakpoint, DebugBreakpointLocation, DebugCommand, DebugConfig, DebugMessage,
+    Frame, Scope, TraceConfig, Variable, WatchpointRequest, find_probe, package_support,
+};
 use ns_project::{
-    BreakpointKind, BreakpointStore, Language, Project, RecentProject, load_recents,
-    remember_project,
+    BreakpointKind, BreakpointStore, Language, Project, RecentProject, WatchAccess,
+    load_recents, remember_project,
 };
 
 use crate::editor::{BreakpointContextMenu, BreakpointToggled, Editor};
@@ -135,12 +138,23 @@ struct ContextMenuState {
     line: usize,
     x: Pixels,
     y: Pixels,
+    /// Identifier-like token under the cursor (may be empty).
+    word: String,
 }
 
 struct ConditionDialog {
     path: String,
     line: usize,
     field: Entity<TextField>,
+}
+
+/// Dialog to add or edit a watchpoint (data breakpoint).
+struct WatchpointDialog {
+    /// Existing expression when editing (empty when adding).
+    original: String,
+    field: Entity<TextField>,
+    /// Access type chosen in the dialog; cycled by clicking the badge.
+    access: WatchAccess,
 }
 
 struct SearchState {
@@ -201,6 +215,13 @@ struct DebugView {
     console: Vec<String>,
     error: Option<String>,
     synced_files: HashSet<String>,
+    /// Variables per scope id fetched to resolve watchpoint expressions.
+    watchpoint_scope_variables: HashMap<u64, Vec<Variable>>,
+    /// Expressions currently being resolved via `dataBreakpointInfo`.
+    resolving_watchpoints: HashSet<String>,
+    /// A watchpoint resolution pass is in flight (scopes being fetched).
+    watchpoint_resolution_pending: bool,
+    trace: TraceView,
 }
 
 impl Default for DebugView {
@@ -222,6 +243,10 @@ impl Default for DebugView {
             console: Vec::new(),
             error: None,
             synced_files: HashSet::new(),
+            watchpoint_scope_variables: HashMap::new(),
+            resolving_watchpoints: HashSet::new(),
+            watchpoint_resolution_pending: false,
+            trace: TraceView::default(),
         }
     }
 }
@@ -248,6 +273,7 @@ enum DebugViewTab {
     Variables,
     Memory,
     Disassembly,
+    Trace,
 }
 
 struct MemoryView {
@@ -266,6 +292,38 @@ impl Default for MemoryView {
             bytes: Vec::new(),
             error: None,
             read_size: 64,
+        }
+    }
+}
+
+/// Trace window (SWO/SWV) configuration panel state.
+struct TraceView {
+    /// The configuration being edited; persisted to `.ns-ide/trace.json`.
+    config: TraceConfig,
+    /// Input for the watched data address (only relevant when `data_trace`).
+    address_input: Option<Entity<TextField>>,
+    /// Input for the SWO prescaler (TPIU_ACPR + 1).
+    prescaler_input: Option<Entity<TextField>>,
+    /// Whether the trace window is currently armed on the target.
+    armed: bool,
+    /// Last validation or configuration error, shown inline.
+    error: Option<String>,
+    /// Honest support status (probe found, SWO stream connected?).
+    support: Option<&'static str>,
+    /// Input for the ITM stimulus port.
+    port_input: Option<Entity<TextField>>,
+}
+
+impl Default for TraceView {
+    fn default() -> Self {
+        Self {
+            config: TraceConfig::default(),
+            address_input: None,
+            prescaler_input: None,
+            armed: false,
+            error: None,
+            support: None,
+            port_input: None,
         }
     }
 }
@@ -301,6 +359,7 @@ pub struct IdeApp {
     pending_debug: bool,
     context_menu: Option<ContextMenuState>,
     condition_dialog: Option<ConditionDialog>,
+    watchpoint_dialog: Option<WatchpointDialog>,
     search: Option<SearchState>,
     palette: Option<PaletteState>,
     focus_dialog_on_next_frame: bool,
@@ -332,6 +391,7 @@ impl IdeApp {
             pending_debug: false,
             context_menu: None,
             condition_dialog: None,
+            watchpoint_dialog: None,
             search: None,
             palette: None,
             focus_dialog_on_next_frame: false,
@@ -371,11 +431,13 @@ impl IdeApp {
             let _ = session.commands.send(DebugCommand::Stop);
         }
         self.debug = DebugView::default();
+        self.debug.trace.config = TraceConfig::load(&root);
         self.pending_debug = false;
         self.tabs.clear();
         self.active_tab = None;
         self.context_menu = None;
         self.condition_dialog = None;
+        self.watchpoint_dialog = None;
         self.search = None;
         self.palette = None;
         self.expanded.clear();
@@ -428,6 +490,7 @@ impl IdeApp {
                             line: event.line,
                             x: event.x,
                             y: event.y,
+                            word: event.word.clone(),
                         });
                         cx.notify();
                     },
@@ -891,6 +954,18 @@ impl IdeApp {
                 } else {
                     None
                 },
+                hit_condition: if !breakpoint.hit_count.trim().is_empty() {
+                    Some(breakpoint.hit_count.clone())
+                } else {
+                    None
+                },
+                log_message: if breakpoint.kind == BreakpointKind::Log
+                    && !breakpoint.log_message.trim().is_empty()
+                {
+                    Some(breakpoint.log_message.clone())
+                } else {
+                    None
+                },
             })
             .collect();
         let synced_files: HashSet<String> = breakpoints
@@ -984,6 +1059,7 @@ impl IdeApp {
                 if let Some(session) = &self.debug_session {
                     let _ = session.commands.send(DebugCommand::GetStackTrace { thread_id });
                 }
+                self.begin_watchpoint_resolution();
                 self.show_output = true;
                 self.output_tab = OutputTab::Debug;
                 self.status = format!("调试暂停 · {}", self.debug.status.label());
@@ -992,6 +1068,10 @@ impl IdeApp {
             DebugMessage::Continued => {
                 self.debug.status = DebugStatus::Running;
                 self.debug.push_console("▶ 程序继续运行".to_string());
+                self.debug.watchpoint_resolution_pending = false;
+                self.debug.resolving_watchpoints.clear();
+                self.debug.watchpoint_scope_variables.clear();
+                self.breakpoints.clear_watchpoint_hits();
                 self.clear_debug_highlights(cx);
             }
             DebugMessage::StackTrace { frames } => {
@@ -1010,7 +1090,17 @@ impl IdeApp {
             DebugMessage::Scopes { scopes, .. } => {
                 self.debug.scopes = scopes;
                 self.debug.active_scope = 0;
-                if let Some(scope) = self.debug.scopes.first() {
+                if self.debug.watchpoint_resolution_pending {
+                    // Fetch every scope's variables so watchpoint expressions
+                    // can be located; the replies drive `collect_watchpoint_scope`.
+                    for scope in self.debug.scopes.clone() {
+                        if let Some(session) = &self.debug_session {
+                            let _ = session.commands.send(DebugCommand::GetVariables {
+                                variables_reference: scope.id,
+                            });
+                        }
+                    }
+                } else if let Some(scope) = self.debug.scopes.first() {
                     if let Some(session) = &self.debug_session {
                         let _ = session.commands.send(DebugCommand::GetVariables {
                             variables_reference: scope.id,
@@ -1019,6 +1109,9 @@ impl IdeApp {
                 }
             }
             DebugMessage::Variables { reference, variables } => {
+                if self.debug.watchpoint_resolution_pending {
+                    self.collect_watchpoint_scope(reference, variables.clone());
+                }
                 let is_active_scope = self
                     .debug
                     .scopes
@@ -1053,10 +1146,105 @@ impl IdeApp {
                     }
                 }
             }
+            DebugMessage::BreakpointResults { file, results } => {
+                for result in results {
+                    if let Some(relative) = self
+                        .project
+                        .as_ref()
+                        .map(|project| project.relative(Path::new(&file)))
+                        .filter(|relative| !relative.is_empty())
+                    {
+                        self.breakpoints
+                            .mark_verified(&relative, result.line, result.verified, &result.reason);
+                    }
+                }
+                self.persist_breakpoints();
+            }
+            DebugMessage::DataBreakpointInfo {
+                expression,
+                data_id,
+                access_types,
+                description,
+            } => {
+                self.resolve_watchpoint(expression, data_id, access_types, description);
+            }
+            DebugMessage::WatchpointResults { results } => {
+                for result in results {
+                    self.breakpoints.mark_watchpoint_verified(
+                        &result.expression,
+                        result.verified,
+                        &result.reason,
+                        result.adapter_id,
+                    );
+                    if !result.verified {
+                        self.debug.push_console(format!(
+                            "✕ 观察点 `{}` 未绑定: {}",
+                            result.expression, result.reason
+                        ));
+                    }
+                }
+                self.persist_breakpoints();
+            }
+            DebugMessage::WatchpointHit { description } => {
+                let hit_expression = self
+                    .breakpoints
+                    .watchpoints()
+                    .iter()
+                    .find(|watchpoint| {
+                        watchpoint
+                            .adapter_id
+                            .map(|id| description.contains(&format!("{id}")))
+                            .unwrap_or(false)
+                    })
+                    .map(|watchpoint| watchpoint.expression.clone());
+                if let Some(expression) = hit_expression {
+                    self.breakpoints.mark_watchpoint_hit(&expression);
+                }
+            }
+            DebugMessage::Threads { .. } => {}
+            DebugMessage::ScopeVariables { .. } => {}
+            DebugMessage::Caret { path, line } => {
+                let Some(path) = path else {
+                    return;
+                };
+                if let Some(relative) = self
+                    .project
+                    .as_ref()
+                    .map(|project| project.relative(Path::new(&path)))
+                    .filter(|relative| !relative.is_empty())
+                {
+                    self.focus_source_line(&relative, line, cx);
+                }
+            }
+            DebugMessage::TraceConfigured { config } => {
+                self.debug.trace.config = config.clone();
+                self.debug.trace.armed = true;
+                self.debug.trace.error = None;
+                self.debug.push_console(format!(
+                    "◈ trace 窗口已就绪（DWT 数据跟踪={}，ITM 端口={}）",
+                    config.data_trace, config.itm_port
+                ));
+                cx.notify();
+            }
+            DebugMessage::Evaluated {
+                expression,
+                result,
+                type_name,
+            } => {
+                let line = match type_name {
+                    Some(type_name) => format!("({type_name}) {expression} = {result}"),
+                    None => format!("{expression} = {result}"),
+                };
+                self.debug.push_console(line);
+            }
             DebugMessage::Terminated => {
                 self.debug.status = DebugStatus::Exited;
                 self.debug.push_console("■ 调试会话已结束".to_string());
                 self.debug_session = None;
+                self.debug.watchpoint_resolution_pending = false;
+                self.debug.resolving_watchpoints.clear();
+                self.debug.watchpoint_scope_variables.clear();
+                self.breakpoints.clear_watchpoint_hits();
                 self.clear_debug_highlights(cx);
                 self.status = "调试会话已结束".to_string();
             }
@@ -1164,6 +1352,9 @@ impl IdeApp {
         if tab == DebugViewTab::Disassembly && self.debug.disassembly.is_empty() && self.debug.pc.is_some() {
             self.disassemble_at_pc(cx);
         }
+        if tab == DebugViewTab::Trace {
+            self.ensure_trace_fields(cx);
+        }
         cx.notify();
     }
 
@@ -1180,6 +1371,123 @@ impl IdeApp {
             field
         });
         self.debug.memory.address_input = Some(field);
+    }
+
+    /// Create the trace panel's text fields, seeded from the loaded config.
+    fn ensure_trace_fields(&mut self, cx: &mut Context<Self>) {
+        let trace = &mut self.debug.trace;
+        if trace.address_input.is_none() {
+            let text = trace.config.data_address.clone();
+            let field = cx.new(|cx| {
+                let mut field = TextField::new("例如 0x20000010", cx);
+                if !text.is_empty() {
+                    field.set_text(text, cx);
+                }
+                field
+            });
+            trace.address_input = Some(field);
+        }
+        if trace.prescaler_input.is_none() {
+            let text = trace.config.swo_prescaler.to_string();
+            let field = cx.new(|cx| {
+                let mut field = TextField::new("1", cx);
+                field.set_text(text, cx);
+                field
+            });
+            trace.prescaler_input = Some(field);
+        }
+        if trace.port_input.is_none() {
+            let text = trace.config.itm_port.to_string();
+            let field = cx.new(|cx| {
+                let mut field = TextField::new("0", cx);
+                field.set_text(text, cx);
+                field
+            });
+            trace.port_input = Some(field);
+        }
+        if trace.support.is_none() {
+            let probe = find_probe(std::env::var("NS_TRACE_PROBE").ok().as_deref());
+            trace.support = package_support(probe.as_ref());
+        }
+    }
+
+    /// Sync the edited fields back into `config`; invalid numeric fields are
+    /// left untouched so the user can keep typing.
+    fn trace_sync_fields(&mut self, cx: &mut Context<Self>) {
+        let trace = &mut self.debug.trace;
+        if let Some(field) = &trace.address_input {
+            trace.config.data_address = field.read(cx).text().trim().to_string();
+        }
+        if let Some(field) = &trace.prescaler_input {
+            if let Ok(value) = field.read(cx).text().trim().parse::<u32>() {
+                trace.config.swo_prescaler = value;
+            }
+        }
+        if let Some(field) = &trace.port_input {
+            if let Ok(value) = field.read(cx).text().trim().parse::<u8>() {
+                trace.config.itm_port = value;
+            }
+        }
+    }
+
+    /// Save the current trace config to `.ns-ide/trace.json`.
+    fn trace_save(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.project.as_ref().map(|project| project.root.clone()) else {
+            return;
+        };
+        self.trace_sync_fields(cx);
+        if let Err(error) = self.debug.trace.config.save(&root) {
+            self.debug.trace.error = Some(format!("保存跟踪配置失败: {error}"));
+        }
+    }
+
+    fn trace_toggle_data(&mut self, cx: &mut Context<Self>) {
+        self.debug.trace.config.data_trace = !self.debug.trace.config.data_trace;
+        self.debug.trace.error = None;
+        self.trace_save(cx);
+        cx.notify();
+    }
+
+    fn trace_cycle_mode(&mut self, cx: &mut Context<Self>) {
+        self.debug.trace.config.mode = self.debug.trace.config.mode.next();
+        self.debug.trace.error = None;
+        self.trace_save(cx);
+        cx.notify();
+    }
+
+    fn trace_arm(&mut self, cx: &mut Context<Self>) {
+        let Some(commands) = self
+            .debug_session
+            .as_ref()
+            .map(|session| session.commands.clone())
+        else {
+            self.debug.trace.error = Some("请先启动调试会话".to_string());
+            cx.notify();
+            return;
+        };
+        self.ensure_trace_fields(cx);
+        self.trace_sync_fields(cx);
+        if let Err(reason) = self.debug.trace.config.validate() {
+            self.debug.trace.error = Some(reason);
+            cx.notify();
+            return;
+        }
+        self.debug.trace.error = None;
+        let config = self.debug.trace.config.clone();
+        let _ = commands.send(DebugCommand::ConfigureTrace(config));
+        self.debug.trace.armed = true;
+        self.debug.push_console("◈ 已请求启用跟踪窗口…".to_string());
+        self.trace_save(cx);
+        cx.notify();
+    }
+
+    fn trace_disarm(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = &self.debug_session {
+            let _ = session.commands.send(DebugCommand::StopTrace);
+        }
+        self.debug.trace.armed = false;
+        self.debug.trace.error = None;
+        cx.notify();
     }
 
     fn set_memory_read_size(&mut self, size: u64, cx: &mut Context<Self>) {
@@ -1308,6 +1616,24 @@ impl IdeApp {
                     .whitespace_nowrap()
                     .child(variable.value.clone()),
             )
+            .child(
+                div()
+                    .id(("dbg-var-eye", row_id))
+                    .flex_none()
+                    .ml(px(6.))
+                    .text_size(px(12.))
+                    .text_color(rgb(theme::TEXT_FAINT))
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(rgb(theme::ACCENT_3)))
+                    .on_click(cx.listener({
+                        let name = variable.name.clone();
+                        move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.add_watchpoint_from_variable(&name, cx);
+                        }
+                    }))
+                    .child("👁"),
+            )
             .into_any_element()
     }
 
@@ -1320,6 +1646,10 @@ impl IdeApp {
                     });
                 }
                 self.debug.status = DebugStatus::Running;
+                self.debug.watchpoint_resolution_pending = false;
+                self.debug.resolving_watchpoints.clear();
+                self.debug.watchpoint_scope_variables.clear();
+                self.breakpoints.clear_watchpoint_hits();
                 self.clear_debug_highlights(cx);
                 self.status = "调试运行中".to_string();
             }
@@ -1343,6 +1673,10 @@ impl IdeApp {
             let _ = session.commands.send(DebugCommand::Stop);
         }
         self.debug.status = DebugStatus::Exited;
+        self.debug.watchpoint_resolution_pending = false;
+        self.debug.resolving_watchpoints.clear();
+        self.debug.watchpoint_scope_variables.clear();
+        self.breakpoints.clear_watchpoint_hits();
         self.clear_debug_highlights(cx);
         self.status = "调试会话已停止".to_string();
         cx.notify();
@@ -1421,7 +1755,7 @@ impl IdeApp {
             return;
         };
         let root = project.root.clone();
-        let mut by_file: HashMap<String, Vec<(usize, Option<String>)>> = HashMap::new();
+        let mut by_file: HashMap<String, Vec<DebugBreakpointLocation>> = HashMap::new();
         for breakpoint in self.breakpoints.all().iter().filter(|breakpoint| breakpoint.enabled) {
             let absolute = root.join(&breakpoint.path).display().to_string();
             let condition = if breakpoint.kind == ns_project::BreakpointKind::Conditional
@@ -1431,13 +1765,30 @@ impl IdeApp {
             } else {
                 None
             };
+            let hit_condition = if !breakpoint.hit_count.trim().is_empty() {
+                Some(breakpoint.hit_count.clone())
+            } else {
+                None
+            };
+            let log_message = if breakpoint.kind == ns_project::BreakpointKind::Log
+                && !breakpoint.log_message.trim().is_empty()
+            {
+                Some(breakpoint.log_message.clone())
+            } else {
+                None
+            };
             by_file
                 .entry(absolute)
                 .or_default()
-                .push((breakpoint.line, condition));
+                .push(DebugBreakpointLocation {
+                    line: breakpoint.line,
+                    condition,
+                    hit_condition,
+                    log_message,
+                });
         }
         for locations in by_file.values_mut() {
-            locations.sort_by_key(|(line, _)| *line);
+            locations.sort_by_key(|location| location.line);
             locations.dedup();
         }
         let mut files: Vec<String> = by_file.keys().cloned().collect();
@@ -1447,7 +1798,7 @@ impl IdeApp {
             }
         }
         files.sort();
-        let payload: Vec<(String, Vec<(usize, Option<String>)>)> = files
+        let payload: Vec<(String, Vec<DebugBreakpointLocation>)> = files
             .into_iter()
             .map(|file| {
                 let locations = by_file.get(&file).cloned().unwrap_or_default();
@@ -1463,6 +1814,230 @@ impl IdeApp {
     fn clear_debug_highlights(&mut self, cx: &mut Context<Self>) {
         for tab in &self.tabs {
             tab.editor.update(cx, |editor, cx| editor.set_debug_line(None, cx));
+        }
+    }
+
+    /// Focus the editor tab that shows `path` (project-relative) at `line`.
+    fn focus_source_line(&mut self, path: &str, line: usize, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let absolute = project.root.join(path);
+        if self
+            .tabs
+            .iter()
+            .any(|tab| self.breakpoint_key(&tab.path) == path)
+        {
+            if let Some(editor) = self
+                .tabs
+                .iter()
+                .find(|tab| self.breakpoint_key(&tab.path) == path)
+                .and_then(|tab| self.tabs.iter().position(|t| t.path == tab.path))
+                .map(|index| self.tabs[index].editor.clone())
+            {
+                editor.update(cx, |editor, cx| editor.set_cursor_line(line, cx));
+            }
+        } else if absolute.exists() {
+            self.open_file(absolute, cx);
+            if let Some(editor) = self.active_editor() {
+                editor.update(cx, |editor, cx| editor.set_cursor_line(line, cx));
+            }
+        }
+    }
+
+    /// Read the source text of a line from an open tab, falling back to disk.
+    fn source_line_text(&self, path: &str, line: usize, cx: &mut Context<Self>) -> Option<String> {
+        let absolute = self
+            .project
+            .as_ref()
+            .map(|project| project.root.join(path))
+            .unwrap_or_else(|| PathBuf::from(path));
+        for tab in &self.tabs {
+            if tab.path == absolute {
+                let text = tab.editor.read(cx).text().to_string();
+                return text.lines().nth(line.saturating_sub(1)).map(str::to_string);
+            }
+        }
+        fs::read_to_string(&absolute)
+            .ok()
+            .and_then(|text| text.lines().nth(line.saturating_sub(1)).map(str::to_string))
+    }
+
+    /// Begin a watchpoint resolution pass after a stop. Every enabled
+    /// watchpoint is re-resolved because the old adapter ids are invalid once
+    /// the debuggee resumes. The pass fetches each scope's variables to find
+    /// where the expression lives, then asks `dataBreakpointInfo` per
+    /// expression and finally arms the whole set with one `setDataBreakpoints`.
+    fn begin_watchpoint_resolution(&mut self) {
+        if self.debug_session.is_none() {
+            return;
+        }
+        let enabled = self
+            .breakpoints
+            .watchpoints()
+            .iter()
+            .any(|watchpoint| watchpoint.enabled);
+        if !enabled {
+            if let Some(session) = &self.debug_session {
+                let _ = session.commands.send(DebugCommand::SetDataBreakpoints(Vec::new()));
+            }
+            return;
+        }
+        // Invalidate previous ids; the set is re-armed once every expression
+        // has a fresh data id.
+        for watchpoint in self.breakpoints.watchpoints.iter_mut() {
+            watchpoint.verified = None;
+            watchpoint.reason.clear();
+            watchpoint.hit = false;
+            watchpoint.data_id.clear();
+            watchpoint.adapter_id = None;
+        }
+        self.debug.watchpoint_scope_variables.clear();
+        self.debug.resolving_watchpoints.clear();
+        self.debug.watchpoint_resolution_pending = true;
+        // Fetch the variables of every scope to locate each expression.
+        let scopes = self.debug.scopes.clone();
+        for scope in &scopes {
+            if let Some(session) = &self.debug_session {
+                let _ = session.commands.send(DebugCommand::GetVariables {
+                    variables_reference: scope.id,
+                });
+            }
+        }
+    }
+
+    /// Called from the `Variables` handler while a resolution pass is active:
+    /// remember the scope's variables, then try to resolve the expressions it
+    /// may contain.
+    fn collect_watchpoint_scope(&mut self, reference: u64, variables: Vec<Variable>) {
+        if !self.debug.watchpoint_resolution_pending {
+            return;
+        }
+        self.debug
+            .watchpoint_scope_variables
+            .insert(reference, variables);
+        self.try_resolve_watchpoints();
+    }
+
+    /// Ask `dataBreakpointInfo` for every enabled watchpoint once every scope
+    /// has been fetched, so each expression is resolved in the scope that
+    /// actually lists it (falling back to the global scope id `0`).
+    fn try_resolve_watchpoints(&mut self) {
+        if !self.debug.watchpoint_resolution_pending {
+            return;
+        }
+        let expressions: Vec<String> = self
+            .breakpoints
+            .watchpoints()
+            .iter()
+            .filter(|watchpoint| watchpoint.enabled)
+            .map(|watchpoint| watchpoint.expression.clone())
+            .collect();
+        if expressions.is_empty() {
+            self.debug.watchpoint_resolution_pending = false;
+            return;
+        }
+        // Wait until every scope has been fetched so the expression-to-scope
+        // mapping is complete before any `dataBreakpointInfo` request.
+        let all_scopes_fetched = self.debug.scopes.iter().all(|scope| {
+            self.debug
+                .watchpoint_scope_variables
+                .contains_key(&scope.id)
+        });
+        if !all_scopes_fetched {
+            return;
+        }
+        let scopes = self.debug.scopes.clone();
+        for expression in expressions {
+            if self.debug.resolving_watchpoints.contains(&expression) {
+                continue;
+            }
+            let scope = scopes
+                .iter()
+                .find(|scope| {
+                    self.debug
+                        .watchpoint_scope_variables
+                        .get(&scope.id)
+                        .map(|variables| variables.iter().any(|v| v.name == expression))
+                        .unwrap_or(false)
+                })
+                .map(|scope| scope.id)
+                .unwrap_or(0);
+            self.debug.resolving_watchpoints.insert(expression.clone());
+            if let Some(session) = &self.debug_session {
+                let _ = session.commands.send(DebugCommand::DataBreakpointInfo {
+                    expression,
+                    scope,
+                });
+            }
+        }
+    }
+
+    /// Store a resolved `dataId` on its watchpoint. When every enabled
+    /// expression has been answered, arm the whole set with the adapter.
+    fn resolve_watchpoint(
+        &mut self,
+        expression: String,
+        data_id: Option<String>,
+        _access_types: Vec<String>,
+        description: String,
+    ) {
+        self.debug.resolving_watchpoints.remove(&expression);
+        match data_id {
+            Some(data_id) => {
+                self.breakpoints.set_watchpoint_data_id(&expression, &data_id);
+                self.breakpoints.mark_watchpoint_verified(&expression, true, "", None);
+                self.debug.push_console(format!(
+                    "◈ 观察点 `{expression}` 已解析（{description}）"
+                ));
+            }
+            None => {
+                self.breakpoints.mark_watchpoint_verified(
+                    &expression,
+                    false,
+                    &format!("无法解析: {description}"),
+                    None,
+                );
+                self.debug.push_console(format!(
+                    "✕ 观察点 `{expression}` 无法解析: {description}"
+                ));
+            }
+        }
+        // Arm once every enabled expression has been answered.
+        let all_answered = self
+            .breakpoints
+            .watchpoints()
+            .iter()
+            .filter(|watchpoint| watchpoint.enabled)
+            .all(|watchpoint| {
+                watchpoint.verified.is_some()
+                    && !self.debug.resolving_watchpoints.contains(&watchpoint.expression)
+            });
+        if all_answered {
+            self.debug.watchpoint_resolution_pending = false;
+            self.send_armed_watchpoints();
+        }
+    }
+
+    /// Build the `setDataBreakpoints` payload from the currently resolved
+    /// watchpoints and send it to the adapter.
+    fn send_armed_watchpoints(&mut self) {
+        if self.debug_session.is_none() {
+            return;
+        }
+        let requests: Vec<WatchpointRequest> = self
+            .breakpoints
+            .watchpoints()
+            .iter()
+            .filter(|watchpoint| watchpoint.enabled && watchpoint.verified == Some(true))
+            .map(|watchpoint| WatchpointRequest {
+                expression: watchpoint.expression.clone(),
+                data_id: watchpoint.data_id.clone(),
+                access_type: watchpoint.access.dap_value().to_string(),
+            })
+            .collect();
+        if let Some(session) = &self.debug_session {
+            let _ = session.commands.send(DebugCommand::SetDataBreakpoints(requests));
         }
     }
 
@@ -1561,6 +2136,134 @@ impl IdeApp {
         self.persist_breakpoints();
         self.sync_debugger_breakpoints();
         cx.notify();
+    }
+
+    /// Open the watchpoint dialog. `initial` prefills the expression (e.g. the
+    /// identifier under the cursor); when `expression` is non-empty it edits an
+    /// existing watchpoint instead of adding one.
+    fn open_watchpoint_dialog(
+        &mut self,
+        expression: &str,
+        initial: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let existing = if expression.is_empty() {
+            None
+        } else {
+            self.breakpoints.find_watchpoint(expression)
+        };
+        let prefill = existing
+            .map(|watchpoint| watchpoint.expression.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| initial.trim().to_string());
+        let access = existing.map(|watchpoint| watchpoint.access).unwrap_or_default();
+        let field = cx.new(|cx| {
+            let mut field = TextField::new("例如 marker 或 obj.field", cx);
+            if !prefill.is_empty() {
+                field.set_text(prefill, cx);
+            }
+            field
+        });
+        self.watchpoint_dialog = Some(WatchpointDialog {
+            original: existing.map(|watchpoint| watchpoint.expression.clone()).unwrap_or_default(),
+            field,
+            access,
+        });
+        self.context_menu = None;
+        self.focus_dialog_on_next_frame = true;
+        cx.notify();
+    }
+
+    fn save_watchpoint_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.watchpoint_dialog.take() else {
+            return;
+        };
+        let expression = dialog.field.read(cx).text();
+        let expression = expression.trim().to_string();
+        if expression.is_empty() {
+            self.status = "观察点表达式不能为空".to_string();
+            cx.notify();
+            return;
+        }
+        // Editing an existing watchpoint renames it: remove the old key first.
+        if !dialog.original.is_empty() && dialog.original != expression {
+            self.breakpoints.remove_watchpoint(&dialog.original);
+        }
+        let added = self
+            .breakpoints
+            .add_watchpoint(&expression, dialog.access);
+        self.status = if added {
+            format!("已添加观察点 `{expression}`")
+        } else {
+            format!("观察点 `{expression}` 已存在")
+        };
+        self.persist_breakpoints();
+        self.sync_watchpoints_if_running();
+        cx.notify();
+    }
+
+    fn cancel_watchpoint_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.watchpoint_dialog.take().is_some() {
+            self.status = "已取消观察点编辑".to_string();
+            cx.notify();
+        }
+    }
+
+    fn cycle_watchpoint_access(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = &mut self.watchpoint_dialog {
+            dialog.access = dialog.access.next();
+            cx.notify();
+        }
+    }
+
+    fn remove_watchpoint(&mut self, expression: &str, cx: &mut Context<Self>) {
+        if !self.breakpoints.remove_watchpoint(expression) {
+            return;
+        }
+        self.status = format!("已删除观察点 `{expression}`");
+        self.persist_breakpoints();
+        self.sync_watchpoints_if_running();
+        cx.notify();
+    }
+
+    fn toggle_watchpoint_enabled(&mut self, expression: &str, cx: &mut Context<Self>) {
+        let Some(enabled) = self
+            .breakpoints
+            .find_watchpoint(expression)
+            .map(|watchpoint| !watchpoint.enabled)
+        else {
+            return;
+        };
+        self.breakpoints.set_watchpoint_enabled(expression, enabled);
+        self.status = if enabled {
+            format!("已启用观察点 `{expression}`")
+        } else {
+            format!("已禁用观察点 `{expression}`")
+        };
+        self.persist_breakpoints();
+        self.sync_watchpoints_if_running();
+        cx.notify();
+    }
+
+    /// Add a watchpoint from the variables panel (`👁`).
+    fn add_watchpoint_from_variable(&mut self, expression: &str, cx: &mut Context<Self>) {
+        let expression = expression.trim().to_string();
+        if expression.is_empty() {
+            return;
+        }
+        self.breakpoints.add_watchpoint(&expression, WatchAccess::default());
+        self.status = format!("已添加观察点 `{expression}`");
+        self.persist_breakpoints();
+        self.sync_watchpoints_if_running();
+        cx.notify();
+    }
+
+    /// When a debug session is running, re-resolve and re-arm watchpoints.
+    fn sync_watchpoints_if_running(&mut self) {
+        if self.debug_session.is_none() {
+            return;
+        }
+        self.begin_watchpoint_resolution();
     }
 
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1755,6 +2458,13 @@ impl IdeApp {
             }
             "breakpoints" => self.show_breakpoints(cx),
             "clear-breakpoints" => self.clear_all_breakpoints(cx),
+            "add-watchpoint" => {
+                let initial = self
+                    .active_editor()
+                    .map(|editor| editor.read(cx).word_under_cursor())
+                    .unwrap_or_default();
+                self.open_watchpoint_dialog("", &initial, cx);
+            }
             "close-tab" => {
                 if let Some(index) = self.active_tab {
                     self.close_tab(index, cx);
@@ -2431,8 +3141,25 @@ impl IdeApp {
                             && !breakpoint.condition.is_empty()
                         {
                             format!("条件 · {}", breakpoint.condition)
+                        } else if breakpoint.kind == BreakpointKind::Log
+                            && !breakpoint.log_message.is_empty()
+                        {
+                            format!("日志 · {}", breakpoint.log_message)
                         } else {
                             breakpoint.kind.label().to_string()
+                        };
+                        let summary = if !breakpoint.hit_count.is_empty() {
+                            format!("{kind_text} · 第{}次", breakpoint.hit_count)
+                        } else {
+                            kind_text
+                        };
+                        let state_label = breakpoint.state_label();
+                        let state_color = match state_label {
+                            "已验证" => theme::color(theme::JADE),
+                            "命中" => theme::color(theme::CINNABAR),
+                            "未绑定" => theme::color(theme::CINNABAR),
+                            "未同步" | "失效" => theme::color(theme::ACCENT),
+                            _ => theme::color(theme::TEXT_FAINT),
                         };
                         rows.push(
                             div()
@@ -2501,8 +3228,33 @@ impl IdeApp {
                                         .whitespace_nowrap()
                                         .text_size(px(10.5))
                                         .text_color(rgb(theme::TEXT_FAINT))
-                                        .child(kind_text),
+                                        .child(summary),
                                 )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .px(px(7.))
+                                        .py(px(2.))
+                                        .rounded_full()
+                                        .border_1()
+                                        .border_color(state_color.opacity(0.45))
+                                        .bg(state_color.opacity(0.12))
+                                        .text_size(px(8.5))
+                                        .text_color(state_color)
+                                        .child(state_label),
+                                )
+                                .when(!breakpoint.reason.is_empty(), |style| {
+                                    style.child(
+                                        div()
+                                            .max_w(px(160.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .text_size(px(9.))
+                                            .text_color(theme::color(theme::CINNABAR))
+                                            .child(breakpoint.reason.clone()),
+                                    )
+                                })
                                 .child(
                                     widgets::icon_button(("bp-remove", index), "×", 20.)
                                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -2561,10 +3313,242 @@ impl IdeApp {
                                 })
                                 .children(rows),
                         )
+                        .child(self.render_watchpoint_panel(cx))
                         .into_any_element()
                 }
                 OutputTab::Debug => self.render_debug(cx).into_any_element(),
             })
+    }
+
+    /// The watchpoint (data breakpoint) section of the breakpoints panel.
+    fn render_watchpoint_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let watchpoints = self.breakpoints.watchpoints();
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        for (index, watchpoint) in watchpoints.iter().enumerate() {
+            let expression = watchpoint.expression.clone();
+            let is_enabled = watchpoint.enabled;
+            let access_label = watchpoint.access.label().to_string();
+            let state_label = watchpoint.state_label();
+            let state_color = match state_label {
+                "已验证" => theme::color(theme::JADE),
+                "命中" => theme::color(theme::CINNABAR),
+                "未绑定" => theme::color(theme::CINNABAR),
+                "未同步" => theme::color(theme::ACCENT),
+                _ => theme::color(theme::TEXT_FAINT),
+            };
+            rows.push(
+                div()
+                    .id(("watchpoint", index))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(9.))
+                    .rounded(px(6.))
+                    .bg(theme::alpha(0xffffff, 0.015))
+                    .child(
+                        div()
+                            .id(("wp-toggle", index))
+                            .size(px(15.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(if is_enabled {
+                                theme::alpha(theme::CINNABAR, 0.9)
+                            } else {
+                                theme::alpha(theme::STROKE, 0.35)
+                            })
+                            .bg(if is_enabled {
+                                theme::alpha(theme::CINNABAR, 0.9)
+                            } else {
+                                theme::alpha(theme::BG_1, 0.2)
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(if is_enabled {
+                                rgb(0xffffff)
+                            } else {
+                                rgb(theme::TEXT_FAINT)
+                            })
+                            .child(if is_enabled { "✓" } else { "" })
+                            .on_click({
+                                let expression = expression.clone();
+                                cx.listener(move |this, _, _, cx| {
+                                    this.toggle_watchpoint_enabled(&expression, cx);
+                                })
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id(("wp-access", index))
+                            .w(px(48.))
+                            .flex_none()
+                            .rounded_full()
+                            .border_1()
+                            .border_color(theme::alpha(theme::ACCENT, 0.45))
+                            .bg(theme::alpha(theme::ACCENT, 0.1))
+                            .text_size(px(8.5))
+                            .text_color(rgb(theme::ACCENT_3))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .py(px(2.))
+                            .cursor_pointer()
+                            .on_click({
+                                let expression = expression.clone();
+                                cx.listener(move |this, _, _, cx| {
+                                    if let Some(watchpoint) =
+                                        this.breakpoints.find_watchpoint(&expression)
+                                    {
+                                        let access = watchpoint.access.next();
+                                        this.breakpoints.add_watchpoint(&expression, access);
+                                        this.persist_breakpoints();
+                                        this.sync_watchpoints_if_running();
+                                    }
+                                    cx.notify();
+                                })
+                            })
+                            .child(access_label),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .font_family(theme::MONO_FONT)
+                            .text_size(px(10.5))
+                            .text_color(if is_enabled {
+                                rgb(theme::TEXT)
+                            } else {
+                                rgb(theme::TEXT_FAINT)
+                            })
+                            .child(watchpoint.expression.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(px(7.))
+                            .py(px(2.))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(state_color.opacity(0.45))
+                            .bg(state_color.opacity(0.12))
+                            .text_size(px(8.5))
+                            .text_color(state_color)
+                            .child(state_label),
+                    )
+                    .when(!watchpoint.reason.is_empty(), |style| {
+                        style.child(
+                            div()
+                                .max_w(px(160.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_size(px(9.))
+                                .text_color(theme::color(theme::CINNABAR))
+                                .child(watchpoint.reason.clone()),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(2.))
+                            .child(
+                                widgets::icon_button(("wp-edit", index), "✎", 20.)
+                                    .on_click({
+                                        let expression = expression.clone();
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.open_watchpoint_dialog(&expression, "", cx);
+                                        })
+                                    }),
+                            )
+                            .child(
+                                widgets::icon_button(("wp-remove", index), "×", 20.)
+                                    .on_click({
+                                        let expression = expression.clone();
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.remove_watchpoint(&expression, cx);
+                                        })
+                                    }),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let count = watchpoints.len();
+        let enabled = watchpoints.iter().filter(|watchpoint| watchpoint.enabled).count();
+        div()
+            .id("watchpoint-panel")
+            .h(px(140.))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(theme::alpha(theme::STROKE, 0.08))
+            .child(
+                div()
+                    .h(px(30.))
+                    .flex_none()
+                    .px(px(12.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(rgb(theme::TEXT_FAINT))
+                            .child(format!("观察点（数据断点） · {count} 个 · {enabled} 个已启用")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(6.))
+                            .child(
+                                widgets::ghost_button("wp-add", "添加观察点…").on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.open_watchpoint_dialog("", "", cx);
+                                    }),
+                                ),
+                            )
+                            .when(count > 0, |style| {
+                                style.child(
+                                    widgets::ghost_button("wp-clear-all", "清除全部").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.breakpoints.clear_watchpoints();
+                                            this.persist_breakpoints();
+                                            this.sync_watchpoints_if_running();
+                                            this.status = "已清除全部观察点".to_string();
+                                            cx.notify();
+                                        }),
+                                    ),
+                                )
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("watchpoint-list")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .p(px(8.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .when(count == 0, |style| {
+                        style.child(
+                            div()
+                                .p(px(12.))
+                                .text_size(px(11.))
+                                .text_color(rgb(theme::TEXT_FAINT))
+                                .child("没有观察点。右键源代码选择「添加观察点（数据断点）…」，或在变量面板点击 👁。"),
+                        )
+                    })
+                    .children(rows),
+            )
+            .into_any_element()
     }
 
     fn render_debug(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2659,6 +3643,10 @@ impl IdeApp {
                                     .child(view_tab_pill("dbg-tab-disasm", "反汇编", self.debug.view_tab == DebugViewTab::Disassembly)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.set_view_tab(DebugViewTab::Disassembly, cx)
+                                        })))
+                                    .child(view_tab_pill("dbg-tab-trace", "跟踪", self.debug.view_tab == DebugViewTab::Trace)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_view_tab(DebugViewTab::Trace, cx)
                                         }))),
                             )
                             .child(div().size(px(7.)).rounded_full().bg(status_color))
@@ -2776,6 +3764,7 @@ impl IdeApp {
                         DebugViewTab::Disassembly => {
                             self.render_debug_disassembly_column(cx)
                         }
+                        DebugViewTab::Trace => self.render_debug_trace_column(cx),
                     })
                     .child(
                         // 控制台
@@ -3099,45 +4088,336 @@ impl IdeApp {
                                 .child("没有反汇编。命中断点后点击「从 PC 反汇编」。"),
                         )
                     })
-                    .children(instructions.iter().enumerate().map(|(index, instruction)| {
-                        let is_pc = pc == Some(instruction.address);
+                    .children(
+                        instructions
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(index, instruction)| {
+                                let mut row_elements: Vec<gpui::AnyElement> = Vec::new();
+                                let is_pc = pc == Some(instruction.address);
+                                let previous_source = index
+                                    .checked_sub(1)
+                                    .and_then(|previous| instructions.get(previous))
+                                    .and_then(|previous| {
+                                        previous
+                                            .file
+                                            .as_ref()
+                                            .map(|file| (file.clone(), previous.line))
+                                    });
+                                let current_source = instruction
+                                    .file
+                                    .as_ref()
+                                    .map(|file| (file.clone(), instruction.line));
+                                let starts_new_source = match (&previous_source, &current_source) {
+                                    (None, Some(_)) => true,
+                                    (Some(previous), Some(current)) => previous != current,
+                                    _ => false,
+                                };
+                                if starts_new_source
+                                    && let Some((file, line)) = current_source
+                                    && let Some(source_text) =
+                                        self.source_line_text(&file, line.unwrap_or(1), cx)
+                                {
+                                    let source_path = file.clone();
+                                    let source_line = line.unwrap_or(1);
+                                    let source_name = Path::new(&file)
+                                        .file_name()
+                                        .map(|name| name.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| file.clone());
+                                    row_elements.push(
+                                        div()
+                                            .id(("dbg-disasm-source", index))
+                                            .px(px(8.))
+                                            .py(px(3.))
+                                            .rounded(px(4.))
+                                            .mt(px(6.))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .cursor_pointer()
+                                            .hover(|style| {
+                                                style.bg(theme::alpha(theme::STROKE, 0.08))
+                                            })
+                                            .on_click(cx.listener({
+                                                let path = source_path.clone();
+                                                let line = source_line;
+                                                move |this, _, _, cx| {
+                                                    this.open_file(PathBuf::from(&path), cx);
+                                                    if let Some(editor) = this.active_editor() {
+                                                        editor.update(cx, |editor, cx| {
+                                                            editor.set_cursor_line(line, cx)
+                                                        });
+                                                    }
+                                                }
+                                            }))
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .font_family(theme::MONO_FONT)
+                                                    .text_size(px(9.))
+                                                    .text_color(rgb(theme::JADE))
+                                                    .child(format!("{source_name}:{source_line}")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .overflow_hidden()
+                                                    .text_ellipsis()
+                                                    .whitespace_nowrap()
+                                                    .text_size(px(10.))
+                                                    .text_color(rgb(theme::TEXT_FAINT))
+                                                    .child(source_text),
+                                            )
+                                            .into_any_element(),
+                                    );
+                                }
+                                row_elements.push(
+                                    div()
+                                        .id(("dbg-disasm-row", index))
+                                        .px(px(8.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .flex()
+                                        .items_baseline()
+                                        .gap(px(10.))
+                                        .overflow_hidden()
+                                        .bg(if is_pc {
+                                            theme::alpha(theme::JADE, 0.14)
+                                        } else {
+                                            gpui::transparent_black()
+                                        })
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .font_family(theme::MONO_FONT)
+                                                .text_size(px(10.))
+                                                .text_color(rgb(theme::ACCENT_3))
+                                                .child(format!("{:#x}", instruction.address)),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family(theme::MONO_FONT)
+                                                .text_size(px(10.))
+                                                .text_color(if is_pc {
+                                                    rgb(theme::TEXT)
+                                                } else {
+                                                    rgb(theme::TEXT_DIM)
+                                                })
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .child(instruction.instruction.clone()),
+                                        )
+                                        .into_any_element(),
+                                );
+                                row_elements
+                            }),
+                    )
+            )
+            .into_any_element()
+    }
+
+    fn render_debug_trace_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let trace = &self.debug.trace;
+        let config = &trace.config;
+        let support = trace.support;
+
+        let row_field = |id: &'static str, label: &str, field: &Option<Entity<TextField>>| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .w(px(110.))
+                        .flex_none()
+                        .text_size(px(10.))
+                        .text_color(rgb(theme::TEXT_DIM))
+                        .child(label),
+                )
+                .child(
+                    field
+                        .clone()
+                        .map(|field| {
+                            div()
+                                .id(id)
+                                .flex_1()
+                                .bg(theme::alpha(theme::STROKE, 0.06))
+                                .rounded(px(6.))
+                                .px(px(8.))
+                                .py(px(3.))
+                                .child(field)
+                                .into_any_element()
+                        })
+                        .unwrap_or_else(|| div().flex_1().into_any_element()),
+                )
+                .into_any_element()
+        };
+
+        div()
+            .id("debug-trace")
+            .w(px(460.))
+            .flex_none()
+            .h_full()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(theme::alpha(theme::STROKE, 0.08))
+            .child(
+                div()
+                    .px(px(10.))
+                    .pt(px(7.))
+                    .pb(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(widgets::section_label("跟踪窗口 (SWO/SWV)"))
+                    .child(
                         div()
-                            .id(("dbg-disasm-row", index))
-                            .px(px(8.))
-                            .py(px(2.))
-                            .rounded(px(4.))
                             .flex()
-                            .items_baseline()
-                            .gap(px(10.))
-                            .overflow_hidden()
-                            .bg(if is_pc {
-                                theme::alpha(theme::JADE, 0.14)
-                            } else {
-                                gpui::transparent_black()
-                            })
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .font_family(theme::MONO_FONT)
-                                    .text_size(px(10.))
-                                    .text_color(rgb(theme::ACCENT_3))
-                                    .child(format!("{:#x}", instruction.address)),
-                            )
-                            .child(
-                                div()
-                                    .font_family(theme::MONO_FONT)
-                                    .text_size(px(10.))
-                                    .text_color(if is_pc {
-                                        rgb(theme::TEXT)
+                            .gap(px(4.))
+                            .children(
+                                vec![
+                                    widgets::icon_button("dbg-trace-mode", "●", 18.)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.trace_cycle_mode(cx);
+                                        }))
+                                        .into_any_element(),
+                                    if trace.armed {
+                                        widgets::ghost_button("dbg-trace-stop", "停用")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.trace_disarm(cx)
+                                            }))
+                                            .into_any_element()
                                     } else {
-                                        rgb(theme::TEXT_DIM)
-                                    })
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .child(instruction.instruction.clone()),
+                                        widgets::primary_button("dbg-trace-arm", "启用")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.trace_arm(cx)
+                                            }))
+                                            .into_any_element()
+                                    },
+                                ],
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(10.))
+                    .pb(px(6.))
+                    .text_size(px(9.5))
+                    .text_color(rgb(theme::TEXT_FAINT))
+                    .child(match trace.armed {
+                        true => format!("已启用 · {}", config.mode.label()),
+                        false => "未启用".to_string(),
+                    }),
+            )
+            .when(support.is_some(), |style| {
+                style.child(
+                    div()
+                        .px(px(10.))
+                        .pb(px(6.))
+                        .text_size(px(9.5))
+                        .text_color(rgb(theme::ACCENT))
+                        .child(support.unwrap_or("")),
+                )
+            })
+            .when(trace.error.is_some(), |style| {
+                style.child(
+                    div()
+                        .px(px(10.))
+                        .pb(px(4.))
+                        .text_size(px(9.5))
+                        .text_color(rgb(theme::DANGER))
+                        .child(trace.error.clone().unwrap_or_default()),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .px(px(10.))
+                    .pb(px(8.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(row_field("dbg-trace-port", "ITM 端口", &trace.port_input))
+                    .child(row_field("dbg-trace-prescaler", "SWO 分频", &trace.prescaler_input))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .w(px(110.))
+                                    .flex_none()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(theme::TEXT_DIM))
+                                    .child("数据跟踪"),
                             )
-                    })),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        widgets::pill(
+                                            if config.data_trace { "开" } else { "关" },
+                                            if config.data_trace {
+                                                theme::color(theme::JADE)
+                                            } else {
+                                                theme::color(theme::TEXT_FAINT)
+                                            },
+                                        )
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.trace_toggle_data(cx);
+                                        })),
+                                    )
+                                    .when(config.data_trace, |style| {
+                                        style.child(
+                                            div()
+                                                .text_size(px(9.5))
+                                                .text_color(rgb(theme::TEXT_FAINT))
+                                                .child(format!(
+                                                    "比较器 {}",
+                                                    config.data_comparator
+                                                )),
+                                        )
+                                    }),
+                            ),
+                    )
+                    .when(config.data_trace, |style| {
+                        style.child(row_field("dbg-trace-address", "监视地址", &trace.address_input))
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .w(px(110.))
+                                    .flex_none()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(theme::TEXT_DIM))
+                                    .child("运行模式"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(theme::TEXT))
+                                    .child(config.mode.label()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.5))
+                            .text_color(rgb(theme::TEXT_FAINT))
+                            .child("DWT 数据跟踪监视地址写入；ITM 端口重定向 printf。"),
+                    ),
             )
             .into_any_element()
     }
@@ -3444,6 +4724,8 @@ impl Render for IdeApp {
             self.focus_dialog_on_next_frame = false;
             if let Some(dialog) = &self.condition_dialog {
                 window.focus(&dialog.field.read(cx).focus_handle(cx));
+            } else if let Some(dialog) = &self.watchpoint_dialog {
+                window.focus(&dialog.field.read(cx).focus_handle(cx));
             }
         }
 
@@ -3459,7 +4741,7 @@ impl Render for IdeApp {
             .track_focus(&self.focus_handle)
             .key_context(if self.wizard.is_some() {
                 "Wizard"
-            } else if self.condition_dialog.is_some() {
+            } else if self.condition_dialog.is_some() || self.watchpoint_dialog.is_some() {
                 "Dialog"
             } else if self.search.is_some() {
                 "Search"
@@ -3530,6 +4812,8 @@ impl Render for IdeApp {
             .on_action(cx.listener(|this, _: &ConditionDialogSave, _, cx| {
                 if this.condition_dialog.is_some() {
                     this.save_condition_dialog(cx);
+                } else if this.watchpoint_dialog.is_some() {
+                    this.save_watchpoint_dialog(cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &Debug, _, cx| this.start_debug(cx)))
@@ -3548,6 +4832,8 @@ impl Render for IdeApp {
                     this.wizard_cancel(cx);
                 } else if this.condition_dialog.is_some() {
                     this.cancel_condition_dialog(cx);
+                } else if this.watchpoint_dialog.is_some() {
+                    this.cancel_watchpoint_dialog(cx);
                 } else if this.search.is_some() {
                     this.close_search(cx);
                 } else if this.palette.is_some() {
@@ -3655,7 +4941,22 @@ impl Render for IdeApp {
                         .into_any_element(),
                 );
             }
-            let path = menu_path;
+            let watch_word = menu.word.clone();
+            let path = menu_path.clone();
+            items.push(
+                item("ctx-add-watchpoint", "添加观察点（数据断点）…", false)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let initial = if watch_word.is_empty() {
+                            this.active_editor()
+                                .map(|editor| editor.read(cx).word_under_cursor())
+                                .unwrap_or_default()
+                        } else {
+                            watch_word.clone()
+                        };
+                        this.open_watchpoint_dialog("", &initial, cx);
+                    }))
+                    .into_any_element(),
+            );
             items.push(
                 item("ctx-clear-file", "清除本文件断点", true)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -3766,6 +5067,104 @@ impl Render for IdeApp {
                                             this.save_condition_dialog(cx)
                                         }),
                                     )),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.watchpoint_dialog {
+            let field = dialog.field.clone();
+            let access = dialog.access;
+            let editing = !dialog.original.is_empty();
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .w(px(460.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(rgb(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(theme::TEXT))
+                                            .child(if editing {
+                                                "编辑观察点（数据断点）"
+                                            } else {
+                                                "添加观察点（数据断点）"
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .child("监视表达式，例如 marker 或 obj.field；调试器在表达式被读取/写入时暂停。"),
+                                    ),
+                            )
+                            .child(div().child(field))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .child("访问类型"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("wp-dialog-access")
+                                            .px(px(12.))
+                                            .py(px(4.))
+                                            .rounded_full()
+                                            .border_1()
+                                            .border_color(theme::alpha(theme::ACCENT, 0.45))
+                                            .bg(theme::alpha(theme::ACCENT, 0.1))
+                                            .text_size(px(10.))
+                                            .text_color(rgb(theme::ACCENT_3))
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.cycle_watchpoint_access(cx);
+                                            }))
+                                            .child(access.label()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(widgets::ghost_button("wp-cancel", "取消").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.cancel_watchpoint_dialog(cx)
+                                        }),
+                                    ))
+                                    .child(
+                                        widgets::primary_button("wp-save", "保存").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.save_watchpoint_dialog(cx)
+                                            }),
+                                        ),
+                                    ),
                             ),
                     ),
             );
@@ -3963,7 +5362,7 @@ impl Render for IdeApp {
         }
 
         if self.palette.is_some() {
-            let (field, ranked, selected, query) = {
+            let (field, ranked, selected, _query) = {
                 let palette = self.palette.as_ref().unwrap();
                 (
                     palette.field.clone(),

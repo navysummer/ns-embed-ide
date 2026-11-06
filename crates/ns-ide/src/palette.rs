@@ -29,6 +29,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     CommandEntry { id: "toggle-output", title: "显示/隐藏输出面板", keys: "cmd/ctrl+j", keywords: "output 输出 面板 panel" },
     CommandEntry { id: "breakpoints", title: "显示断点面板", keys: "", keywords: "breakpoints 断点 面板" },
     CommandEntry { id: "clear-breakpoints", title: "清除全部断点", keys: "cmd/ctrl+shift+f9", keywords: "clear breakpoints 清除 断点" },
+    CommandEntry { id: "add-watchpoint", title: "添加观察点（数据断点）…", keys: "", keywords: "watchpoint data breakpoint 观察点 数据断点 监视" },
     CommandEntry { id: "close-tab", title: "关闭当前标签页", keys: "cmd/ctrl+w", keywords: "close tab 关闭 标签" },
     CommandEntry { id: "toggle-diagnostics", title: "显示问题面板", keys: "", keywords: "problems diagnostics errors 问题 错误" },
     CommandEntry { id: "focus-next-tab", title: "切换到下一个标签页", keys: "ctrl+tab", keywords: "next tab 下一个 标签" },
