@@ -146,6 +146,19 @@ pub struct LspServer {
     events: Receiver<LspEvent>,
 }
 
+/// Transport args for a server. `clangd` rejects the explicit `--stdio` flag
+/// (Apple's build exits immediately) but defaults to stdio when given no
+/// transport arg, so it is launched bare. The others accept `--stdio`.
+fn transport_args(program: &str) -> &'static [&'static str] {
+    match program {
+        "clangd" => &[],
+        _ => &["--stdio"],
+    }
+}
+
+/// How long to wait for the LSP `initialize` handshake before giving up.
+const INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl LspServer {
     /// Spawn the language server for `language` in `root`.
     pub fn spawn(language: &ns_project::Language, root: &Path) -> Result<Self> {
@@ -154,8 +167,9 @@ impl LspServer {
         let path = find_command(program)
             .ok_or_else(|| anyhow!("未找到语言服务器 {program}（clangd / rust-analyzer / zls / zr-lsp）"))?;
 
-        let mut child = Command::new(&path)
-            .arg("--stdio")
+        let mut command = Command::new(&path);
+        command.args(transport_args(program));
+        let mut child = command
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -174,11 +188,16 @@ impl LspServer {
         let responses: Arc<Mutex<HashMap<u64, Sender<Value>>>> = Arc::new(Mutex::new(HashMap::new()));
         let next_id = Arc::new(AtomicU64::new(1));
         let shutdown = Arc::new(Mutex::new(false));
+        // Set when the server process's stdout closes (child died or exited),
+        // so a blocked handshake fails fast instead of waiting for a reply
+        // that will never arrive.
+        let server_exited = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // Reader thread: parse responses/notifications from stdout.
         {
             let responses = responses.clone();
             let event_tx = event_tx.clone();
+            let server_exited = server_exited.clone();
             thread::spawn(move || {
                 let mut reader = BufReader::new(stdout);
                 loop {
@@ -199,6 +218,7 @@ impl LspServer {
                         }
                     }
                 }
+                server_exited.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = event_tx.send(LspEvent::ServerExit);
             });
         }
@@ -209,6 +229,7 @@ impl LspServer {
             let responses = responses.clone();
             let next_id = next_id.clone();
             let shutdown = shutdown.clone();
+            let server_exited = server_exited.clone();
             let root = root.to_path_buf();
             thread::spawn(move || {
                 let mut stdin = stdin;
@@ -226,13 +247,27 @@ impl LspServer {
                     }),
                 )
                 .and_then(|_| {
-                    let response = init_rx
-                        .recv()
-                        .map_err(|_| anyhow!("语言服务器初始化超时"))?;
-                    if let Some(error) = response.get("error") {
-                        bail!("语言服务器初始化失败: {error}");
+                    // The child may have died (e.g. it rejects our launch
+                    // args). Wait for the response, but bail as soon as the
+                    // reader observes stdout close so we never block forever.
+                    loop {
+                        match init_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                            Ok(response) => {
+                                if let Some(error) = response.get("error") {
+                                    bail!("语言服务器初始化失败: {error}");
+                                }
+                                return Ok(());
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                if server_exited.load(std::sync::atomic::Ordering::SeqCst) {
+                                    bail!("语言服务器进程已退出（可能不支持当前启动参数）");
+                                }
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                bail!("语言服务器初始化中断");
+                            }
+                        }
                     }
-                    Ok(())
                 });
                 let init_failed = init_ok.is_err();
                 let _ = ready_tx.send(init_ok);
@@ -373,10 +408,19 @@ impl LspServer {
                 }
             });
         }
-        // Wait for the handshake to complete before returning.
-        ready_rx
-            .recv()
-            .map_err(|_| anyhow!("语言服务器未完成初始化"))??;
+        // Wait for the handshake to complete before returning, but never block
+        // the UI thread forever: a server that starts slowly or never responds
+        // (e.g. clangd cold-starting, rust-analyzer indexing) must not freeze
+        // the app. On timeout the child is killed and an error returned.
+        let init_result = ready_rx
+            .recv_timeout(INIT_TIMEOUT)
+            .map_err(|_| anyhow!("语言服务器初始化超时（{INIT_TIMEOUT:?}）"))
+            .and_then(|result| result);
+        if let Err(error) = init_result {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
 
         let server = LspServer {
             child: Arc::new(Mutex::new(Some(child))),

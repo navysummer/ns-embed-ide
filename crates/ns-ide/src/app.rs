@@ -884,6 +884,9 @@ pub struct IdeApp {
     _agent_sub: Option<Subscription>,
     /// Active language server, if connected.
     lsp: Option<ns_lsp::LspServer>,
+    /// Monotonic id used to discard LSP spawn results from a project that was
+    /// replaced by a newer one before the handshake completed.
+    lsp_generation: u64,
     /// Per-file diagnostics received from the language server.
     lsp_diagnostics: HashMap<PathBuf, Vec<ns_lsp::LspDiagnostic>>,
     /// Locations found by the last find-references request.
@@ -954,6 +957,7 @@ impl IdeApp {
             focus_terminal: false,
             serial: None,
             _serial_sub: None,
+            lsp_generation: 0,
             agent: None,
             _agent_sub: None,
             lsp: None,
@@ -1066,6 +1070,11 @@ impl IdeApp {
     }
 
     /// Spawn the language server for the project language and poll its events.
+    ///
+    /// Never blocks the UI thread: the `initialize` handshake runs on the
+    /// background executor and the project is usable immediately (Zed-style).
+    /// `lsp_generation` guards against a stale spawn attaching after the user
+    /// already opened a different project.
     fn start_lsp(&mut self, cx: &mut Context<Self>) {
         // Tear down any previous server.
         if let Some(server) = self.lsp.take() {
@@ -1089,54 +1098,87 @@ impl IdeApp {
             return;
         }
 
-        match ns_lsp::LspServer::spawn(&language, &root) {
-            Ok(server) => {
-                self.lsp = Some(server);
-                // Open already-loaded tabs so the server indexes them.
-                let files: Vec<(PathBuf, String)> = self
-                    .tabs
-                    .iter()
-                    .filter_map(|tab| {
-                        fs::read_to_string(&tab.path)
-                            .ok()
-                            .map(|text| (tab.path.clone(), text))
-                    })
-                    .collect();
-                if let Some(server) = &self.lsp {
-                    for (path, text) in files {
-                        let _ = server.open_file(path, text);
+        self.lsp_generation += 1;
+        let generation = self.lsp_generation;
+
+        // Spawn (and handshake) on the background executor so a slow server
+        // (clangd cold-start, rust-analyzer indexing) never freezes the UI.
+        let spawn_root = root.clone();
+        let spawn_task = cx
+            .background_executor()
+            .spawn(async move { ns_lsp::LspServer::spawn(&language, &spawn_root) });
+
+        let attach = cx.spawn(async move |this, cx| {
+            let result = spawn_task.await;
+            this.update(cx, |this, cx| {
+                // A newer project opened while we were waiting: discard.
+                if generation != this.lsp_generation {
+                    if let Ok(server) = result {
+                        server.shutdown();
+                    }
+                    return;
+                }
+                match result {
+                    Ok(server) => {
+                        this.lsp = Some(server);
+                        // Open already-loaded tabs so the server indexes them.
+                        let files: Vec<(PathBuf, String)> = this
+                            .tabs
+                            .iter()
+                            .filter_map(|tab| {
+                                fs::read_to_string(&tab.path)
+                                    .ok()
+                                    .map(|text| (tab.path.clone(), text))
+                            })
+                            .collect();
+                        if let Some(server) = &this.lsp {
+                            for (path, text) in files {
+                                let _ = server.open_file(path, text);
+                            }
+                        }
+                        this.status = format!(
+                            "已连接语言服务器（{}）",
+                            language_name(&language)
+                        );
+                        this.start_lsp_poll(generation, cx);
+                    }
+                    Err(error) => {
+                        this.status = format!("语言服务器启动失败: {error}");
                     }
                 }
-                self.status = format!(
-                    "已连接语言服务器（{}）",
-                    language_name(&language)
-                );
-                let poll = cx.spawn(async move |this, cx| {
-                    loop {
-                        let alive = this
-                            .update(cx, |this, cx| this.poll_lsp_events(cx))
-                            .unwrap_or(false);
-                        if !alive {
-                            break;
-                        }
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(120))
-                            .await;
-                    }
-                });
-                poll.detach();
                 cx.notify();
-            }
-            Err(error) => {
-                self.status = format!("语言服务器启动失败: {error}");
-                cx.notify();
-            }
-        }
+            })
+            .ok();
+        });
+        attach.detach();
     }
 
     /// Poll the LSP event channel for diagnostics and forward them to the UI.
     /// Returns `false` when the server has exited (the polling loop should stop).
-    fn poll_lsp_events(&mut self, cx: &mut Context<Self>) -> bool {
+    fn start_lsp_poll(&mut self, generation: u64, cx: &mut Context<Self>) {
+        let poll = cx.spawn(async move |this, cx| {
+            loop {
+                let alive = this
+                    .update(cx, |this, cx| this.poll_lsp_events(generation, cx))
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(120))
+                    .await;
+            }
+        });
+        poll.detach();
+    }
+
+    /// Poll the LSP event channel for diagnostics and forward them to the UI.
+    /// Returns `false` when the server has exited (the polling loop should stop).
+    fn poll_lsp_events(&mut self, generation: u64, cx: &mut Context<Self>) -> bool {
+        // A newer project opened while we were polling: stop this loop.
+        if generation != self.lsp_generation {
+            return false;
+        }
         let Some(server) = &self.lsp else {
             return false;
         };
