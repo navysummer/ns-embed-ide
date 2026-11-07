@@ -16,4 +16,12 @@ gpui.workspace = true
 ns-build.workspace = true
 ns-debug.workspace = true
 ns-project.workspace = true
+ns-flash.workspace = true
+ns-device.workspace = true
+ns-lsp.workspace = true
+ns-sim.workspace = true
+portable-pty = "0.9"
+serde = { workspace = true }
+serde_json.workspace = true
+serialport = "4"
 unicode-segmentation.workspace = true

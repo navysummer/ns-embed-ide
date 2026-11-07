@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::language::Language;
+use crate::language::{CTemplate, Language};
 
 pub const CONFIG_FILE: &str = "project.toml";
 
@@ -30,6 +30,9 @@ pub struct ProjectSection {
     pub language: Language,
     /// Target MCU, for example `stm32f103c8`.
     pub target: String,
+    /// SVD device description source: a built-in catalog key (e.g.
+    /// `stm32f103c8`) or a path to an external CMSIS-SVD file.
+    pub svd: String,
     pub compiler: String,
     pub simulator: String,
     pub debugger: String,
@@ -43,6 +46,7 @@ impl Default for ProjectSection {
             version: "0.1.0".to_string(),
             language: Language::C,
             target: String::new(),
+            svd: String::new(),
             compiler: String::new(),
             simulator: String::new(),
             debugger: String::new(),
@@ -80,6 +84,11 @@ pub struct DebuggerSection {
     pub path: String,
     pub interface: String,
     pub server: String,
+    /// Debug probe kind: `openocd` | `stlink` | `jlink` | `pyocd` | `probe-rs`.
+    /// Empty = auto-detect (OpenOCD). Drives embedded-target attach.
+    pub probe: String,
+    /// GDB client path for embedded attach (arm-none-eabi-gdb / gdb-multiarch).
+    pub gdb: String,
 }
 
 impl Default for DebuggerSection {
@@ -88,6 +97,8 @@ impl Default for DebuggerSection {
             path: String::new(),
             interface: "swd".to_string(),
             server: String::new(),
+            probe: "openocd".to_string(),
+            gdb: String::new(),
         }
     }
 }
@@ -95,13 +106,17 @@ impl Default for DebuggerSection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FlasherSection {
+    /// Adapter kind: `openocd` | `pyocd` | `jlink`. Empty = auto-detect.
+    pub kind: String,
     pub path: String,
+    /// Debug interface, e.g. `swd` or `jtag`.
     pub interface: String,
 }
 
 impl Default for FlasherSection {
     fn default() -> Self {
         Self {
+            kind: "openocd".to_string(),
             path: String::new(),
             interface: "swd".to_string(),
         }
@@ -143,6 +158,10 @@ pub struct NewProjectSpec {
     pub debugger: String,
     pub flasher: String,
     pub target: String,
+    /// SVD source: built-in catalog key or external file path.
+    pub svd: String,
+    /// C starter template selection (ignored for non-C languages).
+    pub c_template: Option<CTemplate>,
 }
 
 #[derive(Debug, Clone)]
@@ -224,13 +243,16 @@ impl Project {
         config.project.version = "0.1.0".to_string();
         config.project.language = spec.language;
         config.project.target = spec.target;
+        config.project.svd = spec.svd;
         config.project.compiler = spec.compiler;
         config.project.simulator = spec.simulator;
         config.project.debugger = spec.debugger;
         config.project.flasher = spec.flasher;
         config.compiler.std = spec.language.default_std().to_string();
 
-        let (source_path, source) = spec.language.starter_source();
+        let (source_path, source) = spec
+            .language
+            .starter_source_for_template(spec.c_template);
         write_file(&root.join(source_path), source)?;
 
         if let Some((path, contents)) = spec.language.starter_build_file() {
@@ -285,6 +307,32 @@ impl Project {
         issues
     }
 
+    /// Non-fatal warnings about configured tools not found on PATH, each with
+    /// an install hint when known. These do not prevent opening the project.
+    pub fn tool_warnings(&self) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+        for (field, tool) in [
+            ("project.compiler", self.config.project.compiler.as_str()),
+            ("project.simulator", self.config.project.simulator.as_str()),
+            ("project.debugger", self.config.project.debugger.as_str()),
+            ("project.flasher", self.config.project.flasher.as_str()),
+        ] {
+            if tool.trim().is_empty() {
+                continue;
+            }
+            if crate::toolchain::find_command(tool).is_none() {
+                let guide = crate::toolchain::missing_guide(tool)
+                    .map(|g| format!("。安装建议: {g}"))
+                    .unwrap_or_default();
+                issues.push(ValidationIssue {
+                    field: field.into(),
+                    message: format!("配置的工具「{tool}」未在 PATH 中找到{guide}"),
+                });
+            }
+        }
+        issues
+    }
+
     pub fn entry_file(&self) -> PathBuf {
         let (relative, _) = self.config.project.language.starter_source();
         self.root.join(relative)
@@ -318,6 +366,28 @@ impl Project {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/")
+    }
+
+    /// Resolve a path-like string field from `project.toml`, expanding
+    /// `$config["key"]` references and built-in variables so config files are
+    /// portable across machines and platforms.
+    pub fn expand_path(&self, value: &str) -> String {
+        let config = crate::ConfigKeys::load();
+        let vars = crate::BuiltinVars::for_project(&self.root);
+        crate::expand(value, &config, &vars)
+    }
+
+    /// Resolve the configured tool path for a compiler/debugger/flasher field,
+    /// expanding config references and built-in variables, then resolving
+    /// relative paths against the project root.
+    pub fn resolve_configured_path(&self, value: &str) -> PathBuf {
+        let expanded = self.expand_path(value);
+        let path = PathBuf::from(&expanded);
+        if path.is_absolute() {
+            path
+        } else {
+            self.root.join(path)
+        }
     }
 
     pub fn last_opened(&self) -> u64 {
@@ -477,6 +547,8 @@ mod tests {
             debugger: "gdb".into(),
             flasher: "openocd".into(),
             target: "stm32f103c8".into(),
+            svd: "stm32f103c8".into(),
+            c_template: None,
         })
         .unwrap();
 
@@ -509,6 +581,8 @@ mod tests {
             debugger: String::new(),
             flasher: String::new(),
             target: String::new(),
+            svd: String::new(),
+            c_template: None,
         });
         assert!(result.is_err());
         let _ = fs::remove_dir_all(base);
@@ -526,11 +600,126 @@ mod tests {
             debugger: String::new(),
             flasher: String::new(),
             target: String::new(),
+            svd: String::new(),
+            c_template: None,
         })
         .unwrap();
         let sources = project.source_files().unwrap();
         assert_eq!(sources.len(), 1);
         assert!(sources[0].ends_with("src/main.c"));
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn validate_flags_missing_tool_with_guide() {
+        let base = temp_dir("toolcheck");
+        let project = Project::create(NewProjectSpec {
+            name: "toolcheck".into(),
+            location: base.clone(),
+            language: Language::C,
+            compiler: "definitely-not-a-real-compiler-xyz".into(),
+            simulator: String::new(),
+            debugger: String::new(),
+            flasher: String::new(),
+            target: String::new(),
+            svd: String::new(),
+            c_template: None,
+        })
+        .unwrap();
+        let issues = project.tool_warnings();
+        let tool_issue = issues
+            .iter()
+            .find(|issue| issue.field == "project.compiler")
+            .expect("missing tool should be reported");
+        assert!(tool_issue.message.contains("未在 PATH 中找到"));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn validate_passes_when_tool_configured_and_present() {
+        let base = temp_dir("toolok");
+        let project = Project::create(NewProjectSpec {
+            name: "toolok".into(),
+            location: base.clone(),
+            language: Language::C,
+            compiler: if cfg!(unix) { "sh".into() } else { String::new() },
+            simulator: String::new(),
+            debugger: String::new(),
+            flasher: String::new(),
+            target: String::new(),
+            svd: String::new(),
+            c_template: None,
+        })
+        .unwrap();
+        let issues = project.tool_warnings();
+        assert!(
+            !issues.iter().any(|issue| issue.field == "project.compiler"),
+            "a present tool must not be flagged"
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    /// Settings modal edits `project.toml` fields; prove that saving then
+    /// reopening preserves them (the exact path `save_settings` exercises).
+    #[test]
+    fn settings_save_reload_round_trip() {
+        let base = temp_dir("settings");
+        let mut project = Project::create(NewProjectSpec {
+            name: "cfgproj".into(),
+            location: base.clone(),
+            language: Language::C,
+            compiler: String::new(),
+            simulator: String::new(),
+            debugger: String::new(),
+            flasher: String::new(),
+            target: String::new(),
+            svd: String::new(),
+            c_template: None,
+        })
+        .unwrap();
+
+        // Mimic `save_settings` field writes.
+        project.config.project.name = "renamed".to_string();
+        project.config.project.target = "stm32f103c8".to_string();
+        project.config.compiler.path = "/opt/toolchain/bin/gcc".to_string();
+        project.config.build.config = "release".to_string();
+        project.config.build.out_dir = "out".to_string();
+        project.save_config().unwrap();
+
+        let reopened = Project::open(base.join("cfgproj").join(CONFIG_FILE)).unwrap();
+        assert_eq!(reopened.config.project.name, "renamed");
+        assert_eq!(reopened.config.project.target, "stm32f103c8");
+        assert_eq!(reopened.config.compiler.path, "/opt/toolchain/bin/gcc");
+        assert_eq!(reopened.config.build.config, "release");
+        assert_eq!(reopened.config.build.out_dir, "out");
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn c_template_generates_matching_source() {
+        for template in [CTemplate::Empty, CTemplate::LedBlink, CTemplate::UartLoopback] {
+            let base = temp_dir("ctemplate");
+            let project = Project::create(NewProjectSpec {
+                name: "ctpl".into(),
+                location: base.clone(),
+                language: Language::C,
+                compiler: String::new(),
+                simulator: String::new(),
+                debugger: String::new(),
+                flasher: String::new(),
+                target: String::new(),
+                svd: String::new(),
+                c_template: Some(template),
+            })
+            .unwrap();
+            let source = std::fs::read_to_string(project.root.join("src/main.c")).unwrap();
+            match template {
+                CTemplate::Empty => assert!(source.contains("counter++")),
+                CTemplate::LedBlink => assert!(source.contains("GPIOB_ODR")),
+                CTemplate::UartLoopback => assert!(source.contains("USART1_DR")),
+            }
+            let _ = fs::remove_dir_all(base);
+        }
     }
 }

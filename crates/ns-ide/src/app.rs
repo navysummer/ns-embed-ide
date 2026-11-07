@@ -1,33 +1,42 @@
 use std::collections::HashSet;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
 
 use gpui::{
     Context, Div, ElementId, Entity, FocusHandle, Focusable, FontWeight, KeyBinding,
-    MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Render, Stateful, Subscription,
-    Window, actions, div, prelude::*, px, rgb,
+    MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Render, SharedString, Stateful,
+    Subscription, Window, actions, div, prelude::*, px, rgb,
 };
 use ns_build::{BuildOutcome, Diagnostic, Severity};
 use ns_debug::{
     self, DebugBreakpoint, DebugBreakpointLocation, DebugCommand, DebugConfig, DebugMessage,
-    Frame, Scope, TraceConfig, Variable, WatchpointRequest, find_probe, package_support,
+    EmbeddedConfig, Frame, ProbeKind, Scope, TraceConfig, Variable, WatchpointRequest,
+    find_probe, package_support,
 };
+use ns_flash::{FlashAction, FlashRequest, adapter_for};
 use ns_project::{
     BreakpointKind, BreakpointStore, Language, Project, RecentProject, WatchAccess,
     load_recents, remember_project,
 };
 
+use crate::agent::AgentPanel;
 use crate::editor::{BreakpointContextMenu, BreakpointToggled, Editor};
+use crate::git;
 use crate::palette::{self, CommandEntry};
 use crate::search::{self, MatchOrigin, SearchMatch};
 use crate::text_field::TextField;
 use crate::theme;
 use crate::widgets;
+use crate::terminal::{Terminal, TerminalConfig, TerminalEvent, TerminalKind};
+use crate::serial::{SerialEvent, SerialMonitor};
 use crate::wizard::{self, Wizard};
 
 actions!(
@@ -53,6 +62,8 @@ actions!(
         DebugStepOver,
         DebugStepIn,
         DebugStepOut,
+        RunToCursor,
+        FindInFile,
         FindInProject,
         SearchConfirm,
         SearchSelectUp,
@@ -61,6 +72,13 @@ actions!(
         PaletteConfirm,
         PaletteSelectUp,
         PaletteSelectDown,
+        Settings,
+        Flash,
+        GoToDefinition,
+        FindReferences,
+        Hover,
+        SignatureHelp,
+        ShowCompletion,
     ]
 );
 
@@ -84,13 +102,21 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
         KeyBinding::new("cmd-q", QuitApp, None),
         KeyBinding::new("ctrl-q", QuitApp, None),
+        KeyBinding::new("cmd-,", Settings, None),
+        KeyBinding::new("ctrl-,", Settings, None),
         KeyBinding::new("enter", ConditionDialogSave, Some("Dialog")),
         KeyBinding::new("f5", Debug, None),
         KeyBinding::new("shift-f5", StopDebug, None),
         KeyBinding::new("f10", DebugStepOver, None),
         KeyBinding::new("f11", DebugStepIn, None),
         KeyBinding::new("shift-f11", DebugStepOut, None),
+        KeyBinding::new("cmd-f10", RunToCursor, None),
+        KeyBinding::new("ctrl-f10", RunToCursor, None),
+        KeyBinding::new("cmd-shift-f10", Flash, None),
+        KeyBinding::new("ctrl-shift-f10", Flash, None),
         KeyBinding::new("cmd-shift-f", FindInProject, None),
+        KeyBinding::new("cmd-f", FindInFile, None),
+        KeyBinding::new("ctrl-f", FindInFile, None),
         KeyBinding::new("ctrl-shift-f", FindInProject, None),
         KeyBinding::new("cmd-shift-p", Palette, None),
         KeyBinding::new("ctrl-shift-p", Palette, None),
@@ -105,6 +131,14 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("enter", WizardNext, Some("Wizard")),
         KeyBinding::new("shift-enter", WizardBack, Some("Wizard")),
         KeyBinding::new("escape", EscapeModal, None),
+        KeyBinding::new("f12", GoToDefinition, None),
+        KeyBinding::new("shift-f12", FindReferences, None),
+        KeyBinding::new("cmd-k cmd-i", Hover, None),
+        KeyBinding::new("ctrl-k ctrl-i", Hover, None),
+        KeyBinding::new("cmd-shift-space", SignatureHelp, None),
+        KeyBinding::new("ctrl-shift-space", SignatureHelp, None),
+        KeyBinding::new("cmd-space", ShowCompletion, None),
+        KeyBinding::new("ctrl-space", ShowCompletion, None),
     ]
 }
 
@@ -114,6 +148,10 @@ enum OutputTab {
     Problems,
     Breakpoints,
     Debug,
+    Git,
+    Terminal,
+    Serial,
+    Agent,
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +195,76 @@ struct WatchpointDialog {
     access: WatchAccess,
 }
 
+/// Dialog to set a variable's value while stopped.
+struct SetVarDialog {
+    /// `variablesReference` of the parent scope (0 for a top-level variable).
+    reference: u64,
+    /// Variable name.
+    name: String,
+    field: Entity<TextField>,
+}
+/// Modal to edit the project-level settings in `project.toml`. Fields are
+/// plain text inputs; saving rewrites the config file via `Project::save_config`.
+struct SettingsDialog {
+    name: Entity<TextField>,
+    version: Entity<TextField>,
+    language: Entity<TextField>,
+    target: Entity<TextField>,
+    svd: Entity<TextField>,
+    project_compiler: Entity<TextField>,
+    project_simulator: Entity<TextField>,
+    project_debugger: Entity<TextField>,
+    project_flasher: Entity<TextField>,
+    compiler: Entity<TextField>,
+    compiler_std: Entity<TextField>,
+    compiler_opt: Entity<TextField>,
+    compiler_defines: Entity<TextField>,
+    compiler_includes: Entity<TextField>,
+    build_config: Entity<TextField>,
+    out_dir: Entity<TextField>,
+    debugger: Entity<TextField>,
+    debugger_interface: Entity<TextField>,
+    debugger_server: Entity<TextField>,
+    debugger_probe: Entity<TextField>,
+    debugger_gdb: Entity<TextField>,
+    flasher: Entity<TextField>,
+    flasher_kind: Entity<TextField>,
+    flasher_interface: Entity<TextField>,
+    sim_cpu: Entity<TextField>,
+    sim_period: Entity<TextField>,
+    /// Global terminal shell (not part of project.toml; stored in terminal.json).
+    terminal_shell: Entity<TextField>,
+    /// Global config keys (`$config["key"]`), one `key=value` per line.
+    config_keys: Entity<TextField>,
+}
+
+/// Split a comma-separated list, trimming whitespace and dropping empties.
+fn split_csv(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// Modal to edit global toolchain path overrides (stored in the user config
+/// dir, shared across projects; overrides take precedence over PATH).
+struct ToolchainDialog {
+    fields: Vec<(&'static str, Entity<TextField>)>,
+}
+
+/// Build a settings text field prefilled with `value`.
+fn settings_field(
+    placeholder: impl Into<SharedString>,
+    value: String,
+    cx: &mut Context<IdeApp>,
+) -> Entity<TextField> {
+    cx.new(move |cx| {
+        let mut field = TextField::new(placeholder.into(), cx);
+        field.set_text(value, cx);
+        field
+    })
+}
+
 struct SearchState {
     field: Entity<TextField>,
     matches: Vec<SearchMatch>,
@@ -196,6 +304,12 @@ impl DebugStatus {
     }
 }
 
+/// A watch expression plus its most recent evaluated value.
+struct WatchEntry {
+    expression: String,
+    value: String,
+}
+
 struct DebugView {
     status: DebugStatus,
     thread_id: u64,
@@ -222,6 +336,12 @@ struct DebugView {
     /// A watchpoint resolution pass is in flight (scopes being fetched).
     watchpoint_resolution_pending: bool,
     trace: TraceView,
+    /// Input for evaluating an expression in the debug console.
+    console_input: Option<Entity<TextField>>,
+    /// Watch expressions and their last evaluated value.
+    watches: Vec<WatchEntry>,
+    /// Input for adding a new watch expression.
+    watch_input: Option<Entity<TextField>>,
 }
 
 impl Default for DebugView {
@@ -247,6 +367,9 @@ impl Default for DebugView {
             resolving_watchpoints: HashSet::new(),
             watchpoint_resolution_pending: false,
             trace: TraceView::default(),
+            console_input: None,
+            watches: Vec::new(),
+            watch_input: None,
         }
     }
 }
@@ -259,6 +382,31 @@ impl DebugView {
             self.console.drain(..excess);
         }
     }
+
+    /// Add a watch expression (or re-add an existing one).
+    fn add_watch(&mut self, expression: &str) {
+        if let Some(entry) = self.watches.iter_mut().find(|w| w.expression == expression) {
+            entry.value.clear();
+            return;
+        }
+        self.watches.push(WatchEntry {
+            expression: expression.to_string(),
+            value: String::new(),
+        });
+    }
+
+    /// Update a watch entry's value from an `Evaluated` response.
+    fn update_watch(&mut self, expression: &str, value: &str) {
+        if let Some(entry) = self.watches.iter_mut().find(|w| w.expression == expression) {
+            entry.value = value.to_string();
+        }
+    }
+
+    fn remove_watch(&mut self, index: usize) {
+        if index < self.watches.len() {
+            self.watches.remove(index);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -267,13 +415,14 @@ enum DebugStep {
     In,
     Out,
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DebugViewTab {
     Variables,
     Memory,
     Disassembly,
     Trace,
+    Device,
+    Simulator,
 }
 
 struct MemoryView {
@@ -332,6 +481,356 @@ struct DebugSession {
     commands: Sender<DebugCommand>,
 }
 
+
+/// What to do after a successful flash during run orchestration (F9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlashMode {
+    /// Reset-and-run the artifact directly (no debugger attached).
+    Run,
+    /// Attach the debugger after flashing.
+    Debug,
+}
+/// Direct-run (F9 直接运行) state: the spawned artifact, its streaming output
+/// and exit status.
+struct RunState {
+    /// The command line that was launched.
+    command: String,
+    /// Accumulated stdout/stderr of the run, shown in the output panel.
+    output: String,
+    /// True while the child is alive.
+    running: bool,
+    /// Exit code once the child finished (None while running or not started).
+    exit_code: Option<i32>,
+    /// Monotonic id used to discard events from a run replaced by a newer one.
+    generation: u64,
+    /// True once a run has been launched at least once.
+    started: bool,
+    /// Whether the output panel shows the run output (vs the build output).
+    show_run_output: bool,
+    /// Shared child handle so the UI can stop the run from a button.
+    child: Arc<Mutex<Option<Child>>>,
+    /// True after the user pressed stop: the child is killed (Unix reports
+    /// no exit code for signal deaths), so the exit event must not overwrite
+    /// the "运行已停止" status with a misleading `-1`.
+    stopped: bool,
+}
+
+impl Default for RunState {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            output: String::new(),
+            running: false,
+            exit_code: None,
+            generation: 0,
+            started: false,
+            show_run_output: false,
+            child: Arc::new(Mutex::new(None)),
+            stopped: false,
+        }
+    }
+}
+
+/// Events streamed from the run worker thread to the UI.
+enum RunEvent {
+    /// A chunk of program output (stdout or stderr).
+    Output(String),
+    /// The child exited with the given code.
+    Exited(i32),
+}
+/// Git panel state (F14 版本控制): the last snapshot plus the commit-message
+/// input and the currently selected file (for its diff).
+struct GitState {
+    /// Last repository snapshot; empty until a project is loaded.
+    status: git::RepoStatus,
+    /// Commit message input field.
+    message: Option<Entity<TextField>>,
+    /// Path of the file whose diff is shown (project-relative).
+    selected: Option<String>,
+    /// Diff text of the selected file.
+    diff: String,
+    /// Last error, shown in the panel.
+    error: Option<String>,
+    /// Whether the last commit succeeded (for a transient status line).
+    feedback: Option<String>,
+    /// Recent commit history (latest first).
+    history: Vec<git::GitCommit>,
+    /// Local branches (name, current).
+    branches: Vec<(String, bool)>,
+    /// (ahead, behind) versus upstream.
+    ahead_behind: (usize, usize),
+    /// Whether the history section is expanded.
+    show_history: bool,
+}
+
+impl Default for GitState {
+    fn default() -> Self {
+        Self {
+            status: git::RepoStatus {
+                in_repo: false,
+                branch: String::new(),
+                changes: 0,
+                files: Vec::new(),
+            },
+            message: None,
+            selected: None,
+            diff: String::new(),
+            error: None,
+            feedback: None,
+            history: Vec::new(),
+            branches: Vec::new(),
+            ahead_behind: (0, 0),
+            show_history: false,
+        }
+    }
+}
+
+/// Refresh the Git snapshot for the current project root.
+fn refresh_git(app: &mut IdeApp, cx: &mut Context<IdeApp>) {
+    let Some(project) = &app.project else {
+        return;
+    };
+    let root = project.root.clone();
+    app.git.status = git::repo_status(&root);
+    if app.git.status.in_repo {
+        app.git.history = git::log(&root, 50);
+        app.git.branches = git::branches(&root);
+        app.git.ahead_behind = git::ahead_behind(&root);
+    } else {
+        app.git.history.clear();
+        app.git.branches.clear();
+        app.git.ahead_behind = (0, 0);
+    }
+    // Drop the selection if the file is no longer changed.
+    if let Some(selected) = app.git.selected.clone() {
+        if !app.git.status.files.iter().any(|file| file.path == selected) {
+            app.git.selected = None;
+            app.git.diff.clear();
+        }
+    }
+    if let Some(selected) = app.git.selected.clone() {
+        app.git.diff = git::diff(&root, &selected).unwrap_or_default();
+    }
+    cx.notify();
+}
+
+/// Parse the debug probe kind from `project.toml`'s `[debugger] probe`.
+fn probe_kind(value: &str) -> Result<ProbeKind, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "openocd" => Ok(ProbeKind::OpenOcd),
+        "stlink" | "st-link" | "st-util" => Ok(ProbeKind::StLink),
+        "jlink" | "j-link" => Ok(ProbeKind::JLink),
+        "pyocd" | "py-ocd" => Ok(ProbeKind::PyOcd),
+        "probe-rs" | "probe_rs" | "probers" => Ok(ProbeKind::ProbeRs),
+        other => Err(format!(
+            "未知调试探针: {other}（应为 openocd / stlink / jlink / pyocd / probe-rs）"
+        )),
+    }
+}
+
+impl IdeApp {
+    /// Whether the project targets an embedded MCU (a `target` is set), which
+    /// routes debug through the probe GDB server instead of host execution.
+    fn is_embedded_target(&self) -> bool {
+        self.project
+            .as_ref()
+            .map(|project| !project.config.project.target.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Open the Git panel and refresh the repository snapshot.
+    fn show_git(&mut self, cx: &mut Context<Self>) {
+        self.show_output = true;
+        self.output_tab = OutputTab::Git;
+        self.git.error = None;
+        self.git.feedback = None;
+        refresh_git(self, cx);
+        self.ensure_git_message(cx);
+    }
+
+    /// Open the terminal tab, creating a shell session on first use.
+    fn show_terminal(&mut self, cx: &mut Context<Self>) {
+        let settings = ns_project::TerminalSettings::load();
+        self.open_terminal(
+            TerminalConfig {
+                kind: TerminalKind::Shell,
+                program: settings.shell_command(),
+            },
+            cx,
+        );
+    }
+
+    /// Open the serial assistant (串口助手) panel.
+    fn show_serial_monitor(&mut self, cx: &mut Context<Self>) {
+        self.show_output = true;
+        self.output_tab = OutputTab::Serial;
+        if self.serial.is_none() {
+            let serial = cx.new(|cx| SerialMonitor::new(cx));
+            let sub = cx.subscribe(&serial, |this, _serial, event: &SerialEvent, cx| {
+                match event {
+                    SerialEvent::Data => cx.notify(),
+                    SerialEvent::Error(message) => {
+                        this.status = message.clone();
+                        cx.notify();
+                    }
+                }
+            });
+            self.serial = Some(serial);
+            self._serial_sub = Some(sub);
+        }
+        cx.notify();
+    }
+
+    /// Open the agent panel (任务/子代理管理).
+    fn show_agent_panel(&mut self, cx: &mut Context<Self>) {
+        self.show_output = true;
+        self.output_tab = OutputTab::Agent;
+        if self.agent.is_none() {
+            let agent = cx.new(|cx| AgentPanel::new(cx));
+            let poll = agent.clone();
+            cx.spawn(async move |this, cx| {
+                loop {
+                    let changed = poll.update(cx, |agent, _cx| agent.drain_events());
+                    if changed.is_err() {
+                        break;
+                    }
+                    if changed.unwrap_or(false) {
+                        this.update(cx, |_this, cx| cx.notify()).ok();
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(80))
+                        .await;
+                }
+            })
+            .detach();
+            self.agent = Some(agent);
+        }
+        cx.notify();
+    }
+
+    fn open_terminal(&mut self, config: TerminalConfig, cx: &mut Context<Self>) {
+        self.show_output = true;
+        self.output_tab = OutputTab::Terminal;
+        if self.terminal.is_none() {
+            let terminal = cx.new(|cx| Terminal::new(config, cx));
+            let sub = cx.subscribe(&terminal, |this, _terminal, event: &TerminalEvent, cx| {
+                match event {
+                    TerminalEvent::Output | TerminalEvent::Exited(_) => {
+                        this.scroll_terminal_to_bottom = true;
+                        cx.notify();
+                    }
+                }
+            });
+            let poll = terminal.clone();
+            cx.spawn(async move |this, cx| {
+                loop {
+                    let changed = poll.update(cx, |terminal, cx| {
+                        let changed = terminal.drain_events();
+                        if changed {
+                            this.update(cx, |this, cx| {
+                                this.scroll_terminal_to_bottom = true;
+                                cx.notify();
+                            })
+                            .ok();
+                        }
+                        changed
+                    });
+                    if changed.is_err() {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(80))
+                        .await;
+                }
+            })
+            .detach();
+            self.terminal = Some(terminal);
+            self._terminal_sub = Some(sub);
+            if let Some(terminal) = self.terminal.as_ref() {
+                terminal.update(cx, |terminal, _cx| terminal.resize(100, 30));
+            }
+            self.focus_terminal = true;
+            cx.notify();
+        } else {
+            self.focus_terminal = true;
+        }
+        cx.notify();
+    }
+
+    fn ensure_git_message(&mut self, cx: &mut Context<Self>) {
+        if self.git.message.is_none() {
+            self.git.message = Some(cx.new(|cx| TextField::new("提交信息…", cx)));
+        }
+    }
+
+    fn git_select(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        self.git.selected = Some(path.clone());
+        self.git.diff = git::diff(&project.root, &path).unwrap_or_default();
+        self.git.error = None;
+        cx.notify();
+    }
+
+    fn git_stage(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let root = project.root.clone();
+        match git::stage(&root, &path) {
+            Ok(()) => {
+                self.git.error = None;
+                self.git.feedback = Some(format!("已暂存 {path}"));
+            }
+            Err(error) => self.git.error = Some(error),
+        }
+        refresh_git(self, cx);
+    }
+
+    fn git_unstage(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let root = project.root.clone();
+        match git::unstage(&root, &path) {
+            Ok(()) => {
+                self.git.error = None;
+                self.git.feedback = Some(format!("已取消暂存 {path}"));
+            }
+            Err(error) => self.git.error = Some(error),
+        }
+        refresh_git(self, cx);
+    }
+
+    fn git_commit(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let root = project.root.clone();
+        let message = self
+            .git
+            .message
+            .as_ref()
+            .map(|field| field.read(cx).text().trim().to_string())
+            .unwrap_or_default();
+        match git::commit(&root, &message) {
+            Ok(()) => {
+                self.git.error = None;
+                self.git.feedback = Some("已提交".to_string());
+                if let Some(field) = &self.git.message {
+                    field.update(cx, |field, cx| field.set_text("", cx));
+                }
+                self.git.selected = None;
+                self.git.diff.clear();
+            }
+            Err(error) => self.git.error = Some(error),
+        }
+        refresh_git(self, cx);
+    }
+}
+
+
 struct TreeEntry {
     path: PathBuf,
     name: String,
@@ -360,6 +859,9 @@ pub struct IdeApp {
     context_menu: Option<ContextMenuState>,
     condition_dialog: Option<ConditionDialog>,
     watchpoint_dialog: Option<WatchpointDialog>,
+    settings_dialog: Option<SettingsDialog>,
+    set_var_dialog: Option<SetVarDialog>,
+    toolchain_dialog: Option<ToolchainDialog>,
     search: Option<SearchState>,
     palette: Option<PaletteState>,
     focus_dialog_on_next_frame: bool,
@@ -367,6 +869,47 @@ pub struct IdeApp {
     focus_handle: FocusHandle,
     focus_on_next_frame: bool,
     pending_run: bool,
+    pending_flash: Option<FlashMode>,
+    run: RunState,
+    git: GitState,
+    terminal: Option<Entity<Terminal>>,
+    _terminal_sub: Option<Subscription>,
+    scroll_terminal_to_bottom: bool,
+    focus_terminal: bool,
+    /// Serial assistant (串口助手) panel.
+    serial: Option<Entity<SerialMonitor>>,
+    _serial_sub: Option<Subscription>,
+    /// Agent panel (任务/子代理管理), modeled after Zed's agent panel.
+    agent: Option<Entity<AgentPanel>>,
+    _agent_sub: Option<Subscription>,
+    /// Active language server, if connected.
+    lsp: Option<ns_lsp::LspServer>,
+    /// Per-file diagnostics received from the language server.
+    lsp_diagnostics: HashMap<PathBuf, Vec<ns_lsp::LspDiagnostic>>,
+    /// Locations found by the last find-references request.
+    references: Vec<ns_lsp::Location>,
+    /// Items from the last completion request.
+    completions: Vec<ns_lsp::CompletionItem>,
+    /// Whether the completion popup is visible.
+    completion_open: bool,
+    /// Index of the highlighted completion item.
+    completion_selected: usize,
+    /// Signature help shown at the cursor, if any.
+    signature_help: Option<SignatureHelpInfo>,
+    /// Semantic token deltas from the last `semanticTokens/full` request.
+    semantic_tokens: Vec<SemanticToken>,
+    /// Built-in instruction-level simulator session.
+    sim: SimulatorState,
+}
+
+#[derive(Default)]
+struct SimulatorState {
+    /// The running simulator, if a program is loaded.
+    core: Option<ns_sim::Simulator>,
+    /// Whether the simulator panel is visible.
+    panel_open: bool,
+    /// Human-readable status of the last simulator action.
+    status: String,
 }
 
 impl IdeApp {
@@ -392,6 +935,9 @@ impl IdeApp {
             context_menu: None,
             condition_dialog: None,
             watchpoint_dialog: None,
+            settings_dialog: None,
+            set_var_dialog: None,
+            toolchain_dialog: None,
             search: None,
             palette: None,
             focus_dialog_on_next_frame: false,
@@ -399,6 +945,26 @@ impl IdeApp {
             focus_handle: cx.focus_handle(),
             focus_on_next_frame: true,
             pending_run: false,
+            pending_flash: None,
+            run: RunState::default(),
+            git: GitState::default(),
+            terminal: None,
+            _terminal_sub: None,
+            scroll_terminal_to_bottom: false,
+            focus_terminal: false,
+            serial: None,
+            _serial_sub: None,
+            agent: None,
+            _agent_sub: None,
+            lsp: None,
+            lsp_diagnostics: HashMap::new(),
+            references: Vec::new(),
+            completions: Vec::new(),
+            completion_open: false,
+            completion_selected: 0,
+            signature_help: None,
+            semantic_tokens: Vec::new(),
+            sim: SimulatorState::default(),
         };
         if let Some(path) = initial {
             app.open_project_path(path, cx);
@@ -433,11 +999,15 @@ impl IdeApp {
         self.debug = DebugView::default();
         self.debug.trace.config = TraceConfig::load(&root);
         self.pending_debug = false;
+        self.pending_flash = None;
         self.tabs.clear();
         self.active_tab = None;
         self.context_menu = None;
         self.condition_dialog = None;
         self.watchpoint_dialog = None;
+        self.set_var_dialog = None;
+        self.settings_dialog = None;
+        self.toolchain_dialog = None;
         self.search = None;
         self.palette = None;
         self.expanded.clear();
@@ -448,11 +1018,150 @@ impl IdeApp {
         self.build_command.clear();
         self.show_output = false;
         self.build_state = BuildState::Idle;
-        self.status = format!("已打开项目 {name}");
+        let tool_warnings = self
+            .project
+            .as_ref()
+            .map(|project| project.tool_warnings())
+            .unwrap_or_default();
+        if !tool_warnings.is_empty() {
+            self.diagnostics = tool_warnings
+                .into_iter()
+                .map(|issue| Diagnostic {
+                    path: None,
+                    line: None,
+                    column: None,
+                    severity: Severity::Warning,
+                    message: issue.message,
+                    raw: String::new(),
+                })
+                .collect();
+            self.show_output = true;
+            self.output_tab = OutputTab::Problems;
+            self.status = format!(
+                "已打开项目 {name} · {} 个工具未找到",
+                self.diagnostics.len()
+            );
+        } else {
+            self.status = format!("已打开项目 {name}");
+        }
+        self.git = GitState::default();
+        refresh_git(self, cx);
 
         self.open_file(entry, cx);
+        let session = ns_project::Session::load(&root);
+        for file in session.open_files {
+            let path = root.join(&file);
+            if path.exists() && path.is_file() {
+                self.open_file(path, cx);
+            }
+        }
+        if let Some(index) = session.active {
+            if index < self.tabs.len() {
+                self.active_tab = Some(index);
+            }
+        }
+        self.start_lsp(cx);
         self.focus_on_next_frame = true;
         cx.notify();
+    }
+
+    /// Spawn the language server for the project language and poll its events.
+    fn start_lsp(&mut self, cx: &mut Context<Self>) {
+        // Tear down any previous server.
+        if let Some(server) = self.lsp.take() {
+            server.shutdown();
+        }
+        self.lsp_diagnostics.clear();
+
+        let Some(project) = &self.project else {
+            return;
+        };
+        let language = project.config.project.language;
+        let root = project.root.clone();
+
+        // If the server binary is unavailable, report in status but do not fail.
+        if !ns_lsp::server_available(&language) {
+            self.status = format!(
+                "未找到语言服务器（{}）。补全/跳转/诊断不可用。",
+                language_name(&language)
+            );
+            cx.notify();
+            return;
+        }
+
+        match ns_lsp::LspServer::spawn(&language, &root) {
+            Ok(server) => {
+                self.lsp = Some(server);
+                // Open already-loaded tabs so the server indexes them.
+                let files: Vec<(PathBuf, String)> = self
+                    .tabs
+                    .iter()
+                    .filter_map(|tab| {
+                        fs::read_to_string(&tab.path)
+                            .ok()
+                            .map(|text| (tab.path.clone(), text))
+                    })
+                    .collect();
+                if let Some(server) = &self.lsp {
+                    for (path, text) in files {
+                        let _ = server.open_file(path, text);
+                    }
+                }
+                self.status = format!(
+                    "已连接语言服务器（{}）",
+                    language_name(&language)
+                );
+                let poll = cx.spawn(async move |this, cx| {
+                    loop {
+                        let alive = this
+                            .update(cx, |this, cx| this.poll_lsp_events(cx))
+                            .unwrap_or(false);
+                        if !alive {
+                            break;
+                        }
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(120))
+                            .await;
+                    }
+                });
+                poll.detach();
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("语言服务器启动失败: {error}");
+                cx.notify();
+            }
+        }
+    }
+
+    /// Poll the LSP event channel for diagnostics and forward them to the UI.
+    /// Returns `false` when the server has exited (the polling loop should stop).
+    fn poll_lsp_events(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(server) = &self.lsp else {
+            return false;
+        };
+        let mut changed = false;
+        let mut alive = true;
+        loop {
+            match server.try_recv_event() {
+                Some(ns_lsp::LspEvent::Diagnostics { path, diagnostics }) => {
+                    self.lsp_diagnostics.insert(path, diagnostics);
+                    changed = true;
+                }
+                Some(ns_lsp::LspEvent::ServerExit) => {
+                    self.status = "语言服务器已退出".to_string();
+                    self.lsp = None;
+                    changed = true;
+                    alive = false;
+                    break;
+                }
+                None => break,
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+        alive
     }
 
     fn open_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -466,6 +1175,7 @@ impl IdeApp {
 
         match fs::read_to_string(&path) {
             Ok(text) => {
+                let text_for_lsp = text.clone();
                 let language = Language::from_path(&path);
                 let breakpoint_key = self.breakpoint_key(&path);
                 let breakpoint_lines = self.breakpoints.lines(&breakpoint_key);
@@ -474,7 +1184,17 @@ impl IdeApp {
                     editor.set_breakpoints(breakpoint_lines, cx);
                     editor
                 });
-                let subscription = cx.observe(&editor, |_this, _, cx| cx.notify());
+                let version = std::cell::Cell::new(1i32);
+                let did_change_path = path.clone();
+                let subscription = cx.observe(&editor, move |this, editor, cx| {
+                    if let Some(server) = &this.lsp {
+                        let next_version = version.get() + 1;
+                        version.set(next_version);
+                        let text = editor.read(cx).text().to_string();
+                        let _ = server.change_file(did_change_path.clone(), text, next_version);
+                    }
+                    cx.notify();
+                });
                 let breakpoint_subscription = cx.subscribe(
                     &editor,
                     move |this, _editor, event: &BreakpointToggled, cx| {
@@ -503,8 +1223,12 @@ impl IdeApp {
                     _menu_subscription: menu_subscription,
                 });
                 self.active_tab = Some(self.tabs.len() - 1);
+                if let Some(server) = &self.lsp {
+                    let _ = server.open_file(path.clone(), text_for_lsp);
+                }
                 self.status = format!("打开 {}", self.display_path(&path));
                 self.focus_on_next_frame = true;
+                self.save_session(cx);
                 cx.notify();
             }
             Err(error) => {
@@ -587,7 +1311,11 @@ impl IdeApp {
         if index >= self.tabs.len() {
             return;
         }
+        let closed_path = self.tabs.get(index).map(|tab| tab.path.clone());
         self.tabs.remove(index);
+        if let Some(path) = closed_path {
+            self.lsp_diagnostics.remove(&path);
+        }
         match self.active_tab {
             Some(active) if active == index => {
                 self.active_tab = if self.tabs.is_empty() {
@@ -602,6 +1330,7 @@ impl IdeApp {
             _ => {}
         }
         self.focus_on_next_frame = true;
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -609,6 +1338,30 @@ impl IdeApp {
         if index < self.tabs.len() {
             self.active_tab = Some(index);
             self.focus_on_next_frame = true;
+            self.save_session(cx);
+            cx.notify();
+        }
+    }
+
+    /// Persist the current set of open files and active tab to
+    /// `.ns-ide/session.json`. Best-effort; failures are reported to the
+    /// status bar so the user knows the session may not restore.
+    fn save_session(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        let root = project.root.clone();
+        let open_files: Vec<PathBuf> = self
+            .tabs
+            .iter()
+            .filter_map(|tab| tab.path.strip_prefix(&root).ok().map(PathBuf::from))
+            .collect();
+        let session = ns_project::Session {
+            open_files,
+            active: self.active_tab,
+        };
+        if let Err(error) = session.save(&root) {
+            self.status = format!("保存会话失败: {error}");
             cx.notify();
         }
     }
@@ -632,6 +1385,21 @@ impl IdeApp {
     fn active_editor(&self) -> Option<Entity<Editor>> {
         self.active_tab
             .and_then(|index| self.tabs.get(index).map(|tab| tab.editor.clone()))
+    }
+
+    fn find_in_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| editor.open_find(cx));
+            if let Some(field) = editor.read(cx).find_query_field_entity() {
+                window.focus(&field.read(cx).focus_handle(cx));
+            }
+        }
+    }
+
+    fn close_find_in_file(&mut self, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| editor.close_find(cx));
+        }
     }
 
     fn open_wizard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -693,6 +1461,18 @@ impl IdeApp {
         let spec = wizard.spec(cx);
         match Project::create(spec) {
             Ok(project) => {
+                // Generate linker/startup files for the selected target.
+                if let Some(wizard) = &self.wizard {
+                    if let Some((linker_path, startup_path)) =
+                        wizard.generate_device_files(&project.root)
+                    {
+                        self.status = format!(
+                            "已生成设备文件: {} 与 {}",
+                            linker_path.display(),
+                            startup_path.display()
+                        );
+                    }
+                }
                 let name = project.config.project.name.clone();
                 self.wizard = None;
                 self.load_project(project, cx);
@@ -796,6 +1576,7 @@ impl IdeApp {
         };
 
         self.pending_run = run_after;
+        self.run.show_run_output = false;
         self.show_output = true;
         self.output_tab = OutputTab::Output;
         self.build_state = BuildState::Running;
@@ -814,6 +1595,277 @@ impl IdeApp {
                 .ok();
         })
         .detach();
+    }
+
+    fn start_static_analysis(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(plan) = ns_build::plan_static_analysis(project) else {
+            self.show_output = true;
+            self.output_tab = OutputTab::Output;
+            self.build_state = BuildState::Failed(Duration::ZERO);
+            self.output = format!(
+                "未找到适用于 {} 的静态分析工具（clang-tidy / cargo clippy / zig / zr-lint），\n\
+                 请安装后重试。\n",
+                project.config.project.language
+            );
+            self.build_command.clear();
+            self.status = "静态分析: 工具缺失".to_string();
+            cx.notify();
+            return;
+        };
+        self.show_output = true;
+        self.output_tab = OutputTab::Output;
+        self.build_state = BuildState::Running;
+        self.diagnostics.clear();
+        self.build_command = plan.command_line();
+        self.output = format!("$ {}\n\n正在静态分析…\n", self.build_command);
+        self.status = "正在静态分析…".to_string();
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let task = cx
+                .background_executor()
+                .spawn(async move { ns_build::execute(&plan) });
+            let outcome = task.await;
+            this.update(cx, |this, cx| this.finish_static_analysis(outcome, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Flash the built artifact using `project.toml`'s `[flasher]` adapter.
+    fn start_flash(&mut self, cx: &mut Context<Self>) {
+        self.flash_artifact(FlashAction::Flash, None, cx);
+    }
+
+    /// Run an explicit flash action (flash / erase / verify / read-back).
+    fn flash_action(&mut self, action: FlashAction, cx: &mut Context<Self>) {
+        self.flash_artifact(action, None, cx);
+    }
+
+
+    /// Run the flash adapter and, when `mode` is set, continue the F9
+    /// orchestration (reset-and-run or attach the debugger) after success.
+    fn flash_artifact(&mut self, action: FlashAction, mode: Option<FlashMode>, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let artifact = project.artifact_path();
+        // Erase does not need a firmware artifact; the other actions do.
+        if action != FlashAction::Erase && !artifact.exists() {
+            self.show_output = true;
+            self.output_tab = OutputTab::Output;
+            self.output = format!(
+                "✕ 找不到固件 {}。请先构建项目。\n",
+                artifact.display()
+            );
+            self.status = format!("{}失败: 找不到固件", action.label());
+            cx.notify();
+            return;
+        }
+        let adapter = match adapter_for(project) {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                self.show_output = true;
+                self.output_tab = OutputTab::Output;
+                self.output = format!("✕ {error}\n");
+                self.status = format!("{}失败: {error}", action.label());
+                cx.notify();
+                return;
+            }
+        };
+        let read_to = (action == FlashAction::Read).then(|| {
+            artifact.with_extension("readback.bin")
+        });
+        let request = FlashRequest {
+            tool: adapter.tool(),
+            action,
+            firmware: artifact.clone(),
+            interface: project.config.flasher.interface.clone(),
+            read_to,
+            device: None,
+        };
+        self.show_output = true;
+        self.output_tab = OutputTab::Output;
+        self.output = format!(
+            "正在用 {} {} {}…\n",
+            adapter.tool().label(),
+            action.label(),
+            artifact.display()
+        );
+        self.status = format!("正在{} ({})…", action.label(), adapter.tool().label());
+        cx.notify();
+
+
+        let action = request.action;
+        let read_to = request.read_to.clone();
+        cx.spawn(async move |this, cx| {
+            let (tx, rx) = std::sync::mpsc::channel::<String>();
+            let adapter_task = std::thread::spawn({
+                let tx = tx.clone();
+                move || {
+                    // Run the adapter on a blocking thread; stream each line
+                    // over the channel so the UI shows progress live.
+                    let mut on_line = |line: &str| {
+                        let _ = tx.send(format!("{line}\n"));
+                    };
+                    adapter.run(&request, &mut on_line)
+                }
+            });
+            // Drain the channel on the UI thread; after the adapter finishes
+            // (channel closed), join the thread to learn the outcome.
+            let result;
+            let mut done = false;
+            while !done {
+                while let Ok(line) = rx.try_recv() {
+                    let text = line;
+                    if this
+                        .update(cx, |this, cx| {
+                            this.output.push_str(&text);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                if adapter_task.is_finished() {
+                    done = true;
+                } else {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(50))
+                        .await;
+                }
+            }
+            // Drain any remaining lines, then join.
+            while let Ok(line) = rx.try_recv() {
+                let text = line;
+                this.update(cx, |this, cx| {
+                    this.output.push_str(&text);
+                    cx.notify();
+                })
+                .ok();
+            }
+            result = Some(adapter_task.join().expect("adapter thread panicked"));
+            this.update(cx, |this, cx| match result {
+                Some(Ok(outcome)) => {
+                    if !outcome.combined_output().trim().is_empty() {
+                        this.output.push('\n');
+                    }
+                    if outcome.success {
+                        let done = match action {
+                            FlashAction::Flash => format!("烧写完成 ({})", outcome.tool.label()),
+                            FlashAction::Erase => format!("擦除完成 ({})", outcome.tool.label()),
+                            FlashAction::Verify => format!("校验通过 ({})", outcome.tool.label()),
+                            FlashAction::Read => format!(
+                                "读回完成 → {}",
+                                read_to.as_ref().map_or(
+                                    "未知文件".to_string(),
+                                    |p| p.display().to_string()
+                                )
+                            ),
+                        };
+                        this.status = done;
+                        match mode {
+                            Some(FlashMode::Run) => this.spawn_run(cx),
+                            Some(FlashMode::Debug) => {
+                                if this.is_embedded_target() {
+                                    this.launch_embedded_debug(cx);
+                                } else {
+                                    this.launch_debug(cx);
+                                }
+                            }
+                            None => {}
+                        }
+                    } else {
+                        this.status = format!(
+                            "{}失败 ({}: {})",
+                            action.label(),
+                            outcome.tool.label(),
+                            outcome.code.map_or("未知退出码".to_string(), |c| c.to_string())
+                        );
+                    }
+                    cx.notify();
+                }
+                Some(Err(error)) => {
+                    this.output = format!("✕ {error}\n");
+                    this.status = format!("{}失败: {error}", action.label());
+                    cx.notify();
+                }
+                None => {}
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+
+    /// F9 调试运行: build → flash → attach the debugger.
+    fn flash_and_debug(&mut self, cx: &mut Context<Self>) {
+        self.pending_flash = Some(FlashMode::Debug);
+        self.start_build(false, cx);
+    }
+
+    /// F9 直接运行: build → flash → reset-and-run without a debugger.
+    fn flash_and_run(&mut self, cx: &mut Context<Self>) {
+        self.pending_flash = Some(FlashMode::Run);
+        self.start_build(false, cx);
+    }
+
+    /// 嵌入式调试入口: build → flash → attach the probe GDB server.
+    /// Same orchestration as `flash_and_debug` but routed to the embedded
+    /// target when the project sets a `target` MCU.
+    fn start_embedded_debug(&mut self, cx: &mut Context<Self>) {
+        if self.debug_session.is_some() {
+            self.continue_debug(cx);
+            return;
+        }
+        self.pending_flash = Some(FlashMode::Debug);
+        self.start_build(false, cx);
+    }
+
+    fn finish_static_analysis(&mut self, outcome: BuildOutcome, cx: &mut Context<Self>) {
+        let root = self
+            .project
+            .as_ref()
+            .map(|project| project.root.clone())
+            .unwrap_or_default();
+        let diagnostics = outcome.diagnostics(&root);
+        self.diagnostics = diagnostics
+            .into_iter()
+            .filter(|diagnostic| diagnostic.severity != Severity::Info)
+            .collect();
+        self.build_command = outcome.plan.command_line();
+        let mut output = format!("$ {}\n\n", self.build_command);
+        output.push_str(&outcome.combined_output());
+        output.push_str(&format!(
+            "\n[静态分析] {} 个问题 · {:.2}s\n",
+            self.diagnostics.len(),
+            outcome.duration.as_secs_f64()
+        ));
+        self.output = output;
+        self.build_state = if self.diagnostics.is_empty() {
+            BuildState::Success(outcome.duration)
+        } else {
+            BuildState::Failed(outcome.duration)
+        };
+        self.output_tab = if self.diagnostics.is_empty() {
+            OutputTab::Output
+        } else {
+            OutputTab::Problems
+        };
+        self.show_output = true;
+        self.status = format!(
+            "静态分析完成 · {} 个问题",
+            self.diagnostics.len()
+        );
+        cx.notify();
     }
 
     fn finish_build(&mut self, outcome: BuildOutcome, cx: &mut Context<Self>) {
@@ -867,14 +1919,202 @@ impl IdeApp {
                 outcome.duration.as_secs_f64()
             )
         };
+        let should_run = self.pending_run;
         self.pending_run = false;
+        if let Some(mode) = self.pending_flash.take() {
+            if outcome.success {
+                self.flash_artifact(FlashAction::Flash, Some(mode), cx);
+                return;
+            }
+            self.status = "构建失败，烧写未执行".to_string();
+        }
         if self.pending_debug {
             self.pending_debug = false;
             if outcome.success {
-                self.launch_debug(cx);
+                if self.is_embedded_target() {
+                    self.launch_embedded_debug(cx);
+                } else {
+                    self.launch_debug(cx);
+                }
                 return;
             }
             self.status = "构建失败，调试会话未启动".to_string();
+        }
+        if should_run {
+            if outcome.success {
+                self.spawn_run(cx);
+            } else {
+                self.status = "构建失败，未启动运行".to_string();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Stop the current direct run, if any.
+    fn stop_run(&mut self, cx: &mut Context<Self>) {
+        // Signal the child to die; the worker thread owns `wait()` so the UI
+        // thread never blocks on it.
+        if let Ok(mut guard) = self.run.child.lock() {
+            if let Some(child) = guard.as_mut() {
+                let _ = child.kill();
+            }
+        }
+        // Cancel a pending run- after build too: stopping means "do not run".
+        self.pending_run = false;
+        if self.run.running {
+            self.run.running = false;
+            self.run.stopped = true;
+            self.status = "运行已停止".to_string();
+            cx.notify();
+        }
+    }
+
+    /// Restart the run: stop the current process (if any), then rebuild and
+    /// run again. Used by the toolbar restart button and `restart-run`.
+    fn restart_run(&mut self, cx: &mut Context<Self>) {
+        self.stop_run(cx);
+        self.run.started = false;
+        self.run.output.clear();
+        self.start_build(true, cx);
+    }
+
+    /// Spawn the built artifact directly and stream its output (F9 直接运行).
+    fn spawn_run(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let artifact = project.artifact_path();
+        let cwd = project.root.clone();
+        if !artifact.exists() {
+            self.status = format!("找不到运行产物: {}", artifact.display());
+            self.show_output = true;
+            self.output_tab = OutputTab::Output;
+            self.run.output = format!("找不到运行产物: {}\n", artifact.display());
+            cx.notify();
+            return;
+        }
+        self.stop_run(cx);
+        let command_line = artifact.display().to_string();
+        let mut child = match Command::new(&artifact)
+            .current_dir(&cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
+                self.status = format!("启动运行失败: {error}");
+                self.run.output = format!("$ {command_line}\n\n启动失败: {error}\n");
+                self.show_output = true;
+                self.output_tab = OutputTab::Output;
+                cx.notify();
+                return;
+            }
+        };
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let child_shared = self.run.child.clone();
+        *child_shared.lock().unwrap() = Some(child);
+
+        let (sender, receiver) = std::sync::mpsc::channel::<RunEvent>();
+        self.run.command = command_line.clone();
+        self.run.output = format!("$ {command_line}\n\n");
+        self.run.running = true;
+        self.run.exit_code = None;
+        self.run.generation += 1;
+        let generation = self.run.generation;
+        self.run.stopped = false;
+        self.run.started = true;
+        self.output_tab = OutputTab::Output;
+        self.status = "正在运行…".to_string();
+        cx.notify();
+
+        // Worker threads: stream stdout/stderr, then report the exit code.
+        if let Some(stdout) = stdout {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines() {
+                    match line {
+                        Ok(line) => {
+                            if sender.send(RunEvent::Output(format!("{line}\n"))).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        if let Some(stderr) = stderr {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    match line {
+                        Ok(line) => {
+                            if sender.send(RunEvent::Output(format!("{line}\n"))).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        let child_shared_waiter = child_shared.clone();
+        std::thread::spawn(move || {
+            // Take ownership so `wait()` never runs while holding the lock
+            // (the UI's stop button would otherwise block on it).
+            let child = child_shared_waiter.lock().unwrap().take();
+            let code = child
+                .and_then(|mut child| child.wait().ok())
+                .and_then(|status| status.code())
+                .unwrap_or(-1);
+            let _ = sender.send(RunEvent::Exited(code));
+        });
+
+        let receiver = receiver;
+        cx.spawn(async move |this, cx| {
+            while let Ok(event) = receiver.recv() {
+                if this
+                    .update(cx, |this, cx| this.handle_run_event(event, generation, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Apply one run event to the UI state; events from a replaced run are
+    /// discarded so a stale exit never pollutes a newer run's output.
+    fn handle_run_event(&mut self, event: RunEvent, generation: u64, cx: &mut Context<Self>) {
+        if generation != self.run.generation {
+            return;
+        }
+        match event {
+            RunEvent::Output(chunk) => {
+                self.run.output.push_str(&chunk);
+            }
+            RunEvent::Exited(code) => {
+                self.run.running = false;
+                self.run.exit_code = Some(code);
+                // A manual stop kills the child; Unix reports no code for a
+                // signal death, and the stop already set the status, so do not
+                // overwrite it with a misleading `-1`.
+                if self.run.stopped {
+                    self.run.output.push_str("\n[运行已停止]\n");
+                } else {
+                    self.run.output.push_str(&format!(
+                        "\n[进程退出，代码 {code}]\n"
+                    ));
+                    self.status = format!("运行结束 · 退出代码 {code}");
+                }
+            }
         }
         cx.notify();
     }
@@ -966,6 +2206,7 @@ impl IdeApp {
                 } else {
                     None
                 },
+                hardware: breakpoint.kind == BreakpointKind::Hardware,
             })
             .collect();
         let synced_files: HashSet<String> = breakpoints
@@ -994,9 +2235,51 @@ impl IdeApp {
                     })
                     .detach();
 
+                let console_commands = commands.clone();
                 self.debug = DebugView {
                     status: DebugStatus::Running,
                     synced_files,
+                    console_input: Some({
+                        let input = cx.new(|cx| TextField::new("输入表达式，回车求值", cx));
+                        input.update(cx, |field, _cx| {
+                            let commands = console_commands.clone();
+                            field.set_on_submit(move |text, _window, _cx| {
+                                let text = text.trim().to_string();
+                                if text.is_empty() {
+                                    return;
+                                }
+                                let _ = commands.send(DebugCommand::Evaluate {
+                                    expression: text,
+                                    scope_name: "console".to_string(),
+                                });
+                            });
+                        });
+                        input
+                    }),
+                    watch_input: Some({
+                        let app: Entity<IdeApp> = cx.entity();
+                        let input = cx.new(|cx| TextField::new("输入监视表达式，回车添加", cx));
+                        input.update(cx, |field, _cx| {
+                            field.set_on_submit(move |text, _window, _cx| {
+                                let text = text.trim().to_string();
+                                if text.is_empty() {
+                                    return;
+                                }
+                                let app = app.clone();
+                                let _ = app.update(_cx, |this, cx| {
+                                    this.debug.add_watch(&text);
+                                    if let Some(session) = &this.debug_session {
+                                        let _ = session.commands.send(DebugCommand::Evaluate {
+                                            expression: text,
+                                            scope_name: "watch".to_string(),
+                                        });
+                                    }
+                                    cx.notify();
+                                });
+                            });
+                        });
+                        input
+                    }),
                     ..DebugView::default()
                 };
                 self.debug.push_console("调试会话已启动（lldb-dap）".to_string());
@@ -1030,6 +2313,197 @@ impl IdeApp {
         }
     }
 
+    /// Launch an embedded-target debug session: start the probe GDB server
+    /// (OpenOCD / ST-Link / J-Link / pyOCD / probe-rs) and attach a GDB
+    /// client to it via `target remote`.
+    ///
+    /// **Not verified on real hardware.** The probe server commands and the
+    /// GDB MI plumbing are implemented per the upstream project layouts; a
+    /// hardware-in-the-loop run is required before this is considered proven.
+    fn launch_embedded_debug(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        let artifact = project.artifact_path();
+        if !artifact.exists() {
+            self.debug.error = Some(format!("找不到调试产物: {}", artifact.display()));
+            self.debug.push_console(format!(
+                "✕ 找不到调试产物 {}。请先构建项目。",
+                artifact.display()
+            ));
+            self.output_tab = OutputTab::Debug;
+            cx.notify();
+            return;
+        }
+        let probe = match probe_kind(&project.config.debugger.probe) {
+            Ok(probe) => probe,
+            Err(error) => {
+                self.debug.error = Some(error.clone());
+                self.debug.push_console(format!("✕ {error}"));
+                self.output_tab = OutputTab::Debug;
+                self.show_output = true;
+                cx.notify();
+                return;
+            }
+        };
+        let root = project.root.clone();
+        let breakpoints: Vec<ns_debug::DebugBreakpoint> = self
+            .breakpoints
+            .all()
+            .iter()
+            .filter(|breakpoint| breakpoint.enabled)
+            .map(|breakpoint| ns_debug::DebugBreakpoint {
+                path: root.join(&breakpoint.path).display().to_string(),
+                line: breakpoint.line,
+                condition: if breakpoint.kind == BreakpointKind::Conditional
+                    && !breakpoint.condition.trim().is_empty()
+                {
+                    Some(breakpoint.condition.clone())
+                } else {
+                    None
+                },
+                hit_condition: if !breakpoint.hit_count.trim().is_empty() {
+                    Some(breakpoint.hit_count.clone())
+                } else {
+                    None
+                },
+                log_message: if breakpoint.kind == BreakpointKind::Log
+                    && !breakpoint.log_message.trim().is_empty()
+                {
+                    Some(breakpoint.log_message.clone())
+                } else {
+                    None
+                },
+                hardware: breakpoint.kind == BreakpointKind::Hardware,
+            })
+            .collect();
+        let config = EmbeddedConfig {
+            probe,
+            interface: project.config.debugger.interface.clone(),
+            target: project.config.project.target.clone(),
+            probe_path: (!project.config.debugger.server.is_empty())
+                .then(|| project.config.debugger.server.clone()),
+            server_path: (!project.config.debugger.path.is_empty())
+                .then(|| project.expand_path(&project.config.debugger.path)),
+            gdb_path: (!project.config.debugger.gdb.is_empty())
+                .then(|| project.expand_path(&project.config.debugger.gdb)),
+            port: 0,
+            program: artifact,
+            breakpoints,
+        };
+
+        let app: Entity<IdeApp> = cx.entity();
+        self.debug = DebugView {
+            status: DebugStatus::Running,
+            console_input: Some(cx.new(|cx| TextField::new("输入表达式，回车求值", cx))),
+            watch_input: Some({
+                let input = cx.new(|cx| TextField::new("输入监视表达式，回车添加", cx));
+                input.update(cx, |field, _cx| {
+                    let app = app.clone();
+                    field.set_on_submit(move |text, _window, _cx| {
+                        let text = text.trim().to_string();
+                        if text.is_empty() {
+                            return;
+                        }
+                        let app = app.clone();
+                        let _ = app.update(_cx, |this, cx| {
+                            this.debug.add_watch(&text);
+                            if let Some(session) = &this.debug_session {
+                                let _ = session.commands.send(DebugCommand::Evaluate {
+                                    expression: text,
+                                    scope_name: "watch".to_string(),
+                                });
+                            }
+                            cx.notify();
+                        });
+                    });
+                });
+                input
+            }),
+            ..DebugView::default()
+        };
+        self.debug.push_console(format!(
+            "正在启动嵌入式调试（{} · {}）…",
+            probe.label(),
+            config.target
+        ));
+        self.output_tab = OutputTab::Debug;
+        self.show_output = true;
+        self.status = "正在连接目标调试服务器…".to_string();
+        cx.notify();
+
+        // Run the probe server + gdb attach off the UI thread so the handshake
+        // never blocks rendering; the bridge forwards messages back.
+        let handle_config = config.clone();
+        cx.spawn(async move |this, cx| {
+            let task = cx
+                .background_executor()
+                .spawn(async move {
+                    ns_debug::spawn_embedded_debug(&handle_config)
+                });
+            match task.await {
+                Ok(handle) => {
+                    let (messages, commands) = handle.into_parts();
+                    let (bridge_sender, bridge_receiver) =
+                        futures::channel::mpsc::unbounded::<DebugMessage>();
+                    cx.background_executor()
+                        .spawn(async move {
+                            while let Ok(message) = messages.recv() {
+                                if bridge_sender.unbounded_send(message).is_err() {
+                                    break;
+                                }
+                            }
+                        })
+                        .detach();
+                    this.update(cx, |this, cx| {
+                        if let Some(input) = this.debug.console_input.clone() {
+                            let commands = commands.clone();
+                            input.update(cx, |field, _cx| {
+                                field.set_on_submit(move |text, _window, _cx| {
+                                    let text = text.trim().to_string();
+                                    if text.is_empty() {
+                                        return;
+                                    }
+                                    let _ = commands.send(DebugCommand::Evaluate {
+                                        expression: text,
+                                        scope_name: "console".to_string(),
+                                    });
+                                });
+                            });
+                        }
+                        this.debug_session = Some(DebugSession { commands });
+                        this.debug.push_console("嵌入式调试会话已启动".to_string());
+                        this.status = "嵌入式调试会话已启动".to_string();
+                        cx.notify();
+                    })
+                    .ok();
+                    cx.spawn(async move |cx| {
+                        let mut receiver = bridge_receiver;
+                        while let Some(message) = receiver.next().await {
+                            if this
+                                .update(cx, |this, cx| this.handle_debug_message(message, cx))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                }
+                Err(error) => {
+                    this.update(cx, |this, cx| {
+                        this.debug.error = Some(error.to_string());
+                        this.debug.push_console(format!("✕ {error}"));
+                        this.status = "嵌入式调试启动失败".to_string();
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
     fn handle_debug_message(
         &mut self,
         message: DebugMessage,
@@ -1060,7 +2534,21 @@ impl IdeApp {
                     let _ = session.commands.send(DebugCommand::GetStackTrace { thread_id });
                 }
                 self.begin_watchpoint_resolution();
-                self.show_output = true;
+                // Re-evaluate every watch expression at the new stop.
+                let watches: Vec<String> = self
+                    .debug
+                    .watches
+                    .iter()
+                    .map(|watch| watch.expression.clone())
+                    .collect();
+                for expression in watches {
+                    if let Some(session) = &self.debug_session {
+                        let _ = session.commands.send(DebugCommand::Evaluate {
+                            expression,
+                            scope_name: "watch".to_string(),
+                        });
+                    }
+                }
                 self.output_tab = OutputTab::Debug;
                 self.status = format!("调试暂停 · {}", self.debug.status.label());
                 cx.notify();
@@ -1231,17 +2719,43 @@ impl IdeApp {
                 result,
                 type_name,
             } => {
-                let line = match type_name {
-                    Some(type_name) => format!("({type_name}) {expression} = {result}"),
-                    None => format!("{expression} = {result}"),
-                };
-                self.debug.push_console(line);
+                // Watch evaluation updates the watch list; everything else
+                // (console, completion) goes to the console log.
+                let is_watch = self
+                    .debug
+                    .watches
+                    .iter()
+                    .any(|watch| watch.expression == expression);
+                if is_watch {
+                    self.debug.update_watch(&expression, &result);
+                } else {
+                    let line = match type_name {
+                        Some(type_name) => format!("({type_name}) {expression} = {result}"),
+                        None => format!("{expression} = {result}"),
+                    };
+                    self.debug.push_console(line);
+                }
+            }
+            DebugMessage::VariableSet {
+                variables_reference,
+                name,
+                value,
+                ..
+            } => {
+                self.debug.push_console(format!("{name} = {value}"));
+                // Refresh the scope so the new value shows in the variables panel.
+                if let Some(session) = &self.debug_session {
+                    let _ = session.commands.send(DebugCommand::GetVariables {
+                        variables_reference,
+                    });
+                }
             }
             DebugMessage::Terminated => {
                 self.debug.status = DebugStatus::Exited;
                 self.debug.push_console("■ 调试会话已结束".to_string());
                 self.debug_session = None;
                 self.debug.watchpoint_resolution_pending = false;
+                self.debug.trace.armed = false;
                 self.debug.resolving_watchpoints.clear();
                 self.debug.watchpoint_scope_variables.clear();
                 self.breakpoints.clear_watchpoint_hits();
@@ -1355,6 +2869,137 @@ impl IdeApp {
         if tab == DebugViewTab::Trace {
             self.ensure_trace_fields(cx);
         }
+        cx.notify();
+    }
+
+    /// Load the built artifact into the built-in simulator and start a session.
+    fn start_simulation(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let artifact = project.artifact_path();
+        if !artifact.exists() {
+            self.sim.status = format!("找不到产物: {}", artifact.display());
+            self.sim.panel_open = true;
+            self.status = self.sim.status.clone();
+            cx.notify();
+            return;
+        }
+        let Ok(bytes) = std::fs::read(&artifact) else {
+            self.sim.status = format!("读取产物失败: {}", artifact.display());
+            self.sim.panel_open = true;
+            self.status = self.sim.status.clone();
+            cx.notify();
+            return;
+        };
+        let mut core = ns_sim::Simulator::new();
+        // Prefer ELF when the artifact is ELF; otherwise load raw at entry.
+        let is_elf = bytes.len() >= 4 && &bytes[0..4] == b"\x7fELF";
+        if is_elf {
+            match core.load_elf(&bytes) {
+                Ok(_) => {}
+                Err(error) => {
+                    self.sim.status = format!("加载 ELF 失败: {error}");
+                    self.sim.panel_open = true;
+                    self.status = self.sim.status.clone();
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            core.load_image(ns_sim::ENTRY_POINT, &bytes);
+        }
+        // The simulator records UART bytes in `outputs`; the panel reads them
+        // directly, so no extra routing is needed here.
+        core.peripherals.putchar = Box::new(|_| {});
+        self.sim.core = Some(core);
+        self.sim_sync_breakpoints(cx);
+        self.sim.panel_open = true;
+        self.sim.status = format!(
+            "已加载 {} 到仿真器（入口 0x{:x}）",
+            artifact.display(),
+            self.sim.core.as_ref().map(|c| c.pc).unwrap_or(0)
+        );
+        self.status = self.sim.status.clone();
+        self.debug.view_tab = DebugViewTab::Simulator;
+        cx.notify();
+    }
+
+    fn sim_step(&mut self, cx: &mut Context<Self>) {
+        if let Some(core) = self.sim.core.as_mut() {
+            let result = core.step();
+            self.sim.status = match result {
+                ns_sim::StepResult::Halted => "仿真已停止（halted）".to_string(),
+                ns_sim::StepResult::Breakpoint => "命中断点".to_string(),
+                ns_sim::StepResult::Advanced => format!("单步: PC=0x{:x}", core.pc),
+            };
+        }
+        cx.notify();
+    }
+
+    /// Sync the simulator's breakpoints from the active editor's breakpoints,
+    /// mapping source lines to addresses via the ELF line table.
+    fn sim_sync_breakpoints(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        let lines = editor.read(cx).breakpoint_lines();
+        let Some(core) = self.sim.core.as_mut() else {
+            return;
+        };
+        let mut addresses = Vec::new();
+        for line in lines {
+            // The line table maps each source line to its instruction address;
+            // source line N maps to line N in the coarse table.
+            if let Some(address) = core.address_for_line(0, line as u32) {
+                addresses.push(address);
+            }
+        }
+        core.breakpoints = addresses;
+    }
+
+
+    fn sim_run(&mut self, cx: &mut Context<Self>) {
+        self.sim_sync_breakpoints(cx);
+        let Some(core) = self.sim.core.as_mut() else {
+            cx.notify();
+            return;
+        };
+        let result = core.run(1_000_000);
+        let status = match result {
+            ns_sim::StepResult::Halted => format!(
+                "仿真结束: {} 周期, UART 输出 {} 字节",
+                core.cycle_count,
+                core.peripherals.outputs.len()
+            ),
+            ns_sim::StepResult::Breakpoint => {
+                let line = core
+                    .line_for_address(core.pc)
+                    .map(|(_file, line)| format!("（源码第 {line} 行）"))
+                    .unwrap_or_default();
+                format!("命中断点 @ 0x{:x} {line}", core.pc)
+            }
+            ns_sim::StepResult::Advanced => format!("已运行 {} 周期（超时上限）", core.cycle_count),
+        };
+        self.sim.status = status;
+        cx.notify();
+    }
+
+    fn sim_reset(&mut self, cx: &mut Context<Self>) {
+        if let Some(core) = self.sim.core.as_mut() {
+            core.reset(core.pc);
+            self.sim.status = "仿真已复位".to_string();
+        }
+        cx.notify();
+    }
+
+    fn sim_stop(&mut self, cx: &mut Context<Self>) {
+        self.sim.core = None;
+        self.sim.panel_open = false;
+        self.sim.status = "仿真已停止".to_string();
+        self.status = "仿真已停止".to_string();
         cx.notify();
     }
 
@@ -1537,6 +3182,7 @@ impl IdeApp {
     fn variable_rows(
         &self,
         variables: &[Variable],
+        parent_reference: u64,
         depth: usize,
         next_id: &mut usize,
         cx: &mut Context<Self>,
@@ -1545,11 +3191,11 @@ impl IdeApp {
         for variable in variables {
             let row_id = *next_id;
             *next_id += 1;
-            rows.push(self.variable_row(variable, depth, row_id, cx));
+            rows.push(self.variable_row(variable, parent_reference, depth, row_id, cx));
             let reference = variable.variables_reference;
             if reference > 0 && self.debug.expanded.contains(&reference) {
                 if let Some(children) = self.debug.children.get(&reference) {
-                    rows.extend(self.variable_rows(children, depth + 1, next_id, cx));
+                    rows.extend(self.variable_rows(children, reference, depth + 1, next_id, cx));
                 }
             }
         }
@@ -1559,6 +3205,7 @@ impl IdeApp {
     fn variable_row(
         &self,
         variable: &Variable,
+        parent_reference: u64,
         depth: usize,
         row_id: usize,
         cx: &mut Context<Self>,
@@ -1634,6 +3281,25 @@ impl IdeApp {
                     }))
                     .child("👁"),
             )
+            .child(
+                div()
+                    .id(("dbg-var-edit", row_id))
+                    .flex_none()
+                    .ml(px(4.))
+                    .text_size(px(12.))
+                    .text_color(rgb(theme::TEXT_FAINT))
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(rgb(theme::ACCENT_3)))
+                    .on_click(cx.listener({
+                        let name = variable.name.clone();
+                        let value = variable.value.clone();
+                        move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.open_set_var_dialog(parent_reference, &name, &value, cx);
+                        }
+                    }))
+                    .child("✎"),
+            )
             .into_any_element()
     }
 
@@ -1669,10 +3335,11 @@ impl IdeApp {
     }
 
     fn stop_debug(&mut self, cx: &mut Context<Self>) {
+        // Cancel a pending debug after build: stopping means "do not attach".
+        self.pending_debug = false;
         if let Some(session) = self.debug_session.take() {
             let _ = session.commands.send(DebugCommand::Stop);
         }
-        self.debug.status = DebugStatus::Exited;
         self.debug.watchpoint_resolution_pending = false;
         self.debug.resolving_watchpoints.clear();
         self.debug.watchpoint_scope_variables.clear();
@@ -1698,6 +3365,34 @@ impl IdeApp {
         }
         self.debug.status = DebugStatus::Running;
         self.clear_debug_highlights(cx);
+        cx.notify();
+    }
+
+    /// Run the debuggee until the cursor line in the active editor (DAP
+    /// `continueTo` / GDB `until`).
+    fn run_to_cursor(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.debug.status, DebugStatus::Stopped { .. }) {
+            self.status = "程序未暂停，无法运行到光标".to_string();
+            cx.notify();
+            return;
+        }
+        let Some((path, line_0based, _)) = self.cursor_location(cx) else {
+            self.status = "请将光标放在要运行到的行".to_string();
+            cx.notify();
+            return;
+        };
+        let line = line_0based + 1; // DAP/GDB use 1-based lines.
+        let path_string = path.to_string_lossy().into_owned();
+        if let Some(session) = &self.debug_session {
+            let _ = session.commands.send(DebugCommand::ContinueTo {
+                thread_id: self.debug.thread_id,
+                path: path_string,
+                line,
+            });
+        }
+        self.debug.status = DebugStatus::Running;
+        self.clear_debug_highlights(cx);
+        self.status = format!("正在运行到 {}:{line}", path.display());
         cx.notify();
     }
 
@@ -1785,6 +3480,7 @@ impl IdeApp {
                     condition,
                     hit_condition,
                     log_message,
+                    hardware: breakpoint.kind == ns_project::BreakpointKind::Hardware,
                 });
         }
         for locations in by_file.values_mut() {
@@ -2057,6 +3753,22 @@ impl IdeApp {
         self.sync_debugger_breakpoints();
         cx.notify();
     }
+    fn toggle_breakpoint_hardware(&mut self, path: &str, line: usize, cx: &mut Context<Self>) {
+        let Some(hardware) = self.breakpoints.set_hardware(path, line) else {
+            self.status = "该行没有断点，无法切换硬件断点".to_string();
+            cx.notify();
+            return;
+        };
+        self.sync_editor_breakpoints(path, cx);
+        self.status = if hardware {
+            format!("已改为硬件断点 {path}:{line}")
+        } else {
+            format!("已改为软件断点 {path}:{line}")
+        };
+        self.persist_breakpoints();
+        self.sync_debugger_breakpoints();
+        cx.notify();
+    }
 
     fn clear_all_breakpoints(&mut self, cx: &mut Context<Self>) {
         if self.breakpoints.is_empty() {
@@ -2138,6 +3850,295 @@ impl IdeApp {
         cx.notify();
     }
 
+    /// Open the project settings modal, prefilled from `project.toml`. Only
+    /// available when a project is loaded.
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开或新建项目".to_string();
+            cx.notify();
+            return;
+        };
+        let config = project.config.clone();
+        let global_keys = ns_project::ConfigKeys::load();
+        let keys_text = global_keys
+            .keys
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let settings = SettingsDialog {
+            name: settings_field("项目名称", config.project.name, cx),
+            version: settings_field("项目版本", config.project.version, cx),
+            language: settings_field("C | C++ | Rust | Zig | ZR", config.project.language.to_string(), cx),
+            target: settings_field("目标 MCU，例如 stm32f103c8", config.project.target, cx),
+            svd: settings_field(
+                "SVD 设备描述（内置目录键或 .svd 文件路径，留空=按 target 推导）",
+                config.project.svd,
+                cx,
+            ),
+            project_compiler: settings_field("项目编译器（如 arm-none-eabi-gcc）", config.project.compiler, cx),
+            project_simulator: settings_field("仿真器（如 ns-sim）", config.project.simulator, cx),
+            project_debugger: settings_field("调试器（如 gdb）", config.project.debugger, cx),
+            project_flasher: settings_field("烧写器（如 openocd）", config.project.flasher, cx),
+            compiler: settings_field(
+                "编译器路径（留空=从 PATH 发现，支持 $config[\"key\"]）",
+                config.compiler.path,
+                cx,
+            ),
+            compiler_std: settings_field("编译标准（如 c11 / gnu17）", config.compiler.std, cx),
+            compiler_opt: settings_field("优化选项（如 -O2）", config.compiler.opt, cx),
+            compiler_defines: settings_field("宏定义（逗号分隔，如 FOO=1,BAR）", config.compiler.defines.join(","), cx),
+            compiler_includes: settings_field("头文件目录（逗号分隔）", config.compiler.includes.join(","), cx),
+            build_config: settings_field("debug | release", config.build.config, cx),
+            out_dir: settings_field("输出目录", config.build.out_dir, cx),
+            debugger: settings_field(
+                "调试器路径（留空=自动发现，支持 $config[\"key\"]）",
+                config.debugger.path,
+                cx,
+            ),
+            debugger_interface: settings_field("调试接口（swd | jtag）", config.debugger.interface, cx),
+            debugger_server: settings_field("调试服务器/探针路径（可选）", config.debugger.server, cx),
+            debugger_probe: settings_field(
+                "调试探针（openocd | stlink | jlink | pyocd | probe-rs）",
+                config.debugger.probe,
+                cx,
+            ),
+            debugger_gdb: settings_field("GDB 客户端路径（可选）", config.debugger.gdb, cx),
+            flasher: settings_field(
+                "烧写器路径（留空=自动发现，支持 $config[\"key\"]）",
+                config.flasher.path,
+                cx,
+            ),
+            flasher_kind: settings_field(
+                "openocd | pyocd | jlink | stlink | probe-rs",
+                config.flasher.kind,
+                cx,
+            ),
+            flasher_interface: settings_field("烧写接口（swd | jtag）", config.flasher.interface, cx),
+            sim_cpu: settings_field("仿真 CPU（可选）", config.sim.cpu, cx),
+            sim_period: settings_field("仿真周期（周期数，0=默认）", config.sim.period.to_string(), cx),
+            terminal_shell: settings_field(
+                format!(
+                    "终端 shell（留空=默认 {}）",
+                    ns_project::terminal_label(&ns_project::default_terminal_shell())
+                ),
+                ns_project::TerminalSettings::load().shell,
+                cx,
+            ),
+            config_keys: settings_field(
+                "全局配置键（每行 key=value，供 $config[\"key\"] 引用）",
+                keys_text,
+                cx,
+            ),
+        };
+        self.settings_dialog = Some(settings);
+        self.focus_dialog_on_next_frame = true;
+        cx.notify();
+    }
+
+    fn save_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.settings_dialog.take() else {
+            return;
+        };
+        let Some(project) = self.project.as_mut() else {
+            self.status = "没有已加载的项目".to_string();
+            cx.notify();
+            return;
+        };
+        let name = dialog.name.read(cx).text();
+        let version = dialog.version.read(cx).text();
+        let language = dialog.language.read(cx).text();
+        let target = dialog.target.read(cx).text();
+        let svd = dialog.svd.read(cx).text();
+        let project_compiler = dialog.project_compiler.read(cx).text();
+        let project_simulator = dialog.project_simulator.read(cx).text();
+        let project_debugger = dialog.project_debugger.read(cx).text();
+        let project_flasher = dialog.project_flasher.read(cx).text();
+        let compiler = dialog.compiler.read(cx).text();
+        let compiler_std = dialog.compiler_std.read(cx).text();
+        let compiler_opt = dialog.compiler_opt.read(cx).text();
+        let compiler_defines = dialog.compiler_defines.read(cx).text();
+        let compiler_includes = dialog.compiler_includes.read(cx).text();
+        let build_config = dialog.build_config.read(cx).text();
+        let out_dir = dialog.out_dir.read(cx).text();
+        let debugger = dialog.debugger.read(cx).text();
+        let debugger_interface = dialog.debugger_interface.read(cx).text();
+        let debugger_server = dialog.debugger_server.read(cx).text();
+        let debugger_probe = dialog.debugger_probe.read(cx).text();
+        let debugger_gdb = dialog.debugger_gdb.read(cx).text();
+        let flasher = dialog.flasher.read(cx).text();
+        let flasher_kind = dialog.flasher_kind.read(cx).text();
+        let flasher_interface = dialog.flasher_interface.read(cx).text();
+        let sim_cpu = dialog.sim_cpu.read(cx).text();
+        let sim_period = dialog.sim_period.read(cx).text();
+
+        // ---- Validation ----
+        if name.trim().is_empty() {
+            self.status = "项目名称不能为空".to_string();
+            cx.notify();
+            return;
+        }
+        if !matches!(build_config.trim(), "debug" | "release") {
+            self.status = "构建配置必须为 debug 或 release".to_string();
+            cx.notify();
+            return;
+        }
+        let kind = flasher_kind.trim().to_ascii_lowercase();
+        if !matches!(kind.as_str(), "" | "openocd" | "pyocd" | "jlink" | "stlink" | "probe-rs") {
+            self.status = "烧写器类型必须为 openocd / pyocd / jlink / stlink / probe-rs".to_string();
+            cx.notify();
+            return;
+        }
+        let probe = debugger_probe.trim().to_ascii_lowercase();
+        if !matches!(probe.as_str(), "" | "openocd" | "stlink" | "jlink" | "pyocd" | "probe-rs") {
+            self.status = "调试探针必须为 openocd / stlink / jlink / pyocd / probe-rs".to_string();
+            cx.notify();
+            return;
+        }
+        let parsed_language = language.trim().parse::<Language>();
+        let Ok(parsed_language) = parsed_language else {
+            self.status = format!("语言必须为 C / C++ / Rust / Zig / ZR（当前：{language}）");
+            cx.notify();
+            return;
+        };
+        let period = sim_period.trim().parse::<u64>().unwrap_or(0);
+
+        // ---- Write the whole config (project + compiler + debugger + flasher + build + sim) ----
+        project.config.project.name = name;
+        project.config.project.version = version;
+        project.config.project.language = parsed_language;
+        project.config.project.target = target;
+        project.config.project.svd = svd;
+        project.config.project.compiler = project_compiler;
+        project.config.project.simulator = project_simulator;
+        project.config.project.debugger = project_debugger;
+        project.config.project.flasher = project_flasher;
+        project.config.compiler.path = compiler;
+        project.config.compiler.std = compiler_std;
+        project.config.compiler.opt = compiler_opt;
+        project.config.compiler.defines = split_csv(&compiler_defines);
+        project.config.compiler.includes = split_csv(&compiler_includes);
+        project.config.build.config = build_config;
+        project.config.build.out_dir = out_dir;
+        project.config.debugger.path = debugger;
+        project.config.debugger.interface = debugger_interface;
+        project.config.debugger.server = debugger_server;
+        project.config.debugger.probe = probe;
+        project.config.debugger.gdb = debugger_gdb;
+        project.config.flasher.path = flasher;
+        project.config.flasher.kind = kind;
+        project.config.flasher.interface = flasher_interface;
+        project.config.sim.cpu = sim_cpu;
+        project.config.sim.period = period;
+
+        // ---- Global terminal shell (terminal.json) ----
+        let terminal_shell = dialog.terminal_shell.read(cx).text();
+        let mut term_settings = ns_project::TerminalSettings::load();
+        let term_changed = term_settings.shell != terminal_shell;
+        term_settings.shell = terminal_shell;
+        if term_changed {
+            if let Err(error) = term_settings.save() {
+                self.status = format!("保存终端设置失败: {error}");
+                cx.notify();
+                return;
+            }
+        }
+
+        // ---- Global config keys (config.json, `$config["key"]`) ----
+        let keys_text = dialog.config_keys.read(cx).text();
+        let mut global_keys = ns_project::ConfigKeys::load();
+        let mut new_keys = std::collections::BTreeMap::new();
+        for line in keys_text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                new_keys.insert(key.trim().to_string(), value.trim().to_string());
+            }
+        }
+        let keys_changed = new_keys != global_keys.keys;
+        global_keys.keys = new_keys;
+        if keys_changed {
+            if let Err(error) = global_keys.save() {
+                self.status = format!("保存全局配置键失败: {error}");
+                cx.notify();
+                return;
+            }
+        }
+
+        match project.save_config() {
+            Ok(()) => {
+                self.status = "已保存配置到 project.toml".to_string();
+            }
+            Err(error) => {
+                self.status = format!("保存 project.toml 失败: {error}");
+            }
+        }
+        cx.notify();
+    }
+
+    fn cancel_settings(&mut self, cx: &mut Context<Self>) {
+        if self.settings_dialog.take().is_some() {
+            self.status = "已取消设置编辑".to_string();
+            cx.notify();
+        }
+    }
+
+    /// Open the global toolchain path-override dialog. Overrides are stored in
+    /// the user config dir and take precedence over PATH discovery.
+    fn open_toolchain(&mut self, cx: &mut Context<Self>) {
+        let config = ns_project::ToolchainConfig::load();
+        let tool_names: &[&str] = &[
+            "arm-none-eabi-gcc",
+            "arm-none-eabi-gdb",
+            "clang",
+            "gcc",
+            "rustc",
+            "zig",
+            "openocd",
+            "pyocd",
+            "JLinkExe",
+        ];
+        let fields = tool_names
+            .iter()
+            .map(|name| {
+                let value = config.override_path(name).unwrap_or_default();
+                let field = settings_field(
+                    "留空=自动发现",
+                    value.to_string_lossy().into_owned(),
+                    cx,
+                );
+                (*name, field)
+            })
+            .collect();
+        self.toolchain_dialog = Some(ToolchainDialog { fields });
+        self.focus_dialog_on_next_frame = true;
+        cx.notify();
+    }
+
+    fn save_toolchain(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.toolchain_dialog.take() else {
+            return;
+        };
+        let mut config = ns_project::ToolchainConfig::load();
+        for (name, field) in &dialog.fields {
+            config.set_override(name, &field.read(cx).text());
+        }
+        match config.save() {
+            Ok(()) => self.status = "已保存全局工具链路径".to_string(),
+            Err(error) => self.status = format!("保存工具链配置失败: {error}"),
+        }
+        cx.notify();
+    }
+
+    fn cancel_toolchain(&mut self, cx: &mut Context<Self>) {
+        if self.toolchain_dialog.take().is_some() {
+            self.status = "已取消工具链编辑".to_string();
+            cx.notify();
+        }
+    }
+
     /// Open the watchpoint dialog. `initial` prefills the expression (e.g. the
     /// identifier under the cursor); when `expression` is non-empty it edits an
     /// existing watchpoint instead of adding one.
@@ -2205,6 +4206,60 @@ impl IdeApp {
     fn cancel_watchpoint_dialog(&mut self, cx: &mut Context<Self>) {
         if self.watchpoint_dialog.take().is_some() {
             self.status = "已取消观察点编辑".to_string();
+            cx.notify();
+        }
+    }
+
+    /// Open the "set variable value" dialog for a variable in the debug panel.
+    fn open_set_var_dialog(
+        &mut self,
+        reference: u64,
+        name: &str,
+        current: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let current = current.to_string();
+        let field = cx.new(move |cx| {
+            let mut field = TextField::new("新值", cx);
+            if !current.is_empty() {
+                field.set_text(&current, cx);
+            }
+            field
+        });
+        self.set_var_dialog = Some(SetVarDialog {
+            reference,
+            name: name.to_string(),
+            field,
+        });
+        self.context_menu = None;
+        self.focus_dialog_on_next_frame = true;
+        cx.notify();
+    }
+
+    fn save_set_var_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.set_var_dialog.take() else {
+            return;
+        };
+        let value = dialog.field.read(cx).text().trim().to_string();
+        if value.is_empty() {
+            self.status = "变量值不能为空".to_string();
+            cx.notify();
+            return;
+        }
+        if let Some(session) = &self.debug_session {
+            let _ = session.commands.send(DebugCommand::SetVariable {
+                variables_reference: dialog.reference,
+                name: dialog.name.clone(),
+                value: value.clone(),
+            });
+        }
+        self.status = format!("正在设置 {} = {value}", dialog.name);
+        cx.notify();
+    }
+
+    fn cancel_set_var_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.set_var_dialog.take().is_some() {
+            self.status = "已取消变量值编辑".to_string();
             cx.notify();
         }
     }
@@ -2449,14 +4504,32 @@ impl IdeApp {
             "save" => self.save_active(cx),
             "build" => self.start_build(false, cx),
             "run" => self.start_build(true, cx),
+            "restart-run" => self.restart_run(cx),
+            "stop-run" => self.stop_run(cx),
             "debug" => self.start_debug(cx),
+            "embedded-debug" => self.start_embedded_debug(cx),
             "stop-debug" => self.stop_debug(cx),
+            "run-to-cursor" => self.run_to_cursor(cx),
             "find" => self.open_search(window, cx),
             "toggle-output" => {
                 self.show_output = !self.show_output;
                 cx.notify();
             }
             "breakpoints" => self.show_breakpoints(cx),
+            "git" => self.show_git(cx),
+            "static-analysis" => self.start_static_analysis(cx),
+            "terminal" => self.show_terminal(cx),
+            "serial-monitor" => self.show_serial_monitor(cx),
+            "agent" => self.show_agent_panel(cx),
+            "settings" => self.open_settings(cx),
+            "flash" => self.start_flash(cx),
+            "flash-erase" => self.flash_action(FlashAction::Erase, cx),
+            "flash-verify" => self.flash_action(FlashAction::Verify, cx),
+            "flash-read" => self.flash_action(FlashAction::Read, cx),
+            "flash-and-run" => self.flash_and_run(cx),
+            "flash-and-debug" => self.flash_and_debug(cx),
+            "toolchain" => self.open_toolchain(cx),
+            "simulation" => self.start_simulation(cx),
             "clear-breakpoints" => self.clear_all_breakpoints(cx),
             "add-watchpoint" => {
                 let initial = self
@@ -2477,11 +4550,376 @@ impl IdeApp {
             }
             "focus-next-tab" => self.next_tab(true, cx),
             "focus-prev-tab" => self.next_tab(false, cx),
+            "go-to-definition" => self.lsp_go_to_definition(cx),
+            "find-references" => self.lsp_find_references(cx),
+            "hover" => self.lsp_hover(cx),
+            "signature-help" => self.lsp_signature_help(cx),
+            "inlay-hints" => self.lsp_inlay_hints(cx),
+            "semantic-tokens" => self.lsp_semantic_tokens(cx),
+            "show-completion" => self.lsp_completion(cx),
             _ => {
                 self.status = format!("未知命令 {id}");
                 cx.notify();
             }
         }
+    }
+
+    /// Resolve the definition under the cursor and jump to it (LSP).
+    fn lsp_go_to_definition(&mut self, cx: &mut Context<Self>) {
+        let Some((path, line, column)) = self.cursor_location(cx) else {
+            self.status = "没有活动编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(server) = &self.lsp else {
+            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            cx.notify();
+            return;
+        };
+        let Ok(rx) = server.definition(path.clone(), line, column) else {
+            self.status = "无法请求定义（语言服务器不可用）".to_string();
+            cx.notify();
+            return;
+        };
+        self.status = "正在解析定义…".to_string();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let response = rx
+                .recv_timeout(std::time::Duration::from_secs(8))
+                .ok();
+            this.update(cx, |this, cx| {
+                match response {
+                    Some(response) => {
+                        if let Some(location) = parse_definition_location(&response) {
+                            let target_path = location.path.clone();
+                            let target_line = location.line;
+                            this.open_file(target_path, cx);
+                            if let Some(editor) = this.active_editor() {
+                                editor.update(cx, |editor, cx| {
+                                    editor.set_cursor_line(target_line, cx)
+                                });
+                            }
+                            this.status = format!("已跳转到定义（{}:{}）", location.path.display(), location.line);
+                        } else {
+                            this.status = "未找到定义".to_string();
+                        }
+                    }
+                    None => this.status = "定义请求超时".to_string(),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Find references under the cursor (LSP) and report the count.
+    fn lsp_find_references(&mut self, cx: &mut Context<Self>) {
+        let Some((path, line, column)) = self.cursor_location(cx) else {
+            self.status = "没有活动编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(server) = &self.lsp else {
+            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            cx.notify();
+            return;
+        };
+        let Ok(rx) = server.references(path.clone(), line, column) else {
+            self.status = "无法请求引用（语言服务器不可用）".to_string();
+            cx.notify();
+            return;
+        };
+        self.status = "正在查找引用…".to_string();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let response = rx
+                .recv_timeout(std::time::Duration::from_secs(8))
+                .ok();
+            this.update(cx, |this, cx| {
+                match response {
+                    Some(response) => {
+                        let locations = parse_location_list(&response);
+                        if locations.is_empty() {
+                            this.status = "未找到引用".to_string();
+                        } else {
+                            let count = locations.len();
+                            this.references = locations;
+                            this.status = format!("找到 {count} 处引用（Shift+F12 查看）");
+                        }
+                    }
+                    None => this.status = "引用请求超时".to_string(),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Show the hover tooltip at the cursor (LSP) in the status bar.
+    fn lsp_hover(&mut self, cx: &mut Context<Self>) {
+        let Some((path, line, column)) = self.cursor_location(cx) else {
+            self.status = "没有活动编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(server) = &self.lsp else {
+            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            cx.notify();
+            return;
+        };
+        let Ok(rx) = server.hover(path.clone(), line, column) else {
+            self.status = "无法请求悬停提示（语言服务器不可用）".to_string();
+            cx.notify();
+            return;
+        };
+        self.status = "正在获取悬停提示…".to_string();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let response = rx
+                .recv_timeout(std::time::Duration::from_secs(8))
+                .ok();
+            this.update(cx, |this, cx| {
+                match response {
+                    Some(response) => {
+                        let text = parse_hover_text(&response);
+                        if text.is_empty() {
+                            this.status = "无悬停提示".to_string();
+                        } else {
+                            this.status = text;
+                        }
+                    }
+                    None => this.status = "悬停提示请求超时".to_string(),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Request signature help at the cursor (LSP) and show it in the status bar.
+    fn lsp_signature_help(&mut self, cx: &mut Context<Self>) {
+        let Some((path, line, column)) = self.cursor_location(cx) else {
+            self.status = "没有活动编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(server) = &self.lsp else {
+            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            cx.notify();
+            return;
+        };
+        let Ok(rx) = server.signature_help(path.clone(), line, column) else {
+            self.status = "无法请求签名帮助（语言服务器不可用）".to_string();
+            cx.notify();
+            return;
+        };
+        self.status = "正在获取签名帮助…".to_string();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let response = rx
+                .recv_timeout(std::time::Duration::from_secs(8))
+                .ok();
+            this.update(cx, |this, cx| {
+                match response {
+                    Some(response) => {
+                        match parse_signature_help(&response) {
+                            Some(help) => {
+                                this.signature_help = Some(help);
+                                this.status = "签名帮助已就绪".to_string();
+                            }
+                            None => {
+                                this.signature_help = None;
+                                this.status = "无签名帮助".to_string();
+                            }
+                        }
+                    }
+                    None => this.status = "签名帮助请求超时".to_string(),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Request semantic tokens for the active file (LSP) and cache them.
+    fn lsp_semantic_tokens(&mut self, cx: &mut Context<Self>) {
+        let Some((path, _, _)) = self.cursor_location(cx) else {
+            return;
+        };
+        let Some(server) = &self.lsp else {
+            return;
+        };
+        let Ok(rx) = server.semantic_tokens(path) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let response = rx
+                .recv_timeout(std::time::Duration::from_secs(8))
+                .ok();
+            this.update(cx, |this, cx| {
+                if let Some(response) = response {
+                    let tokens = parse_semantic_tokens(&response);
+                    this.semantic_tokens = tokens.clone();
+                    if let Some(editor) = this.active_editor() {
+                        let spans: Vec<crate::editor::SemanticSpan> = tokens
+                            .into_iter()
+                            .map(|token| crate::editor::SemanticSpan {
+                                line: token.line,
+                                start: token.start,
+                                length: token.length,
+                                token_type: token.token_type,
+                            })
+                            .collect();
+                        editor.update(cx, |editor, cx| {
+                            editor.set_semantic_tokens(spans, cx);
+                        });
+                    }
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Request inlay hints for the active file (LSP) and render them.
+    fn lsp_inlay_hints(&mut self, cx: &mut Context<Self>) {
+        let Some((path, line, column)) = self.cursor_location(cx) else {
+            return;
+        };
+        let Some(server) = &self.lsp else {
+            return;
+        };
+        let Ok(rx) = server.inlay_hints(path.clone(), line, column) else {
+            return;
+        };
+        self.status = "正在请求内联提示…".to_string();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let response = rx
+                .recv_timeout(std::time::Duration::from_secs(8))
+                .ok();
+            this.update(cx, |this, cx| {
+                match response {
+                    Some(response) => {
+                        let hints = parse_inlay_hints(&response);
+                        if let Some(editor) = this.active_editor() {
+                            let spans: Vec<crate::editor::InlayHint> = hints
+                                .into_iter()
+                                .map(|hint| crate::editor::InlayHint {
+                                    line: hint.line,
+                                    start: hint.start,
+                                    label: hint.label,
+                                })
+                                .collect();
+                            editor.update(cx, |editor, cx| {
+                                editor.set_inlay_hints(spans, cx);
+                            });
+                        }
+                        this.status = "内联提示已更新".to_string();
+                    }
+                    None => this.status = "内联提示请求超时".to_string(),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Request completion at the cursor (LSP); result is shown in the status bar.
+    fn lsp_completion(&mut self, cx: &mut Context<Self>) {
+        let Some((path, line, column)) = self.cursor_location(cx) else {
+            self.status = "没有活动编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(server) = &self.lsp else {
+            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            cx.notify();
+            return;
+        };
+        let Ok(rx) = server.completion(path.clone(), line, column) else {
+            self.status = "无法请求补全（语言服务器不可用）".to_string();
+            cx.notify();
+            return;
+        };
+        self.status = "正在请求补全…".to_string();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let response = rx
+                .recv_timeout(std::time::Duration::from_secs(8))
+                .ok();
+            this.update(cx, |this, cx| {
+                match response {
+                    Some(response) => {
+                        let items = parse_completion_items(&response);
+                        if items.is_empty() {
+                            this.completion_open = false;
+                            this.status = "无补全项".to_string();
+                        } else {
+                            let count = items.len();
+                            this.completions = items;
+                            this.completion_open = true;
+                            this.completion_selected = 0;
+                            this.status = format!("{count} 个补全项");
+                        }
+                    }
+                    None => this.status = "补全请求超时".to_string(),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Insert the selected completion item's label at the cursor.
+    fn completion_confirm(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.completions.get(self.completion_selected) else {
+            self.completion_open = false;
+            cx.notify();
+            return;
+        };
+        let label = item.label.clone();
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| editor.insert_text(&label, cx));
+        }
+        self.completion_open = false;
+        self.status = "已插入补全".to_string();
+        cx.notify();
+    }
+
+    /// Move the completion selection by `delta`.
+    fn completion_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if !self.completion_open || self.completions.is_empty() {
+            return;
+        }
+        let len = self.completions.len();
+        let current = self.completion_selected as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.completion_selected = next;
+        cx.notify();
+    }
+
+    /// Close the completion popup.
+    fn completion_cancel(&mut self, cx: &mut Context<Self>) {
+        self.completion_open = false;
+        cx.notify();
+    }
+
+    /// Current cursor position as (path, 0-based line, 0-based column).
+    fn cursor_location(&self, cx: &mut Context<Self>) -> Option<(PathBuf, usize, usize)> {
+        let editor = self.active_editor()?;
+        let index = self.active_tab?;
+        let path = self.tabs.get(index)?.path.clone();
+        let (line, column) = editor.read(cx).cursor_line_col();
+        // cursor_line_col is 1-based; LSP uses 0-based.
+        Some((path, line.saturating_sub(1), column.saturating_sub(1)))
     }
 
     fn cancel_condition_dialog(&mut self, cx: &mut Context<Self>) {
@@ -2598,11 +5036,40 @@ impl IdeApp {
                     .child(widgets::primary_button("top-build", "构建").on_click(
                         cx.listener(|this, _, _, cx| this.start_build(false, cx)),
                     ))
-                    .child(widgets::ghost_button("top-run", "运行").on_click(
-                        cx.listener(|this, _, _, cx| this.start_build(true, cx)),
-                    ))
+                    .child(if self.run.running {
+                        widgets::ghost_button("top-stop-run", "■ 停止").on_click(
+                            cx.listener(|this, _, _, cx| this.stop_run(cx)),
+                        )
+                    } else {
+                        widgets::ghost_button("top-run", "运行").on_click(
+                            cx.listener(|this, _, _, cx| this.start_build(true, cx)),
+                        )
+                    })
+                    .when(self.run.started, |style| {
+                        style.child(widgets::ghost_button("top-restart-run", "↻ 重新运行").on_click(
+                            cx.listener(|this, _, _, cx| this.restart_run(cx)),
+                        ))
+                    })
                     .child(widgets::ghost_button("top-debug", "调试").on_click(
                         cx.listener(|this, _, _, cx| this.start_debug(cx)),
+                    ))
+                    .child(widgets::ghost_button("top-flash", "烧写").on_click(
+                        cx.listener(|this, _, _, cx| this.start_flash(cx)),
+                    ))
+                    .child(widgets::ghost_button("top-flash-actions", "擦除").on_click(
+                        cx.listener(|this, _, _, cx| this.flash_action(FlashAction::Erase, cx)),
+                    ))
+                    .child(widgets::ghost_button("top-flash-verify", "校验").on_click(
+                        cx.listener(|this, _, _, cx| this.flash_action(FlashAction::Verify, cx)),
+                    ))
+                    .child(widgets::ghost_button("top-flash-read", "读回").on_click(
+                        cx.listener(|this, _, _, cx| this.flash_action(FlashAction::Read, cx)),
+                    ))
+                    .child(widgets::ghost_button("top-flash-run", "烧写并运行").on_click(
+                        cx.listener(|this, _, _, cx| this.flash_and_run(cx)),
+                    ))
+                    .child(widgets::ghost_button("top-flash-debug", "烧写并调试").on_click(
+                        cx.listener(|this, _, _, cx| this.flash_and_debug(cx)),
                     ))
                     .when(self.debug_session.is_some(), |style| {
                         style.child(widgets::ghost_button("top-stop-debug", "停止").on_click(
@@ -2859,10 +5326,319 @@ impl IdeApp {
                         ),
                 )
             })
-            .child(match active {
-                Some(editor) => div().flex_1().overflow_hidden().child(editor).into_any_element(),
-                None => self.render_empty_editor(cx).into_any_element(),
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .relative()
+                    .overflow_hidden()
+                    .child(match active.as_ref() {
+                        Some(editor) => {
+                            div().flex_1().h_full().overflow_hidden().child(editor.clone()).into_any_element()
+                        }
+                        None => self.render_empty_editor(cx).into_any_element(),
+                    })
+                    .when(self.completion_open && !self.completions.is_empty(), |style| {
+                        style.child(self.render_completion_popup(cx))
+                    })
+                    .when(self.signature_help.is_some(), |style| {
+                        style.child(self.render_signature_help(cx))
+                    })
+                    .when(
+                        active
+                            .as_ref()
+                            .map(|editor| editor.read(cx).find_open())
+                            .unwrap_or(false),
+                        |style| style.child(self.render_find_bar(cx)),
+                    ),
+            )
+    }
+
+    /// Floating signature help panel anchored at the bottom-left of the editor.
+    fn render_signature_help(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(help) = &self.signature_help else {
+            return div().into_any_element();
+        };
+        let label = help.label.clone();
+        let active = help.active_parameter;
+        div()
+            .id("signature-help")
+            .absolute()
+            .left(px(12.))
+            .bottom(px(12.))
+            .max_w(px(560.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::alpha(theme::STROKE, 0.18))
+            .bg(theme::color(theme::BG_1).opacity(0.98))
+            .shadow_lg()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(10.))
+                    .text_color(rgb(theme::ACCENT))
+                    .child("ƒ"),
+            )
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .font_family(theme::MONO_FONT)
+                    .text_color(rgb(theme::TEXT))
+                    .child(label),
+            )
+            .when(active.is_some(), |style| {
+                let _ = cx;
+                style.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(9.5))
+                        .text_color(rgb(theme::TEXT_FAINT))
+                        .child(format!("参数 {}", active.unwrap_or(0) + 1)),
+                )
             })
+            .into_any_element()
+    }
+
+    /// Floating find/replace bar anchored at the top-right of the editor.
+    fn render_find_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(editor) = self.active_editor() else {
+            return div().into_any_element();
+        };
+        let match_count = editor.read(cx).find_match_count();
+        let current = editor.read(cx).find_current();
+        let query_field = editor.read(cx).find_query_field_entity();
+        let replace_field = editor.read(cx).find_replace_field_entity();
+        let count_text = if match_count == 0 {
+            "无结果".to_string()
+        } else {
+            format!("{}/{}", current + 1, match_count)
+        };
+
+        let mut bar = div()
+            .id("find-bar")
+            .absolute()
+            .top(px(8.))
+            .right(px(12.))
+            .w(px(420.))
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .p(px(10.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(theme::alpha(theme::STROKE, 0.18))
+            .bg(theme::color(theme::BG_1).opacity(0.98))
+            .shadow_lg();
+
+        if let Some(field) = query_field {
+            bar = bar.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(div().flex_1().child(field))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(10.))
+                            .text_color(rgb(theme::TEXT_FAINT))
+                            .child(count_text),
+                    ),
+            );
+        }
+        if let Some(field) = replace_field {
+            bar = bar.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(div().flex_1().child(field)),
+            );
+        }
+
+        bar = bar.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .id("find-next")
+                        .flex_none()
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .text_size(px(10.5))
+                        .cursor_pointer()
+                        .bg(theme::alpha(theme::ACCENT, 0.14))
+                        .text_color(rgb(theme::ACCENT))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(editor) = this.active_editor() {
+                                editor.update(cx, |editor, cx| editor.find_next(false, cx));
+                            }
+                        }))
+                        .child("下一个"),
+                )
+                .child(
+                    div()
+                        .id("find-prev")
+                        .flex_none()
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .text_size(px(10.5))
+                        .cursor_pointer()
+                        .bg(theme::alpha(theme::ACCENT, 0.14))
+                        .text_color(rgb(theme::ACCENT))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(editor) = this.active_editor() {
+                                editor.update(cx, |editor, cx| editor.find_next(true, cx));
+                            }
+                        }))
+                        .child("上一个"),
+                )
+                .child(
+                    div()
+                        .id("find-replace")
+                        .flex_none()
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .text_size(px(10.5))
+                        .cursor_pointer()
+                        .bg(theme::alpha(theme::ACCENT, 0.14))
+                        .text_color(rgb(theme::ACCENT))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(editor) = this.active_editor() {
+                                editor.update(cx, |editor, cx| editor.find_replace_current(cx));
+                            }
+                        }))
+                        .child("替换"),
+                )
+                .child(
+                    div()
+                        .id("find-replace-all")
+                        .flex_none()
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .text_size(px(10.5))
+                        .cursor_pointer()
+                        .bg(theme::alpha(theme::ACCENT, 0.14))
+                        .text_color(rgb(theme::ACCENT))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(editor) = this.active_editor() {
+                                editor.update(cx, |editor, cx| editor.find_replace_all(cx));
+                            }
+                        }))
+                        .child("全部替换"),
+                )
+                .child(
+                    div()
+                        .id("find-close")
+                        .flex_none()
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .text_size(px(10.5))
+                        .cursor_pointer()
+                        .text_color(rgb(theme::TEXT_FAINT))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.close_find_in_file(cx);
+                        }))
+                        .child("✕"),
+                ),
+        );
+
+        bar.into_any_element()
+    }
+
+    /// Floating completion popup anchored at the bottom-left of the editor.
+    fn render_completion_popup(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.completion_selected.min(self.completions.len().saturating_sub(1));
+        div()
+            .id("completion-popup")
+            .absolute()
+            .left(px(12.))
+            .bottom(px(12.))
+            .w(px(360.))
+            .max_h(px(260.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::alpha(theme::STROKE, 0.18))
+            .bg(theme::color(theme::BG_1).opacity(0.98))
+            .shadow_lg()
+            .p(px(4.))
+            .children(
+                self.completions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        let is_selected = index == selected;
+                        div()
+                            .id(("completion-item", index))
+                            .px(px(8.))
+                            .py(px(5.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .rounded(px(5.))
+                            .bg(if is_selected {
+                                theme::alpha(theme::ACCENT, 0.16)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.completion_selected = index;
+                                this.completion_confirm(cx);
+                            }))
+                            .child(
+                                div()
+                                    .w(px(70.))
+                                    .flex_none()
+                                    .text_size(px(9.))
+                                    .text_color(rgb(theme::TEXT_FAINT))
+                                    .child(item.kind.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .font_family(theme::MONO_FONT)
+                                    .text_size(px(11.))
+                                    .text_color(if is_selected {
+                                        rgb(theme::TEXT)
+                                    } else {
+                                        rgb(theme::TEXT_DIM)
+                                    })
+                                    .child(item.label.clone()),
+                            )
+                            .when(!item.detail.is_empty(), |style| {
+                                style.child(
+                                    div()
+                                        .flex_none()
+                                        .max_w(px(160.))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_size(px(9.5))
+                                        .text_color(rgb(theme::TEXT_FAINT))
+                                        .child(item.detail.clone()),
+                                )
+                            })
+                    }),
+            )
     }
 
     fn render_empty_editor(&self, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -2903,9 +5679,14 @@ impl IdeApp {
     }
 
     fn render_output(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let problem_count = self.diagnostics.len();
-        let output_lines: Vec<(usize, String)> = self
-            .output
+        let lsp_count: usize = self.lsp_diagnostics.values().map(Vec::len).sum();
+        let problem_count = self.diagnostics.len() + lsp_count;
+        let shown_output = if self.run.show_run_output {
+            &self.run.output
+        } else {
+            &self.output
+        };
+        let output_lines: Vec<(usize, String)> = shown_output
             .lines()
             .enumerate()
             .take(1200)
@@ -2978,6 +5759,46 @@ impl IdeApp {
                                     this.output_tab = OutputTab::Debug;
                                     cx.notify();
                                 })),
+                            )
+                            .child(
+                                output_tab_button(
+                                    "out-tab-git",
+                                    "Git",
+                                    self.output_tab == OutputTab::Git,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_git(cx);
+                                })),
+                            )
+                            .child(
+                                output_tab_button(
+                                    "out-tab-terminal",
+                                    "终端",
+                                    self.output_tab == OutputTab::Terminal,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_terminal(cx);
+                                })),
+                            )
+                            .child(
+                                output_tab_button(
+                                    "out-tab-serial",
+                                    "串口",
+                                    self.output_tab == OutputTab::Serial,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_serial_monitor(cx);
+                                })),
+                            )
+                            .child(
+                                output_tab_button(
+                                    "out-tab-agent",
+                                    "Agent",
+                                    self.output_tab == OutputTab::Agent,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_agent_panel(cx);
+                                })),
                             ),
                     )
                     .child(
@@ -3037,7 +5858,86 @@ impl IdeApp {
                             })
                     }))
                     .into_any_element(),
-                OutputTab::Problems => div()
+                OutputTab::Problems => {
+                let mut lsp_rows: Vec<gpui::AnyElement> = Vec::new();
+                for (path, diagnostics) in &self.lsp_diagnostics {
+                    for diagnostic in diagnostics {
+                        let (tone, glyph) = match diagnostic.severity {
+                            ns_lsp::LspSeverity::Error => (theme::color(theme::DANGER), "✕"),
+                            ns_lsp::LspSeverity::Warning => (theme::color(theme::ACCENT), "!"),
+                            ns_lsp::LspSeverity::Information
+                            | ns_lsp::LspSeverity::Hint => (theme::color(theme::JADE), "i"),
+                        };
+                        let click_path = path.clone();
+                        let line = diagnostic.line;
+                        let location_text = format!("{}:{}:{}", path.display(), diagnostic.line, diagnostic.column);
+                        let message = diagnostic.message.clone();
+                        let row_id = gpui::SharedString::from(format!(
+                            "lsp-problem-{}-{}",
+                            path.display(),
+                            line
+                        ));
+                        lsp_rows.push(
+                            div()
+                                .id(row_id)
+                                .px(px(10.))
+                                .py(px(7.))
+                                .flex()
+                                .items_center()
+                                .gap(px(9.))
+                                .rounded(px(6.))
+                                .bg(theme::alpha(0xffffff, 0.015))
+                                .cursor_pointer()
+                                .hover(|style| style.bg(theme::alpha(theme::STROKE, 0.07)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_file(click_path.clone(), cx);
+                                    if let Some(editor) = this.active_editor() {
+                                        editor.update(cx, |editor, cx| {
+                                            editor.set_cursor_line(line, cx)
+                                        });
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .w(px(15.))
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(tone)
+                                        .child(glyph),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(250.))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .font_family(theme::MONO_FONT)
+                                        .text_size(px(10.5))
+                                        .text_color(rgb(theme::TEXT_DIM))
+                                        .child(location_text),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(theme::TEXT))
+                                        .child(message),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(9.5))
+                                        .text_color(tone)
+                                        .child("LSP"),
+                                )
+                                .into_any_element(),
+                        );
+                    }
+                }
+                div()
                     .id("build-problems-scroll")
                     .flex_1()
                     .overflow_y_scroll()
@@ -3045,7 +5945,7 @@ impl IdeApp {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .when(self.diagnostics.is_empty(), |style| {
+                    .when(self.diagnostics.is_empty() && self.lsp_diagnostics.is_empty(), |style| {
                         style.child(
                             div()
                                 .p(px(12.))
@@ -3110,7 +6010,9 @@ impl IdeApp {
                                     .child(diagnostic.severity.label()),
                             )
                     }))
-                    .into_any_element(),
+                    .children(lsp_rows)
+                    .into_any_element()
+                }
                 OutputTab::Breakpoints => {
                     let total = self.breakpoints.len();
                     let enabled = self.breakpoints.enabled_count();
@@ -3317,8 +6219,363 @@ impl IdeApp {
                         .into_any_element()
                 }
                 OutputTab::Debug => self.render_debug(cx).into_any_element(),
+                OutputTab::Git => self.render_git(cx).into_any_element(),
+                OutputTab::Terminal => self
+                    .terminal
+                    .clone()
+                    .map(|terminal| {
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .child(terminal)
+                            .into_any_element()
+                    })
+                    .unwrap_or_else(|| {
+                        div()
+                            .p(px(12.))
+                            .text_size(px(11.))
+                            .text_color(rgb(theme::TEXT_FAINT))
+                            .child("终端未启动")
+                            .into_any_element()
+                    }),
+                OutputTab::Serial => self
+                    .serial
+                    .clone()
+                    .map(|serial| div().flex_1().overflow_hidden().child(serial).into_any_element())
+                    .unwrap_or_else(|| {
+                        div()
+                            .p(px(12.))
+                            .text_size(px(11.))
+                            .text_color(rgb(theme::TEXT_FAINT))
+                            .child("串口助手未启动")
+                            .into_any_element()
+                    }),
+                OutputTab::Agent => self.render_agent_panel(cx).into_any_element(),
             })
     }
+    /// Git panel: changed files, diff of the selected file, and a commit box.
+    fn render_git(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let in_repo = self.git.status.in_repo;
+        if !in_repo {
+            return div()
+                .id("git-empty")
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(rgb(theme::TEXT_DIM))
+                                .child("当前目录不是 Git 仓库"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(rgb(theme::TEXT_FAINT))
+                                .child("在项目根目录运行 git init 后刷新。"),
+                        ),
+                )
+                .into_any_element();
+        }
+
+        let branch = self.git.status.branch.clone();
+        let changes = self.git.status.changes;
+        let files = self.git.status.files.clone();
+        let selected = self.git.selected.clone();
+        let diff_text = self.git.diff.clone();
+        let error = self.git.error.clone();
+        let feedback = self.git.feedback.clone();
+        let mut file_rows: Vec<gpui::AnyElement> = Vec::new();
+        for (index, file) in files.iter().enumerate() {
+            let path = file.path.clone();
+            let is_selected = selected.as_deref() == Some(path.as_str());
+            let label = file.label();
+            let color = if file.is_untracked() {
+                theme::color(theme::ACCENT)
+            } else if file.is_deleted() {
+                theme::color(theme::CINNABAR)
+            } else {
+                theme::color(theme::JADE)
+            };
+            let staged = file.staged != ' ';
+            let select_path = path.clone();
+            let stage_path = path.clone();
+            let display_path = path.clone();
+            file_rows.push(
+                div()
+                    .id(("git-file", index))
+                    .px(px(8.))
+                    .py(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .rounded(px(5.))
+                    .bg(if is_selected {
+                        theme::alpha(theme::ACCENT, 0.09)
+                    } else {
+                        theme::alpha(0xffffff, 0.0)
+                    })
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::alpha(theme::STROKE, 0.08)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.git_select(select_path.clone(), cx);
+                    }))
+                    .child(
+                        div()
+                            .w(px(20.))
+                            .text_size(px(10.))
+                            .font_family(theme::MONO_FONT)
+                            .text_color(color)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_size(px(11.))
+                            .text_color(if is_selected {
+                                rgb(theme::TEXT)
+                            } else {
+                                rgb(theme::TEXT_DIM)
+                            })
+                            .child(display_path.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(3.))
+                            .child(
+                                div()
+                                    .id(("git-stage", index))
+                                    .px(px(6.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(theme::alpha(theme::STROKE, 0.10))
+                                    .text_size(px(9.))
+                                    .text_color(rgb(theme::TEXT_DIM))
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.16)))
+                                    .child(if staged { "取消暂存" } else { "暂存" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if staged {
+                                            this.git_unstage(stage_path.clone(), cx);
+                                        } else {
+                                            this.git_stage(stage_path.clone(), cx);
+                                        }
+                                    })),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
+
+        // Commit box.
+        let commit_field = self
+            .git
+            .message
+            .clone()
+            .unwrap_or_else(|| cx.new(|cx| TextField::new("提交信息…", cx)));
+        let commit_field_for_render = commit_field.clone();
+        let commit_box = div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(
+                div()
+                    .flex_1()
+                    .child(commit_field_for_render.clone()),
+            )
+            .child(
+                widgets::primary_button("git-commit", "提交")
+                    .on_click(cx.listener(|this, _, _, cx| this.git_commit(cx))),
+            );
+
+        let status_line = if let Some(error) = &error {
+            div()
+                .text_size(px(10.))
+                .text_color(rgb(theme::DANGER))
+                .child(error.clone())
+                .into_any_element()
+        } else if let Some(feedback) = &feedback {
+            div()
+                .text_size(px(10.))
+                .text_color(rgb(theme::JADE))
+                .child(feedback.clone())
+                .into_any_element()
+        } else {
+            div()
+                .text_size(px(10.))
+                .text_color(rgb(theme::TEXT_FAINT))
+                .child(format!("分支 {branch} · {changes} 个变更"))
+                .into_any_element()
+        };
+        let history = self.git.history.clone();
+        let branches = self.git.branches.clone();
+        let show_history = self.git.show_history;
+        let history_toggle = div()
+            .id("git-history-toggle")
+            .px(px(10.))
+            .py(px(4.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::alpha(theme::STROKE, 0.06)))
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(rgb(theme::TEXT_FAINT))
+                    .child(if show_history { "▾" } else { "▸" }),
+            )
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(theme::TEXT_DIM))
+                    .child(format!(
+                        "历史 · 分支（{} 提交 / {} 分支）",
+                        history.len(),
+                        branches.len()
+                    )),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.git.show_history = !this.git.show_history;
+                cx.notify();
+            }));
+
+        let history_section = show_history
+            .then(|| {
+                div()
+                    .id("git-history")
+                    .h(px(150.))
+                    .flex_none()
+                    .overflow_y_scroll()
+                    .border_t_1()
+                    .border_color(theme::alpha(theme::STROKE, 0.08))
+                    .p(px(6.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .children(history.into_iter().map(|commit| {
+                        div()
+                            .px(px(8.))
+                            .py(px(3.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .text_size(px(10.5))
+                                    .text_color(rgb(theme::TEXT))
+                                    .child(commit.subject.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(9.))
+                                    .font_family(theme::MONO_FONT)
+                                    .text_color(rgb(theme::TEXT_FAINT))
+                                    .child(commit.hash.clone()),
+                            )
+                            .into_any_element()
+                    }))
+                    .into_any_element()
+            })
+            .unwrap_or_else(|| div().into_any_element());
+
+        div()
+            .id("git-panel")
+            .flex_1()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(10.))
+                    .py(px(7.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(theme::alpha(theme::STROKE, 0.08))
+                    .child(status_line)
+                    .child(commit_box),
+            )
+            .child(history_toggle)
+            .child(history_section)
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .min_h(px(0.))
+                    .child(
+                        div()
+                            .id("git-files")
+                            .w(px(300.))
+                            .flex_none()
+                            .overflow_y_scroll()
+                            .p(px(6.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .when(files.is_empty(), |style| {
+                                style.child(
+                                    div()
+                                        .p(px(10.))
+                                        .text_size(px(11.))
+                                        .text_color(rgb(theme::TEXT_FAINT))
+                                        .child("工作区干净，没有变更。"),
+                                )
+                            })
+                            .children(file_rows),
+                    )
+                    .child(
+                        div()
+                            .id("git-diff")
+                            .flex_1()
+                            .overflow_scroll()
+                            .p(px(10.))
+                            .font_family(theme::MONO_FONT)
+                            .text_size(px(10.))
+                            .text_color(rgb(theme::TEXT_DIM))
+                            .child(if diff_text.is_empty() {
+                                "选择一个文件查看差异。".to_string()
+                            } else {
+                                diff_text
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The agent panel (任务/子代理管理).
+    fn render_agent_panel(&self, _cx: &mut Context<Self>) -> gpui::AnyElement {
+        self.agent
+            .clone()
+            .map(|agent| div().flex_1().overflow_hidden().child(agent).into_any_element())
+            .unwrap_or_else(|| {
+                div()
+                    .p(px(12.))
+                    .text_size(px(11.))
+                    .text_color(rgb(theme::TEXT_FAINT))
+                    .child("Agent 面板未初始化")
+                    .into_any_element()
+            })
+    }
+
 
     /// The watchpoint (data breakpoint) section of the breakpoints panel.
     fn render_watchpoint_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -3647,6 +6904,14 @@ impl IdeApp {
                                     .child(view_tab_pill("dbg-tab-trace", "跟踪", self.debug.view_tab == DebugViewTab::Trace)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.set_view_tab(DebugViewTab::Trace, cx)
+                                        })))
+                                    .child(view_tab_pill("dbg-tab-device", "设备", self.debug.view_tab == DebugViewTab::Device)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_view_tab(DebugViewTab::Device, cx)
+                                        })))
+                                    .child(view_tab_pill("dbg-tab-sim", "仿真", self.debug.view_tab == DebugViewTab::Simulator)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_view_tab(DebugViewTab::Simulator, cx)
                                         }))),
                             )
                             .child(div().size(px(7.)).rounded_full().bg(status_color))
@@ -3765,6 +7030,8 @@ impl IdeApp {
                             self.render_debug_disassembly_column(cx)
                         }
                         DebugViewTab::Trace => self.render_debug_trace_column(cx),
+                        DebugViewTab::Device => self.render_debug_device_column(cx),
+                        DebugViewTab::Simulator => self.render_simulator_column(cx),
                     })
                     .child(
                         // 控制台
@@ -3822,6 +7089,27 @@ impl IdeApp {
                                         },
                                     )),
                             ),
+                    )
+                    .child(
+                        div()
+                            .px(px(10.))
+                            .py(px(6.))
+                            .border_t_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.08))
+                            .when(self.debug.console_input.is_none(), |style| {
+                                style.child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .text_color(rgb(theme::TEXT_FAINT))
+                                        .child("调试会话未运行"),
+                                )
+                            })
+                            .children(
+                                self.debug
+                                    .console_input
+                                    .iter()
+                                    .map(|field| div().w_full().child(field.clone())),
+                            ),
                     ),
             )
     }
@@ -3876,6 +7164,70 @@ impl IdeApp {
             )
             .child(
                 div()
+                    .px(px(10.))
+                    .pt(px(6.))
+                    .pb(px(4.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(widgets::section_label("监视"))
+                    .children(
+                        self.debug.watches.iter().enumerate().map(|(index, watch)| {
+                            div()
+                                .id(("dbg-watch", index))
+                                .px(px(6.))
+                                .py(px(3.))
+                                .rounded(px(6.))
+                                .flex()
+                                .items_baseline()
+                                .gap(px(6.))
+                                .font_family(theme::MONO_FONT)
+                                .text_size(px(10.5))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme::ACCENT_3))
+                                        .child(watch.expression.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_color(rgb(theme::TEXT_DIM))
+                                        .child(if watch.value.is_empty() {
+                                            "…".to_string()
+                                        } else {
+                                            watch.value.clone()
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id(("dbg-watch-del", index))
+                                        .flex_none()
+                                        .text_size(px(10.))
+                                        .text_color(rgb(theme::TEXT_FAINT))
+                                        .cursor_pointer()
+                                        .hover(|style| style.text_color(rgb(theme::DANGER)))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.debug.remove_watch(index);
+                                            cx.notify();
+                                        }))
+                                        .child("✕")
+                                )
+                        }),
+                    )
+                    .children(
+                        self.debug
+                            .watch_input
+                            .iter()
+                            .map(|field| div().w_full().child(field.clone())),
+                    ),
+            )
+            .child(
+                div()
                     .id("debug-variables-list")
                     .flex_1()
                     .overflow_y_scroll()
@@ -3893,7 +7245,7 @@ impl IdeApp {
                                 .child("没有变量。命中断点后显示。"),
                         )
                     })
-                    .children(self.variable_rows(&self.debug.variables, 0, &mut 0, cx)),
+                    .children(self.variable_rows(&self.debug.variables, 0, 0, &mut 0, cx)),
             )
             .into_any_element()
     }
@@ -4233,7 +7585,7 @@ impl IdeApp {
                         .flex_none()
                         .text_size(px(10.))
                         .text_color(rgb(theme::TEXT_DIM))
-                        .child(label),
+                        .child(label.to_string()),
                 )
                 .child(
                     field
@@ -4333,6 +7685,7 @@ impl IdeApp {
             })
             .child(
                 div()
+                    .id("debug-trace-body")
                     .flex_1()
                     .overflow_y_scroll()
                     .px(px(10.))
@@ -4370,6 +7723,7 @@ impl IdeApp {
                                                 theme::color(theme::TEXT_FAINT)
                                             },
                                         )
+                                        .id("dbg-trace-data-pill")
                                         .cursor_pointer()
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.trace_toggle_data(cx);
@@ -4419,6 +7773,283 @@ impl IdeApp {
                             .child("DWT 数据跟踪监视地址写入；ITM 端口重定向 printf。"),
                     ),
             )
+            .into_any_element()
+    }
+
+    /// Device register view: peripheral registers from the target's SVD.
+    fn render_debug_device_column(&self, _cx: &mut Context<Self>) -> gpui::AnyElement {
+        let device = self.device_for_project();
+
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+
+        match device {
+            Some(device) => {
+                let peripherals = device.sorted_peripherals();
+                if peripherals.is_empty() {
+                    rows.push(
+                        div()
+                            .p(px(12.))
+                            .text_size(px(11.))
+                            .text_color(rgb(theme::TEXT_FAINT))
+                            .child("该目标没有已定义的 SVD 外设。")
+                            .into_any_element(),
+                    );
+                }
+                for peripheral in peripherals {
+                    rows.push(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "dev-periph-{}",
+                                peripheral.name
+                            )))
+                            .pt(px(8.))
+                            .pb(px(3.))
+                            .px(px(4.))
+                            .text_size(px(9.5))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme::color(theme::ACCENT))
+                            .child(format!(
+                                "{}  @ 0x{:08X}",
+                                peripheral.name,
+                                peripheral.base_address
+                            ))
+                            .into_any_element(),
+                    );
+                    for register in &peripheral.registers {
+                        let field_summary: String = register
+                            .fields
+                            .iter()
+                            .map(|field| {
+                                format!("{}[{}:{}]", field.name, field.bit_offset + field.bit_width - 1, field.bit_offset)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        rows.push(
+                            div()
+                                .id(("dev-reg", register.address))
+                                .px(px(4.))
+                                .py(px(2.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .w(px(120.))
+                                        .flex_none()
+                                        .font_family(theme::MONO_FONT)
+                                        .text_size(px(10.))
+                                        .text_color(rgb(theme::TEXT_DIM))
+                                        .child(format!("0x{:08X}", register.address)),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(110.))
+                                        .flex_none()
+                                        .font_family(theme::MONO_FONT)
+                                        .text_size(px(10.))
+                                        .text_color(rgb(theme::TEXT))
+                                        .child(register.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(90.))
+                                        .flex_none()
+                                        .font_family(theme::MONO_FONT)
+                                        .text_size(px(10.))
+                                        .text_color(rgb(theme::TEXT_FAINT))
+                                        .child(format!("0x{:08X}", register.reset_value)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_size(px(9.5))
+                                        .text_color(rgb(theme::TEXT_FAINT))
+                                        .child(field_summary),
+                                )
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
+            None => {
+                let target = self
+                    .project
+                    .as_ref()
+                    .map(|project| project.config.project.target.clone())
+                    .unwrap_or_default();
+                rows.push(
+                    div()
+                        .p(px(12.))
+                        .text_size(px(11.))
+                        .text_color(rgb(theme::TEXT_FAINT))
+                        .child(if target.is_empty() {
+                            "项目未设置目标设备；在「项目设置」或向导中选择 MCU 以显示外设寄存器。".to_string()
+                        } else {
+                            format!("目标设备「{target}」不在内置设备库中，或 SVD 解析失败（stm32f103c8 / stm32f407vg / stm32g431rb / nrf52840 / rp2040 / esp32c3）。")
+                        })
+                        .into_any_element(),
+                );
+            }
+        }
+
+        div()
+            .id("debug-device-scroll")
+            .flex_1()
+            .h_full()
+            .overflow_y_scroll()
+            .p(px(6.))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// Resolve the target device for the loaded project.
+    ///
+    /// Prefers an explicit `svd` source (built-in catalog key or external file
+    /// path); otherwise falls back to deriving the built-in device from the
+    /// project `target`.
+    fn device_for_project(&self) -> Option<ns_device::Device> {
+        let project = self.project.as_ref()?;
+        let svd = project.config.project.svd.trim().to_string();
+        if !svd.is_empty() {
+            if ns_device::catalog_entry(&svd).is_some() {
+                return ns_device::device_for_target(&svd);
+            }
+            let path = project.root.join(&svd);
+            return ns_device::load_svd_file(&path).ok();
+        }
+        let target = project.config.project.target.trim().to_string();
+        if target.is_empty() {
+            return None;
+        }
+        ns_device::device_for_target(&target)
+    }
+
+
+    /// Built-in simulator view: controls, registers, PC, cycle count, UART.
+    fn render_simulator_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+
+        // Control bar.
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    widgets::ghost_button("sim-load", "加载产物并运行")
+                        .on_click(cx.listener(|this, _, _, cx| this.start_simulation(cx))),
+                )
+                .child(
+                    widgets::ghost_button("sim-step", "单步")
+                        .on_click(cx.listener(|this, _, _, cx| this.sim_step(cx))),
+                )
+                .child(
+                    widgets::ghost_button("sim-run", "运行")
+                        .on_click(cx.listener(|this, _, _, cx| this.sim_run(cx))),
+                )
+                .child(
+                    widgets::ghost_button("sim-reset", "复位")
+                        .on_click(cx.listener(|this, _, _, cx| this.sim_reset(cx))),
+                )
+                .child(
+                    widgets::ghost_button("sim-stop", "停止")
+                        .on_click(cx.listener(|this, _, _, cx| this.sim_stop(cx))),
+                )
+        .into_any_element(),
+        );
+
+        // Status line.
+        rows.push(
+            div()
+                .text_size(px(10.))
+                .text_color(rgb(theme::TEXT_DIM))
+                .child(if self.sim.status.is_empty() {
+                    "内建指令级仿真器（RV32I）。点击「加载产物并运行」把构建产物载入仿真器。".to_string()
+                } else {
+                    self.sim.status.clone()
+                })
+                .into_any_element(),
+        );
+
+        if let Some(core) = &self.sim.core {
+            // PC + cycles.
+            rows.push(
+                div()
+                    .flex()
+                    .gap(px(16.))
+                    .text_size(px(10.))
+                    .text_color(rgb(theme::TEXT))
+                    .child(format!("PC: 0x{:08x}", core.pc))
+                    .child(format!("周期: {}", core.cycle_count))
+                    .child(if core.halted { "状态: 已停止" } else { "状态: 运行中" })
+                    .into_any_element(),
+            );
+
+            // Register file (x0..x31), 4 columns.
+            let mut reg_rows: Vec<gpui::AnyElement> = Vec::new();
+            for chunk in (0..ns_sim::REG_COUNT).collect::<Vec<_>>().chunks(4) {
+                let mut cells: Vec<gpui::AnyElement> = Vec::new();
+                for index in chunk {
+                    let value = core.read_reg(*index);
+                    cells.push(
+                        div()
+                            .flex_1()
+                            .px(px(6.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .bg(theme::alpha(theme::STROKE, 0.05))
+                            .text_size(px(9.5))
+                            .child(format!("{}  0x{:08x}", ns_sim::reg_name(*index), value))
+                            .into_any_element(),
+                    );
+                }
+                reg_rows.push(div().flex().gap(px(4.)).children(cells).into_any_element());
+            }
+            rows.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .children(reg_rows)
+                    .into_any_element(),
+            );
+
+            // UART output.
+            let uart: String = String::from_utf8_lossy(&core.peripherals.outputs).into_owned();
+            rows.push(
+                div()
+                    .text_size(px(9.5))
+                    .text_color(rgb(theme::TEXT_FAINT))
+                    .child(if uart.is_empty() {
+                        "UART 输出: （空）".to_string()
+                    } else {
+                        format!("UART 输出: {uart}")
+                    })
+                    .into_any_element(),
+            );
+        } else {
+            rows.push(
+                div()
+                    .text_size(px(10.))
+                    .text_color(rgb(theme::TEXT_FAINT))
+                    .child("未加载程序。先构建项目，再点「加载产物并运行」。")
+                    .into_any_element(),
+            );
+        }
+
+        div()
+            .id("simulator-column")
+            .p(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .children(rows)
             .into_any_element()
     }
 
@@ -4504,6 +8135,41 @@ impl IdeApp {
                     ))
                     .when(self.debug_session.is_some(), |style| {
                         style.child(status_item("调试", self.debug.status.label()))
+                    })
+                    .when(self.project.is_some(), |style| {
+                        let git_label = if self.git.status.in_repo {
+                            format!(
+                                "{} · {} 变更",
+                                self.git.status.branch,
+                                self.git.status.changes
+                            )
+                        } else {
+                            "非 Git 仓库".to_string()
+                        };
+                        style.child(
+                            div()
+                                .id("status-git")
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .cursor_pointer()
+                                .hover(|s| s.opacity(0.8))
+                                .on_click(cx.listener(|this, _, _, cx| this.show_git(cx)))
+                                .child(status_item("Git", git_label)),
+                        )
+                    })
+                    .when(self.run.started, |style| {
+                        let label = if self.run.running {
+                            format!("运行中 · {}", self.run.command)
+                        } else {
+                            format!(
+                                "已退出 ({})",
+                                self.run.exit_code
+                                    .map(|code| code.to_string())
+                                    .unwrap_or_else(|| "?".to_string())
+                            )
+                        };
+                        style.child(status_item("运行", label))
                     }),
             )
     }
@@ -4720,12 +8386,26 @@ impl Render for IdeApp {
                 window.focus(&self.focus_handle);
             }
         }
+        if self.focus_terminal {
+            self.focus_terminal = false;
+            if let Some(terminal) = self.terminal.as_ref() {
+                window.focus(&terminal.read(cx).focus_handle());
+            }
+        }
         if self.focus_dialog_on_next_frame {
             self.focus_dialog_on_next_frame = false;
             if let Some(dialog) = &self.condition_dialog {
                 window.focus(&dialog.field.read(cx).focus_handle(cx));
             } else if let Some(dialog) = &self.watchpoint_dialog {
                 window.focus(&dialog.field.read(cx).focus_handle(cx));
+            } else if let Some(dialog) = &self.set_var_dialog {
+                window.focus(&dialog.field.read(cx).focus_handle(cx));
+            } else if let Some(dialog) = &self.settings_dialog {
+                window.focus(&dialog.name.read(cx).focus_handle(cx));
+            } else if let Some(dialog) = &self.toolchain_dialog {
+                if let Some((_, field)) = dialog.fields.first() {
+                    window.focus(&field.read(cx).focus_handle(cx));
+                }
             }
         }
 
@@ -4741,7 +8421,11 @@ impl Render for IdeApp {
             .track_focus(&self.focus_handle)
             .key_context(if self.wizard.is_some() {
                 "Wizard"
-            } else if self.condition_dialog.is_some() || self.watchpoint_dialog.is_some() {
+            } else if self.condition_dialog.is_some()
+                || self.watchpoint_dialog.is_some()
+                || self.settings_dialog.is_some()
+                || self.toolchain_dialog.is_some()
+            {
                 "Dialog"
             } else if self.search.is_some() {
                 "Search"
@@ -4773,10 +8457,13 @@ impl Render for IdeApp {
             }))
             .on_action(cx.listener(|this, _: &NextTab, _, cx| this.next_tab(true, cx)))
             .on_action(cx.listener(|this, _: &PrevTab, _, cx| this.next_tab(false, cx)))
+            .on_action(cx.listener(|this, _: &Settings, _, cx| this.open_settings(cx)))
+            .on_action(cx.listener(|this, _: &Flash, _, cx| this.start_flash(cx)))
             .on_action(cx.listener(|this, _: &QuitApp, _, cx| {
                 if let Some(session) = this.debug_session.take() {
                     let _ = session.commands.send(DebugCommand::Stop);
                 }
+                this.save_session(cx);
                 cx.quit()
             }))
             .on_action(cx.listener(|this, _: &WizardNext, _, cx| {
@@ -4802,6 +8489,9 @@ impl Render for IdeApp {
             .on_action(cx.listener(|this, _: &FindInProject, window, cx| {
                 this.open_search(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &FindInFile, window, cx| {
+                this.find_in_file(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &SearchConfirm, _, cx| this.confirm_search(cx)))
             .on_action(cx.listener(|this, _: &SearchSelectUp, _, cx| {
                 this.move_search_selection(-1, cx)
@@ -4814,6 +8504,11 @@ impl Render for IdeApp {
                     this.save_condition_dialog(cx);
                 } else if this.watchpoint_dialog.is_some() {
                     this.save_watchpoint_dialog(cx);
+                } else if this.set_var_dialog.is_some() {
+                    this.save_set_var_dialog(cx);
+                } else if this.settings_dialog.is_some() {
+                } else if this.toolchain_dialog.is_some() {
+                    this.save_toolchain(cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &Debug, _, cx| this.start_debug(cx)))
@@ -4827,6 +8522,9 @@ impl Render for IdeApp {
             .on_action(cx.listener(|this, _: &DebugStepOut, _, cx| {
                 this.debug_step(DebugStep::Out, cx)
             }))
+            .on_action(cx.listener(|this, _: &RunToCursor, _, cx| {
+                this.run_to_cursor(cx)
+            }))
             .on_action(cx.listener(|this, _: &EscapeModal, _, cx| {
                 if this.wizard.is_some() {
                     this.wizard_cancel(cx);
@@ -4834,6 +8532,12 @@ impl Render for IdeApp {
                     this.cancel_condition_dialog(cx);
                 } else if this.watchpoint_dialog.is_some() {
                     this.cancel_watchpoint_dialog(cx);
+                } else if this.set_var_dialog.is_some() {
+                    this.cancel_set_var_dialog(cx);
+                } else if this.settings_dialog.is_some() {
+                    this.cancel_settings(cx);
+                } else if this.toolchain_dialog.is_some() {
+                    this.cancel_toolchain(cx);
                 } else if this.search.is_some() {
                     this.close_search(cx);
                 } else if this.palette.is_some() {
@@ -4841,6 +8545,39 @@ impl Render for IdeApp {
                 } else if this.context_menu.is_some() {
                     this.context_menu = None;
                     cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &GoToDefinition, _, cx| {
+                this.lsp_go_to_definition(cx)
+            }))
+            .on_action(cx.listener(|this, _: &FindReferences, _, cx| {
+                this.lsp_find_references(cx)
+            }))
+            .on_action(cx.listener(|this, _: &Hover, _, cx| this.lsp_hover(cx)))
+            .on_action(cx.listener(|this, _: &SignatureHelp, _, cx| {
+                this.lsp_signature_help(cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowCompletion, _, cx| {
+                this.lsp_completion(cx)
+            }))
+            .on_action(cx.listener(|this, _: &PaletteSelectUp, _, cx| {
+                if this.completion_open {
+                    this.completion_move(-1, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &PaletteSelectDown, _, cx| {
+                if this.completion_open {
+                    this.completion_move(1, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &PaletteConfirm, _, cx| {
+                if this.completion_open {
+                    this.completion_confirm(cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &EscapeModal, _, cx| {
+                if this.completion_open {
+                    this.completion_cancel(cx);
                 }
             }))
             .child(
@@ -4930,6 +8667,28 @@ impl Render for IdeApp {
                             this.open_condition_dialog(&path, menu_line, cx);
                         }))
                         .into_any_element(),
+                );
+                let hardware = self
+                    .breakpoints
+                    .find(&menu_path, menu_line)
+                    .map(|breakpoint| breakpoint.kind == ns_project::BreakpointKind::Hardware)
+                    .unwrap_or(false);
+                let path = menu_path.clone();
+                items.push(
+                    item(
+                        "ctx-toggle-hardware",
+                        if hardware {
+                            "改用软件断点"
+                        } else {
+                            "改用硬件断点"
+                        },
+                        false,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.context_menu = None;
+                        this.toggle_breakpoint_hardware(&path, menu_line, cx);
+                    }))
+                    .into_any_element(),
                 );
                 let path = menu_path.clone();
                 items.push(
@@ -5162,6 +8921,325 @@ impl Render for IdeApp {
                                         widgets::primary_button("wp-save", "保存").on_click(
                                             cx.listener(|this, _, _, cx| {
                                                 this.save_watchpoint_dialog(cx)
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.set_var_dialog {
+            let field = dialog.field.clone();
+            let name = dialog.name.clone();
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .w(px(460.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(rgb(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(theme::TEXT))
+                                            .child("修改变量值"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .child(format!("变量 `{name}` 的新值")),
+                                    ),
+                            )
+                            .child(div().child(field))
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(widgets::ghost_button("setvar-cancel", "取消").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.cancel_set_var_dialog(cx)
+                                        }),
+                                    ))
+                                    .child(widgets::primary_button("setvar-save", "设置").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.save_set_var_dialog(cx)
+                                        }),
+                                    )),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.settings_dialog {
+            let name = dialog.name.clone();
+            let version = dialog.version.clone();
+            let language = dialog.language.clone();
+            let target = dialog.target.clone();
+            let project_compiler = dialog.project_compiler.clone();
+            let project_simulator = dialog.project_simulator.clone();
+            let project_debugger = dialog.project_debugger.clone();
+            let project_flasher = dialog.project_flasher.clone();
+            let compiler = dialog.compiler.clone();
+            let compiler_std = dialog.compiler_std.clone();
+            let compiler_opt = dialog.compiler_opt.clone();
+            let compiler_defines = dialog.compiler_defines.clone();
+            let compiler_includes = dialog.compiler_includes.clone();
+            let build_config = dialog.build_config.clone();
+            let out_dir = dialog.out_dir.clone();
+            let debugger = dialog.debugger.clone();
+            let debugger_interface = dialog.debugger_interface.clone();
+            let debugger_server = dialog.debugger_server.clone();
+            let debugger_probe = dialog.debugger_probe.clone();
+            let debugger_gdb = dialog.debugger_gdb.clone();
+            let flasher = dialog.flasher.clone();
+            let flasher_kind = dialog.flasher_kind.clone();
+            let flasher_interface = dialog.flasher_interface.clone();
+            let sim_cpu = dialog.sim_cpu.clone();
+            let sim_period = dialog.sim_period.clone();
+            let terminal_shell = dialog.terminal_shell.clone();
+            let config_keys = dialog.config_keys.clone();
+            let row = |label: &'static str, field: Entity<TextField>| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .w(px(110.))
+                            .text_size(px(11.))
+                            .text_color(rgb(theme::TEXT_FAINT))
+                            .child(label),
+                    )
+                    .child(div().flex_1().child(field))
+                    .into_any_element()
+            };
+            let section = |title: &'static str| {
+                div()
+                    .mt(px(6.))
+                    .pt(px(8.))
+                    .border_t_1()
+                    .border_color(theme::alpha(theme::STROKE, 0.1))
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(theme::ACCENT))
+                    .child(title)
+                    .into_any_element()
+            };
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .w(px(640.))
+                            .h(px(560.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(rgb(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(theme::TEXT))
+                                            .child("项目设置"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .child("编辑 project.toml 全部字段与全局设置；保存后立即写入配置文件。"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("settings-scroll")
+                                    .flex_1()
+                                    .overflow_y_scroll()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(10.))
+                                    .child(section("项目 [project]"))
+                                    .child(row("名称", name))
+                                    .child(row("版本", version))
+                                    .child(row("语言", language))
+                                    .child(row("目标 MCU", target))
+                                    .child(row("编译器", project_compiler))
+                                    .child(row("仿真器", project_simulator))
+                                    .child(row("调试器", project_debugger))
+                                    .child(row("烧写器", project_flasher))
+                                    .child(section("编译器 [compiler]"))
+                                    .child(row("编译器路径", compiler))
+                                    .child(row("标准", compiler_std))
+                                    .child(row("优化", compiler_opt))
+                                    .child(row("宏定义", compiler_defines))
+                                    .child(row("头文件目录", compiler_includes))
+                                    .child(section("构建 [build]"))
+                                    .child(row("配置", build_config))
+                                    .child(row("输出目录", out_dir))
+                                    .child(section("调试器 [debugger]"))
+                                    .child(row("调试器路径", debugger))
+                                    .child(row("接口", debugger_interface))
+                                    .child(row("服务器/探针", debugger_server))
+                                    .child(row("探针类型", debugger_probe))
+                                    .child(row("GDB 客户端", debugger_gdb))
+                                    .child(section("烧写器 [flasher]"))
+                                    .child(row("烧写器路径", flasher))
+                                    .child(row("类型", flasher_kind))
+                                    .child(row("接口", flasher_interface))
+                                    .child(section("仿真 [sim]"))
+                                    .child(row("CPU", sim_cpu))
+                                    .child(row("周期", sim_period))
+                                    .child(section("全局设置（跨项目）"))
+                                    .child(row("终端 shell", terminal_shell))
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .child("留空=平台默认（Windows: cmd，Linux/macOS: bash），保存到 terminal.json。"),
+                                    )
+                                    .child(row("全局配置键", config_keys))
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .child("每行 key=value，供 $config[\"key\"] 在路径/命令中引用，保存到 config.json。"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        widgets::ghost_button("settings-cancel", "取消").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.cancel_settings(cx)
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        widgets::primary_button("settings-save", "保存").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.save_settings(cx)
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.toolchain_dialog {
+            let fields = dialog.fields.clone();
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .w(px(560.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(rgb(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(theme::TEXT))
+                                            .child("全局工具链路径"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .child("覆盖自动发现；留空 = 从 PATH 探测。保存在用户配置目录，跨项目共享。"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(10.))
+                                    .children(fields.into_iter().map(|(name, field)| {
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .child(
+                                                div()
+                                                    .w(px(150.))
+                                                    .text_size(px(11.))
+                                                    .text_color(rgb(theme::TEXT_FAINT))
+                                                    .child(name),
+                                            )
+                                            .child(div().flex_1().child(field))
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        widgets::ghost_button("tc-cancel", "取消").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.cancel_toolchain(cx)
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        widgets::primary_button("tc-save", "保存").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.save_toolchain(cx)
                                             }),
                                         ),
                                     ),
@@ -5703,4 +9781,276 @@ fn parse_hex_address(text: &str) -> Option<u64> {
         .or_else(|| trimmed.strip_prefix("0X"))
         .unwrap_or(trimmed);
     u64::from_str_radix(hex, 16).ok()
+}
+
+/// Parse a single `textDocument/definition` response into a location.
+fn parse_definition_location(response: &serde_json::Value) -> Option<ns_lsp::Location> {
+    let result = response.get("result")?;
+    let location = result.as_object()?;
+    let uri = location.get("uri")?.as_str()?;
+    let path = uri.strip_prefix("file://").map(std::path::PathBuf::from)?;
+    let range = location.get("range")?;
+    let start = range.get("start")?;
+    let line = start.get("line")?.as_u64()? as usize;
+    let column = start.get("character")?.as_u64()? as usize;
+    Some(ns_lsp::Location {
+        path,
+        line: line + 1,
+        column: column + 1,
+    })
+}
+
+/// Parse a `textDocument/references` response into a list of locations.
+fn parse_location_list(response: &serde_json::Value) -> Vec<ns_lsp::Location> {
+    let result = response.get("result");
+    let Some(items) = result.and_then(|result| result.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let uri = item.get("uri")?.as_str()?;
+            let path = uri.strip_prefix("file://").map(std::path::PathBuf::from)?;
+            let range = item.get("range")?;
+            let start = range.get("start")?;
+            let line = start.get("line")?.as_u64()? as usize;
+            let column = start.get("character")?.as_u64()? as usize;
+            Some(ns_lsp::Location {
+                path,
+                line: line + 1,
+                column: column + 1,
+            })
+        })
+        .collect()
+}
+
+/// Extract the hover text from a `textDocument/hover` response.
+fn parse_hover_text(response: &serde_json::Value) -> String {
+    let result = response.get("result");
+    let Some(contents) = result.and_then(|result| result.get("contents")) else {
+        return String::new();
+    };
+    if let Some(value) = contents.get("value").and_then(|value| value.as_str()) {
+        return value.to_string();
+    }
+    if let Some(value) = contents.as_str() {
+        return value.to_string();
+    }
+    if let Some(array) = contents.as_array() {
+        return array
+            .iter()
+            .filter_map(|item| item.get("value").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    String::new()
+}
+
+/// Parse a `textDocument/completion` response into completion items.
+fn parse_completion_items(response: &serde_json::Value) -> Vec<ns_lsp::CompletionItem> {
+    let result = response.get("result");
+    let Some(items) = result.and_then(|result| {
+        result
+            .get("items")
+            .and_then(|items| items.as_array())
+            .or_else(|| result.as_array())
+    }) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let label = item.get("label")?.as_str()?.to_string();
+            let detail = item.get("detail").and_then(|value| value.as_str()).unwrap_or("").to_string();
+            let kind = item
+                .get("kind")
+                .and_then(|value| value.as_i64())
+                .map(|kind| completion_kind(kind))
+                .unwrap_or_default();
+            Some(ns_lsp::CompletionItem { label, detail, kind })
+        })
+        .collect()
+}
+
+/// Map an LSP completion item kind code to a human-readable label.
+fn completion_kind(kind: i64) -> String {
+    let label = match kind {
+        1 => "Text",
+        2 => "Method",
+        3 => "Function",
+        4 => "Constructor",
+        5 => "Field",
+        6 => "Variable",
+        7 => "Class",
+        8 => "Interface",
+        9 => "Module",
+        10 => "Property",
+        11 => "Unit",
+        12 => "Value",
+        13 => "Enum",
+        14 => "Keyword",
+        15 => "Snippet",
+        16 => "Color",
+        17 => "File",
+        18 => "Reference",
+        19 => "Folder",
+        20 => "EnumMember",
+        21 => "Constant",
+        22 => "Struct",
+        23 => "Event",
+        24 => "Operator",
+        25 => "TypeParameter",
+        _ => "Text",
+    };
+    label.to_string()
+}
+
+/// Signature help shown at the cursor (LSP `textDocument/signatureHelp`).
+struct SignatureHelpInfo {
+    /// Human-readable signature line(s).
+    label: String,
+    /// 0-based index of the active parameter, if the server reports one.
+    active_parameter: Option<usize>,
+}
+
+/// A single decoded semantic token (LSP `semanticTokens/full`).
+#[derive(Clone)]
+struct SemanticToken {
+    /// 0-based line.
+    line: usize,
+    /// 0-based start character.
+    start: usize,
+    /// Length in UTF-16 code units.
+    length: usize,
+    /// Semantic token type index.
+    token_type: usize,
+}
+
+/// Parse a `textDocument/signatureHelp` response.
+fn parse_signature_help(response: &serde_json::Value) -> Option<SignatureHelpInfo> {
+    let result = response.get("result")?;
+    if result.is_null() {
+        return None;
+    }
+    let signatures = result.get("signatures")?.as_array()?;
+    let signature = signatures.first()?;
+    let label = signature
+        .get("label")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    if label.is_empty() {
+        return None;
+    }
+    let active_parameter = result
+        .get("activeParameter")
+        .and_then(|value| value.as_u64())
+        .map(|index| index as usize);
+    Some(SignatureHelpInfo {
+        label,
+        active_parameter,
+    })
+}
+
+/// Parse a `textDocument/semanticTokens/full` response into absolute tokens.
+fn parse_semantic_tokens(response: &serde_json::Value) -> Vec<SemanticToken> {
+    let result = response.get("result");
+    let Some(data) = result.and_then(|result| result.get("data")).and_then(|data| data.as_array()) else {
+        return Vec::new();
+    };
+    let mut tokens = Vec::new();
+    let mut line = 0usize;
+    let mut start = 0usize;
+    let mut chunk = data.chunks_exact(5);
+    for group in &mut chunk {
+        let delta_line = group[0].as_u64().unwrap_or(0) as usize;
+        let delta_start = group[1].as_u64().unwrap_or(0) as usize;
+        let length = group[2].as_u64().unwrap_or(0) as usize;
+        let token_type = group[3].as_u64().unwrap_or(0) as usize;
+        if delta_line == 0 {
+            start += delta_start;
+        } else {
+            line += delta_line;
+            start = delta_start;
+        }
+        tokens.push(SemanticToken {
+            line,
+            start,
+            length,
+            token_type,
+        });
+    }
+    tokens
+}
+
+/// A single decoded inlay hint (LSP `textDocument/inlayHint`).
+struct InlayHintInfo {
+    /// 0-based line.
+    line: usize,
+    /// 0-based start character.
+    start: usize,
+    /// Label to render.
+    label: String,
+}
+
+/// Parse a `textDocument/inlayHint` response into absolute hints.
+fn parse_inlay_hints(response: &serde_json::Value) -> Vec<InlayHintInfo> {
+    let Some(items) = response
+        .get("result")
+        .and_then(|result| result.as_array())
+    else {
+        return Vec::new();
+    };
+    let mut hints = Vec::new();
+    for item in items {
+        let Some(line) = item
+            .pointer("/position/line")
+            .and_then(|value| value.as_u64())
+        else {
+            continue;
+        };
+        let Some(start) = item
+            .pointer("/position/character")
+            .and_then(|value| value.as_u64())
+        else {
+            continue;
+        };
+        let label = item
+            .get("label")
+            .and_then(|label| label.as_str())
+            .map(|label| label.to_string())
+            .or_else(|| {
+                item.get("label")
+                    .and_then(|label| label.as_array())
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|part| part.get("value").and_then(|v| v.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+            })
+            .unwrap_or_default();
+        if label.is_empty() {
+            continue;
+        }
+        hints.push(InlayHintInfo {
+            line: line as usize,
+            start: start as usize,
+            label,
+        });
+    }
+    hints
+}
+
+
+/// Human-readable name for a project language.
+fn language_name(language: &Language) -> &'static str {
+    match language {
+        Language::C => "C",
+        Language::Cpp => "C++",
+        Language::Rust => "Rust",
+        Language::Zig => "Zig",
+        Language::ZR => "ZR",
+    }
 }

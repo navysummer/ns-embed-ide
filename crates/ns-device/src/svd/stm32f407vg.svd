@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<device>
+  <name>STM32F407VG</name>
+  <vendor>STMicroelectronics</vendor>
+  <cpu><name>CM4</name></cpu>
+  <peripherals>
+    <peripheral>
+      <name>RCC</name>
+      <baseAddress>0x40023800</baseAddress>
+      <description>Reset and clock control</description>
+      <registers>
+        <register><name>CR</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Clock control</description></register>
+        <register><name>AHB1ENR</name><addressOffset>0x30</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>AHB1 peripheral clock enable</description><fields>
+          <field><name>GPIOAEN</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>GPIOBEN</name><bitOffset>1</bitOffset><bitWidth>1</bitWidth></field>
+        </fields></register>
+        <register><name>APB1ENR</name><addressOffset>0x40</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>APB1 peripheral clock enable</description></register>
+        <register><name>APB2ENR</name><addressOffset>0x44</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>APB2 peripheral clock enable</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>GPIOA</name>
+      <baseAddress>0x40020000</baseAddress>
+      <description>General purpose I/O A</description>
+      <registers>
+        <register><name>MODER</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0xA8000000</resetValue><description>Mode</description></register>
+        <register><name>IDR</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Input data</description></register>
+        <register><name>ODR</name><addressOffset>0x14</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output data</description></register>
+        <register><name>BSRR</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Bit set/reset</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>USART1</name>
+      <baseAddress>0x40011000</baseAddress>
+      <description>Universal synchronous/asynchronous receiver/transmitter</description>
+      <registers>
+        <register><name>SR</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Status</description></register>
+        <register><name>DR</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Data</description></register>
+        <register><name>BRR</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Baud rate</description></register>
+        <register><name>CR1</name><addressOffset>0xC</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Control 1</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>TIM2</name>
+      <baseAddress>0x40000000</baseAddress>
+      <description>General purpose timer</description>
+      <registers>
+        <register><name>CR1</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Control 1</description></register>
+        <register><name>CNT</name><addressOffset>0x24</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Counter</description></register>
+        <register><name>PSC</name><addressOffset>0x28</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Prescaler</description></register>
+        <register><name>ARR</name><addressOffset>0x2C</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Auto-reload</description></register>
+      </registers>
+    </peripheral>
+  </peripherals>
+  <memory>
+    <memory><name>FLASH</name><start>0x08000000</start><size>0x100000</size><access>rx</access></memory>
+    <memory><name>RAM</name><start>0x20000000</start><size>0x20000</size><access>rw</access></memory>
+  </memory>
+</device>

@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<device>
+  <name>RP2040</name>
+  <vendor>Raspberry Pi</vendor>
+  <cpu><name>CM0PLUS</name></cpu>
+  <peripherals>
+    <peripheral>
+      <name>RESETS</name>
+      <baseAddress>0x4000C000</baseAddress>
+      <description>Reset control</description>
+      <registers>
+        <register><name>RESET</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Reset</description></register>
+        <register><name>RESET_DONE</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Reset done</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>CLOCKS</name>
+      <baseAddress>0x40008000</baseAddress>
+      <description>Clock control</description>
+      <registers>
+        <register><name>CLK_SYS_CTRL</name><addressOffset>0x2C</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>System clock control</description></register>
+        <register><name>CLK_PERI_CTRL</name><addressOffset>0x44</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Peripheral clock control</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>PIO0</name>
+      <baseAddress>0x50200000</baseAddress>
+      <description>Programmable I/O 0</description>
+      <registers>
+        <register><name>CTRL</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Control</description></register>
+        <register><name>FSTAT</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>FIFO status</description></register>
+        <register><name>FLEVEL</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>FIFO level</description></register>
+        <register><name>TXF</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>FIFO write</description></register>
+        <register><name>RXF</name><addressOffset>0x14</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>FIFO read</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>UART0</name>
+      <baseAddress>0x40034000</baseAddress>
+      <description>Universal asynchronous receiver/transmitter</description>
+      <registers>
+        <register><name>DR</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Data</description></register>
+        <register><name>FR</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Flag</description></register>
+        <register><name>IBRD</name><addressOffset>0x24</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Integer baud rate</description></register>
+        <register><name>FBRD</name><addressOffset>0x28</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Fractional baud rate</description></register>
+        <register><name>LCR_H</name><addressOffset>0x2C</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Line control</description></register>
+        <register><name>CR</name><addressOffset>0x30</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Control</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>I2C0</name>
+      <baseAddress>0x40044000</baseAddress>
+      <description>I2C controller 0</description>
+      <registers>
+        <register><name>CON</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Control</description></register>
+        <register><name>DATA_CMD</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Data/command</description></register>
+        <register><name>FS_SCL_HCNT</name><addressOffset>0x14</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Fast mode SCL high count</description></register>
+        <register><name>FS_SCL_LCNT</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Fast mode SCL low count</description></register>
+      </registers>
+    </peripheral>
+  </peripherals>
+  <memory>
+    <memory><name>FLASH</name><start>0x10000000</start><size>0x200000</size><access>rx</access></memory>
+    <memory><name>RAM</name><start>0x20000000</start><size>0x40000</size><access>rw</access></memory>
+  </memory>
+</device>

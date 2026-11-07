@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<device>
+  <name>ESP32-C3</name>
+  <vendor>Espressif Systems</vendor>
+  <cpu><name>RISC-V</name></cpu>
+  <peripherals>
+    <peripheral>
+      <name>GPIO</name>
+      <baseAddress>0x60004000</baseAddress>
+      <description>General purpose I/O</description>
+      <registers>
+        <register><name>OUT</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output</description></register>
+        <register><name>OUT_W1TS</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output set</description></register>
+        <register><name>OUT_W1TC</name><addressOffset>0xC</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output clear</description></register>
+        <register><name>IN</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Input</description></register>
+        <register><name>ENABLE</name><addressOffset>0x20</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Enable</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>UART0</name>
+      <baseAddress>0x6000F000</baseAddress>
+      <description>Universal asynchronous receiver/transmitter</description>
+      <registers>
+        <register><name>CONF0</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Configuration</description></register>
+        <register><name>FIFO</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Data FIFO</description></register>
+        <register><name>INT_ENA</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Interrupt enable</description></register>
+        <register><name>CLKDIV</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Clock divider</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>SPI0</name>
+      <baseAddress>0x60003000</baseAddress>
+      <description>SPI controller</description>
+      <registers>
+        <register><name>CMD</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Command</description></register>
+        <register><name>ADDR</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Address</description></register>
+        <register><name>USER</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>User config</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>RTC_TIMER</name>
+      <baseAddress>0x60008000</baseAddress>
+      <description>RTC timer</description>
+      <registers>
+        <register><name>TIME_LOW</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Time low</description></register>
+        <register><name>TIME_HIGH</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Time high</description></register>
+      </registers>
+    </peripheral>
+  </peripherals>
+  <memory>
+    <memory><name>FLASH</name><start>0x3FC00000</start><size>0x400000</size><access>rx</access></memory>
+    <memory><name>RAM</name><start>0x3FC80000</start><size>0x10000</size><access>rw</access></memory>
+  </memory>
+</device>

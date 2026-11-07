@@ -10,9 +10,10 @@ use crate::app::IdeApp;
 use crate::text_field::TextField;
 use crate::{theme, widgets};
 
-pub const STEPS: [&str; 8] = [
+pub const STEPS: [&str; 9] = [
     "项目信息",
     "编程语言",
+    "项目模板",
     "编译器",
     "仿真软件",
     "调试软件",
@@ -31,7 +32,12 @@ pub struct Wizard {
     pub debugger: String,
     pub flasher: String,
     pub target: String,
+    /// C starter template (LED Blink / UART Loopback / empty).
+    pub c_template: ns_project::CTemplate,
     pub error: Option<String>,
+    /// Memoized `tool --version` output per tool name, so the wizard does not
+    /// spawn a subprocess on every frame while the toolchain step is visible.
+    versions: std::cell::RefCell<std::collections::HashMap<String, Option<String>>>,
 }
 
 impl Wizard {
@@ -67,7 +73,9 @@ impl Wizard {
             debugger,
             flasher,
             target,
+            c_template: ns_project::CTemplate::Empty,
             error: None,
+            versions: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -84,6 +92,28 @@ impl Wizard {
         self.error = None;
     }
 
+    /// Display subtitle for a tool: installed path plus detected version (memoized),
+    /// or the install hint when the tool is missing.
+    fn tool_subtitle(&self, tool: &toolchain::Tool) -> Option<String> {
+        let Some(path) = tool.path.as_ref() else {
+            return toolchain::missing_guide(&tool.name).map(str::to_string);
+        };
+        let mut cache = self.versions.borrow_mut();
+        let version = cache
+            .entry(tool.name.clone())
+            .or_insert_with(|| tool.version());
+        let version = version.clone().unwrap_or_default();
+        if version.is_empty() {
+            Some(path.display().to_string())
+        } else {
+            Some(format!("{} · {}", path.display(), version))
+        }
+    }
+
+    fn tool_available(&self, tool: &toolchain::Tool) -> bool {
+        tool.available()
+    }
+
     pub fn spec(&self, cx: &App) -> NewProjectSpec {
         NewProjectSpec {
             name: self.name.read(cx).text().trim().to_string(),
@@ -97,6 +127,16 @@ impl Wizard {
                 String::new()
             } else {
                 self.target.clone()
+            },
+            svd: if self.target == "custom" || self.target.is_empty() {
+                String::new()
+            } else {
+                self.target.clone()
+            },
+            c_template: if self.language == Language::C {
+                Some(self.c_template)
+            } else {
+                None
             },
         }
     }
@@ -116,51 +156,68 @@ impl Wizard {
         let content = match step {
             0 => self.render_basics(cx),
             1 => self.render_languages(cx),
-            2 => self.render_tool_step(
+            2 => self.render_template(cx),
+            3 => self.render_tool_step(
                 cx,
                 "编译器",
                 "按语言列出可用的编译器；未检测到的工具也可以先选择，稍后安装。",
                 toolchain::compilers(self.language)
                     .into_iter()
-                    .map(|tool| (tool.name, tool.path.map(|path| path.display().to_string()), true))
+                    .map(|tool| {
+                        let subtitle = self.tool_subtitle(&tool);
+                        let available = self.tool_available(&tool);
+                        (tool.name, subtitle, available)
+                    })
                     .collect(),
                 StepKind::Compiler,
                 false,
             ),
-            3 => self.render_tool_step(
+            4 => self.render_tool_step(
                 cx,
                 "仿真软件",
                 "选择仿真器，或暂时跳过。仿真能力将在后续里程碑接入。",
                 toolchain::simulators(self.language)
                     .into_iter()
-                    .map(|tool| (tool.name, tool.path.map(|path| path.display().to_string()), true))
+                    .map(|tool| {
+                        let subtitle = self.tool_subtitle(&tool);
+                        let available = self.tool_available(&tool);
+                        (tool.name, subtitle, available)
+                    })
                     .collect(),
                 StepKind::Simulator,
                 true,
             ),
-            4 => self.render_tool_step(
+            5 => self.render_tool_step(
                 cx,
                 "调试软件",
                 "选择 GDB / LLDB 或厂商调试器，用于之后的断点与寄存器视图。",
                 toolchain::debuggers(self.language)
                     .into_iter()
-                    .map(|tool| (tool.name, tool.path.map(|path| path.display().to_string()), true))
+                    .map(|tool| {
+                        let subtitle = self.tool_subtitle(&tool);
+                        let available = self.tool_available(&tool);
+                        (tool.name, subtitle, available)
+                    })
                     .collect(),
                 StepKind::Debugger,
                 true,
             ),
-            5 => self.render_tool_step(
+            6 => self.render_tool_step(
                 cx,
                 "烧写软件",
                 "选择 OpenOCD / pyOCD / J-Link 等烧写器。",
                 toolchain::flashers(self.language)
                     .into_iter()
-                    .map(|tool| (tool.name, tool.path.map(|path| path.display().to_string()), true))
+                    .map(|tool| {
+                        let subtitle = self.tool_subtitle(&tool);
+                        let available = self.tool_available(&tool);
+                        (tool.name, subtitle, available)
+                    })
                     .collect(),
                 StepKind::Flasher,
                 true,
             ),
-            6 => self.render_targets(cx),
+            7 => self.render_targets(cx),
             _ => self.render_summary(cx),
         };
 
@@ -481,6 +538,53 @@ impl Wizard {
             .into_any_element()
     }
 
+    /// Template selection for C projects: empty / LED Blink / UART Loopback.
+    fn render_template(&self, cx: &mut Context<IdeApp>) -> AnyElement {
+        if self.language != Language::C {
+            return self
+                .heading("项目模板", "仅 C 项目可选模板；其他语言使用默认入口文件。")
+                .into_any_element();
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(18.))
+            .child(self.heading(
+                "选择项目模板",
+                "模板决定 src/main.c 的初始内容；之后可随时编辑。",
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .children(
+                        ns_project::CTemplate::ALL
+                            .iter()
+                            .copied()
+                            .enumerate()
+                            .map(|(index, template)| {
+                                let selected = template == self.c_template;
+                                option_row(
+                                    ("wizard-template", index),
+                                    template.label().to_string(),
+                                    String::new(),
+                                    selected,
+                                    true,
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(wizard) = this.wizard.as_mut() {
+                                        wizard.c_template = template;
+                                    }
+                                    cx.notify();
+                                }))
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+
     fn render_tool_step(
         &self,
         cx: &mut Context<IdeApp>,
@@ -506,10 +610,19 @@ impl Wizard {
                     .gap(px(7.))
                     .children(options.into_iter().enumerate().map(|(index, (name, path, _))| {
                         let is_selected = selected == name;
+                        let subtitle = match &path {
+                            Some(path) => path.clone(),
+                            None if name == "跳过" => "不选择此工具".to_string(),
+                            None => {
+                                let guide = toolchain::missing_guide(&name)
+                                    .unwrap_or("未在 PATH 中找到；请安装后重试");
+                                format!("未在 PATH 中找到 · 安装: {guide}")
+                            }
+                        };
                         option_row(
                             ("wizard-tool", index),
                             name.clone(),
-                            path.clone().unwrap_or_else(|| "未在 PATH 中找到".to_string()),
+                            subtitle,
                             is_selected,
                             path.is_some() || name == "跳过",
                         )
@@ -522,6 +635,21 @@ impl Wizard {
                     })),
             )
             .into_any_element()
+    }
+
+
+
+
+
+    pub fn generate_device_files(&self, root: &std::path::Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        let linker = ns_device::linker_script(&self.target)?;
+        let startup = ns_device::startup_file(&self.target)?;
+        let linker_path = root.join("link.ld");
+        let startup_path = root.join("src").join("startup.s");
+        let _ = std::fs::create_dir_all(root.join("src"));
+        let _ = std::fs::write(&linker_path, linker);
+        let _ = std::fs::write(&startup_path, startup);
+        Some((linker_path, startup_path))
     }
 
     fn render_targets(&self, cx: &mut Context<IdeApp>) -> AnyElement {
@@ -572,6 +700,32 @@ impl Wizard {
                         })),
                     ),
             )
+            .when(ns_device::catalog_entry(&self.target).is_some(), |style| {
+                let entry = ns_device::catalog_entry(&self.target).unwrap();
+                style.child(
+                    div()
+                        .mt(px(6.))
+                        .px(px(12.))
+                        .py(px(9.))
+                        .rounded(px(6.))
+                        .bg(theme::alpha(theme::ACCENT, 0.07))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(rgb(theme::TEXT))
+                                .child(format!("{} 核 · Flash {}KB · RAM {}KB", entry.core, entry.flash_size / 1024, entry.ram_size / 1024)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(9.5))
+                                .text_color(rgb(theme::TEXT_FAINT))
+                                .child("生成项目时将自动写入链接脚本（link.ld）与启动文件（src/startup.s）；设备寄存器可在调试面板「设备」页查看。"),
+                        ),
+                )
+            })
             .into_any_element()
     }
 

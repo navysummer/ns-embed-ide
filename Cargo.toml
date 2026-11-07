@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ns-project", "crates/ns-build", "crates/ns-debug", "crates/ns-ide"]
+members = ["crates/ns-project", "crates/ns-build", "crates/ns-debug", "crates/ns-flash", "crates/ns-lsp", "crates/ns-device", "crates/ns-sim", "crates/ns-zr", "crates/ns-ide"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,6 +22,10 @@ unicode-segmentation = "1"
 ns-build = { path = "crates/ns-build" }
 ns-debug = { path = "crates/ns-debug" }
 ns-project = { path = "crates/ns-project" }
+ns-flash = { path = "crates/ns-flash" }
+ns-lsp = { path = "crates/ns-lsp" }
+ns-device = { path = "crates/ns-device" }
+ns-sim = { path = "crates/ns-sim" }
 
 [profile.dev]
 opt-level = 1

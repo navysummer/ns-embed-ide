@@ -22,8 +22,13 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 pub mod swvd;
+pub mod embedded;
 
 pub use dap::{read_message, wait_for_response, write_message};
+pub use embedded::{
+    EmbeddedConfig, EmbeddedDebugHandle, ProbeKind, find_gdb, parse_elf_symbols,
+    server_command, spawn_embedded_debug, start_server,
+};
 pub use swvd::{Probe, TraceConfig, TraceMode, find_probe, package_support};
 
 /// One breakpoint to be applied in the debuggee.
@@ -41,8 +46,12 @@ pub struct DebugBreakpoint {
     /// Optional log message printed instead of pausing (`{expr}` placeholders
     /// allowed); mapped to the DAP `logMessage` field.
     pub log_message: Option<String>,
+    /// Use a hardware breakpoint (DAP `mode: "hardware"`) instead of the
+    /// default software breakpoint. Hardware breakpoints consume a limited
+    /// on-target resource; the adapter reports a pending breakpoint when the
+    /// target cannot bind one.
+    pub hardware: bool,
 }
-
 /// One breakpoint location inside a source file, with its DAP properties.
 /// Used as the per-line payload in [`group_breakpoints`] and
 /// [`DebugCommand::ResyncBreakpoints`].
@@ -56,6 +65,8 @@ pub struct DebugBreakpointLocation {
     pub hit_condition: Option<String>,
     /// Optional DAP `logMessage` value (log instead of pause).
     pub log_message: Option<String>,
+    /// Use a hardware breakpoint (DAP `mode: "hardware"`).
+    pub hardware: bool,
 }
 
 /// Outcome of applying one breakpoint, as confirmed by the adapter.
@@ -77,6 +88,7 @@ impl DebugBreakpoint {
             condition: self.condition.clone(),
             hit_condition: self.hit_condition.clone(),
             log_message: self.log_message.clone(),
+            hardware: self.hardware,
         }
     }
 }
@@ -227,7 +239,14 @@ pub enum DebugMessage {
         result: String,
         type_name: Option<String>,
     },
-    /// The debuggee terminated, or the adapter exited.
+    /// Result of [`DebugCommand::SetVariable`]: the new value and the
+    /// (possibly refreshed) variable the adapter reports.
+    VariableSet {
+        variables_reference: u64,
+        name: String,
+        value: String,
+        type_name: Option<String>,
+    },
     Terminated,
     /// Anything that went wrong.
     Error(String),
@@ -237,10 +256,15 @@ pub enum DebugMessage {
 #[derive(Debug, Clone)]
 pub enum DebugCommand {
     Continue { thread_id: u64 },
+    /// Run until the given source location (DAP `continueTo`).
+    ContinueTo { thread_id: u64, path: String, line: usize },
     StepOver { thread_id: u64 },
     StepIn { thread_id: u64 },
     StepOut { thread_id: u64 },
     Pause { thread_id: u64 },
+    /// Set the value of a variable (DAP `setVariable`). The answer arrives as
+    /// [`DebugMessage::VariableSet`] so the caller can refresh the panel.
+    SetVariable { variables_reference: u64, name: String, value: String },
     /// Detach and terminate the debuggee.
     Stop,
     GetStackTrace { thread_id: u64 },
@@ -298,6 +322,9 @@ enum PendingRequest {
     ScopeVariables { scope: String },
     /// Expression and scope of an `evaluate` request.
     Evaluate { expression: String, scope: String },
+    /// A `setVariable` request: the (reference, name) so the response can be
+    /// attributed back to the caller.
+    VariableSet { variables_reference: u64, name: String },
     /// Configuration whose setup was completed by a `writeMemory` response.
     TraceConfigured(TraceConfig),
 }
@@ -402,69 +429,23 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
     let adapter = find_dap_adapter().ok_or_else(|| {
         anyhow!("未找到 lldb-dap（LLDB 调试适配器）。请安装 Xcode Command Line Tools，或通过 NS_DEBUG_ADAPTER 环境变量指定适配器路径。")
     })?;
-    let mut child = Command::new(&adapter)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| anyhow!("启动调试适配器 {} 失败: {error}", adapter.display()))?;
-    let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("无法获取适配器 stdin"))?;
-    let mut stdout = BufReader::new(child.stdout.take().ok_or_else(|| anyhow!("无法获取适配器 stdout"))?);
 
-    // ---- Handshake: initialize -> launch -> setBreakpoints -> configurationDone ----
-    let mut sequence = 1u64;
-    let initialize_seq = sequence;
-    request_and_wait(
-        &mut stdin,
-        &mut stdout,
-        initialize_seq,
-        "initialize",
-        json!({
-            "adapterID": "lldb",
-            "pathFormat": "path",
-            "linesStartAt1": true,
-            "columnsStartAt1": true,
-            "supportsVariableType": true,
-        }),
-    )?;
-    sequence += 1;
-
-    let launch_seq = sequence;
-    request_and_wait(
-        &mut stdin,
-        &mut stdout,
-        launch_seq,
-        "launch",
-        json!({
-            "program": config.program.display().to_string(),
-            "args": config.args,
-            "cwd": config.cwd.display().to_string(),
-            "stopOnEntry": false,
-        }),
-    )?;
-    sequence += 1;
-
-    let mut launch_breakpoint_results: Vec<(String, Vec<DebugBreakpointResult>)> = Vec::new();
-    for (file, locations) in group_breakpoints(&config.breakpoints) {
-        if locations.is_empty() {
-            continue;
+    // lldb-dap can fail to attach to the debuggee under system load (for
+    // example when several sessions launch at once, as the e2e tests do in
+    // parallel). Retry the whole handshake a bounded number of times so a
+    // transient attach failure does not abort the session.
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0;
+    let (mut child, mut stdin, mut stdout, launch_breakpoint_results, configuration_seq) = loop {
+        attempt += 1;
+        match perform_handshake(config, &adapter) {
+            Ok(handshake) => break handshake,
+            Err(_error) if attempt < MAX_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(150 * attempt as u64));
+            }
+            Err(error) => return Err(error),
         }
-        sequence += 1;
-        send_breakpoint_set(&mut stdin, sequence, &file, &locations)?;
-        let response = wait_for_response(&mut stdout, sequence)
-            .map_err(|error| anyhow!("读取 setBreakpoints 响应失败: {error}"))?;
-        launch_breakpoint_results
-            .push((file, parse_breakpoint_results(&response)));
-    }
-
-    let configuration_seq = sequence + 1;
-    request_and_wait(
-        &mut stdin,
-        &mut stdout,
-        configuration_seq,
-        "configurationDone",
-        json!({}),
-    )?;
+    };
 
     // ---- Handshake complete; create the channels and start the pump threads ----
     let (messages, message_rx) = mpsc::channel::<DebugMessage>();
@@ -490,6 +471,46 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                     DebugCommand::Continue { thread_id } => {
                         request(&mut stdin, sequence, "continue", json!({ "threadId": thread_id }));
                         sequence += 1;
+                    }
+                    DebugCommand::ContinueTo { thread_id, path, line } => {
+                        request(
+                            &mut stdin,
+                            sequence,
+                            "continueTo",
+                            json!({
+                                "threadId": thread_id,
+                                "location": { "path": path, "line": line },
+                            }),
+                        );
+                        sequence += 1;
+                    }
+                    DebugCommand::SetVariable {
+                        variables_reference,
+                        name,
+                        value,
+                    } => {
+                        let seq = sequence;
+                        sequence += 1;
+                        command_pending
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(
+                                seq,
+                                PendingRequest::VariableSet {
+                                    variables_reference,
+                                    name: name.clone(),
+                                },
+                            );
+                        request(
+                            &mut stdin,
+                            seq,
+                            "setVariable",
+                            json!({
+                                "variablesReference": variables_reference,
+                                "name": name,
+                                "value": value,
+                            }),
+                        );
                     }
                     DebugCommand::StepOver { thread_id } => {
                         request(&mut stdin, sequence, "next", json!({ "threadId": thread_id }));
@@ -748,6 +769,111 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
     })
 }
 
+/// Run the DAP handshake (`initialize` → `launch` → `setBreakpoints` →
+/// `configurationDone`) against a fresh adapter child process. On failure the
+/// child is killed and dropped so a retry can start a clean adapter.
+#[allow(clippy::type_complexity)]
+fn perform_handshake(
+    config: &DebugConfig,
+    adapter: &Path,
+) -> Result<(
+    Child,
+    ChildStdin,
+    BufReader<std::process::ChildStdout>,
+    Vec<(String, Vec<DebugBreakpointResult>)>,
+    u64,
+)> {
+    let mut child = Command::new(adapter)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| anyhow!("启动调试适配器 {} 失败: {error}", adapter.display()))?;
+    let result = (|| {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("无法获取适配器 stdin"))?;
+        let mut stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| anyhow!("无法获取适配器 stdout"))?,
+        );
+
+        // ---- Handshake: initialize -> launch -> setBreakpoints -> configurationDone ----
+        let mut sequence = 1u64;
+        let initialize_seq = sequence;
+        request_and_wait(
+            &mut stdin,
+            &mut stdout,
+            initialize_seq,
+            "initialize",
+            json!({
+                "adapterID": "lldb",
+                "pathFormat": "path",
+                "linesStartAt1": true,
+                "columnsStartAt1": true,
+                "supportsVariableType": true,
+            }),
+        )?;
+        sequence += 1;
+
+        let launch_seq = sequence;
+        request_and_wait(
+            &mut stdin,
+            &mut stdout,
+            launch_seq,
+            "launch",
+            json!({
+                "program": config.program.display().to_string(),
+                "args": config.args,
+                "cwd": config.cwd.display().to_string(),
+                "stopOnEntry": false,
+            }),
+        )?;
+        sequence += 1;
+
+        let mut launch_breakpoint_results: Vec<(String, Vec<DebugBreakpointResult>)> = Vec::new();
+        for (file, locations) in group_breakpoints(&config.breakpoints) {
+            if locations.is_empty() {
+                continue;
+            }
+            sequence += 1;
+            send_breakpoint_set(&mut stdin, sequence, &file, &locations)?;
+            let response = wait_for_response(&mut stdout, sequence)
+                .map_err(|error| anyhow!("读取 setBreakpoints 响应失败: {error}"))?;
+            launch_breakpoint_results
+                .push((file, parse_breakpoint_results(&response)));
+        }
+
+        let configuration_seq = sequence + 1;
+        request_and_wait(
+            &mut stdin,
+            &mut stdout,
+            configuration_seq,
+            "configurationDone",
+            json!({}),
+        )?;
+
+        Ok((stdin, stdout, launch_breakpoint_results, configuration_seq))
+    })();
+
+    match result {
+        Ok((stdin, stdout, launch_breakpoint_results, configuration_seq)) => Ok((
+            child,
+            stdin,
+            stdout,
+            launch_breakpoint_results,
+            configuration_seq,
+        )),
+        Err(error) => {
+            let _ = child.kill();
+            Err(error)
+        }
+    }
+}
+
 fn request_and_wait(
     stdin: &mut ChildStdin,
     stdout: &mut BufReader<std::process::ChildStdout>,
@@ -770,6 +896,9 @@ fn send_breakpoint_set(
         .iter()
         .map(|location| {
             let mut breakpoint = json!({ "line": location.line });
+            if location.hardware {
+                breakpoint["mode"] = Value::String("hardware".into());
+            }
             if let Some(condition) = &location.condition {
                 if !condition.trim().is_empty() {
                     breakpoint["condition"] = Value::String(condition.clone());
@@ -1332,6 +1461,39 @@ fn translate_response(
             let _ = messages.send(DebugMessage::Evaluated {
                 expression,
                 result,
+                type_name,
+            });
+        }
+        "setVariable" => {
+            let context = match pending_take(pending, request_seq) {
+                Some(PendingRequest::VariableSet {
+                    variables_reference,
+                    name,
+                }) => (variables_reference, name),
+                _ => return,
+            };
+            let (variables_reference, name) = context;
+            if !success {
+                let _ = messages.send(DebugMessage::Error(format!(
+                    "设置变量 `{name}` 失败: {}",
+                    error()
+                )));
+                return;
+            }
+            let body = &response["body"];
+            let value = body
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let type_name = body
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let _ = messages.send(DebugMessage::VariableSet {
+                variables_reference,
+                name,
+                value,
                 type_name,
             });
         }

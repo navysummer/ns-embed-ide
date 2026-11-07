@@ -1,0 +1,65 @@
+<?xml version="1.0"?>
+<device>
+  <name>nRF52840</name>
+  <vendor>Nordic Semiconductor</vendor>
+  <cpu><name>CM4</name></cpu>
+  <peripherals>
+    <peripheral>
+      <name>POWER</name>
+      <baseAddress>0x40000000</baseAddress>
+      <description>Power supply</description>
+      <registers>
+        <register><name>TASKS_CONSTLAT</name><addressOffset>0x078</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Enable constant latency</description></register>
+        <register><name>EVENTS_POFWARN</name><addressOffset>0x108</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Power-on warning</description></register>
+        <register><name>SYSTEMOFF</name><addressOffset>0x500</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>System off</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>CLOCK</name>
+      <baseAddress>0x40000000</baseAddress>
+      <description>Clock control</description>
+      <registers>
+        <register><name>TASKS_HFCLKSTART</name><addressOffset>0x000</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Start HFCLK</description></register>
+        <register><name>HFCLKSTAT</name><addressOffset>0x004</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>HFCLK status</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>GPIO</name>
+      <baseAddress>0x50000000</baseAddress>
+      <description>General purpose I/O</description>
+      <registers>
+        <register><name>OUT</name><addressOffset>0x504</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output</description></register>
+        <register><name>OUTSET</name><addressOffset>0x508</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output set</description></register>
+        <register><name>OUTCLR</name><addressOffset>0x50C</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output clear</description></register>
+        <register><name>IN</name><addressOffset>0x510</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Input</description></register>
+        <register><name>DIR</name><addressOffset>0x514</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Direction</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>UARTE0</name>
+      <baseAddress>0x40002000</baseAddress>
+      <description>Universal asynchronous receiver/transmitter with EasyDMA</description>
+      <registers>
+        <register><name>TASKS_STARTRX</name><addressOffset>0x000</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Start RX</description></register>
+        <register><name>TASKS_STARTTX</name><addressOffset>0x008</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Start TX</description></register>
+        <register><name>ENABLE</name><addressOffset>0x500</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Enable</description></register>
+        <register><name>BAUDRATE</name><addressOffset>0x524</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Baudrate</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>TIMER0</name>
+      <baseAddress>0x40008000</baseAddress>
+      <description>General purpose timer</description>
+      <registers>
+        <register><name>TASKS_START</name><addressOffset>0x000</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Start</description></register>
+        <register><name>TASKS_STOP</name><addressOffset>0x004</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Stop</description></register>
+        <register><name>PRESCALER</name><addressOffset>0x510</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Prescaler</description></register>
+        <register><name>CC[0]</name><addressOffset>0x540</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Capture/compare 0</description></register>
+      </registers>
+    </peripheral>
+  </peripherals>
+  <memory>
+    <memory><name>FLASH</name><start>0x00000000</start><size>0x100000</size><access>rx</access></memory>
+    <memory><name>RAM</name><start>0x20000000</start><size>0x40000</size><access>rw</access></memory>
+  </memory>
+</device>

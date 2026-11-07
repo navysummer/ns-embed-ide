@@ -1,0 +1,78 @@
+<?xml version="1.0"?>
+<device>
+  <name>STM32F103C8</name>
+  <vendor>STMicroelectronics</vendor>
+  <cpu><name>CM3</name></cpu>
+  <peripherals>
+    <peripheral>
+      <name>RCC</name>
+      <baseAddress>0x40021000</baseAddress>
+      <description>Reset and clock control</description>
+      <registers>
+        <register><name>CR</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Clock control</description><fields>
+          <field><name>HSION</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>HSEON</name><bitOffset>16</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>PLLON</name><bitOffset>24</bitOffset><bitWidth>1</bitWidth></field>
+        </fields></register>
+        <register><name>CFGR</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Clock configuration</description><fields>
+          <field><name>SW</name><bitOffset>0</bitOffset><bitWidth>2</bitWidth></field>
+          <field><name>PPRE1</name><bitOffset>8</bitOffset><bitWidth>3</bitWidth></field>
+          <field><name>PPRE2</name><bitOffset>11</bitOffset><bitWidth>3</bitWidth></field>
+        </fields></register>
+        <register><name>APB2ENR</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>APB2 peripheral clock enable</description><fields>
+          <field><name>IOPAEN</name><bitOffset>2</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>USART1EN</name><bitOffset>14</bitOffset><bitWidth>1</bitWidth></field>
+        </fields></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>GPIOA</name>
+      <baseAddress>0x40010800</baseAddress>
+      <description>General purpose I/O A</description>
+      <registers>
+        <register><name>CRL</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x44444444</resetValue><description>Configuration low</description><fields>
+          <field><name>MODE0</name><bitOffset>0</bitOffset><bitWidth>4</bitWidth></field>
+          <field><name>MODE1</name><bitOffset>4</bitOffset><bitWidth>4</bitWidth></field>
+        </fields></register>
+        <register><name>CRH</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x44444444</resetValue><description>Configuration high</description></register>
+        <register><name>IDR</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Input data</description></register>
+        <register><name>ODR</name><addressOffset>0xC</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output data</description></register>
+        <register><name>BSRR</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Bit set/reset</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>USART1</name>
+      <baseAddress>0x40013800</baseAddress>
+      <description>Universal synchronous/asynchronous receiver/transmitter</description>
+      <registers>
+        <register><name>SR</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Status</description><fields>
+          <field><name>RXNE</name><bitOffset>5</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>TC</name><bitOffset>6</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>TXE</name><bitOffset>7</bitOffset><bitWidth>1</bitWidth></field>
+        </fields></register>
+        <register><name>DR</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Data</description></register>
+        <register><name>BRR</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Baud rate</description></register>
+        <register><name>CR1</name><addressOffset>0xC</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Control 1</description><fields>
+          <field><name>UE</name><bitOffset>13</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>TE</name><bitOffset>3</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>RE</name><bitOffset>2</bitOffset><bitWidth>1</bitWidth></field>
+        </fields></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>TIM2</name>
+      <baseAddress>0x40000000</baseAddress>
+      <description>General purpose timer</description>
+      <registers>
+        <register><name>CR1</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Control 1</description></register>
+        <register><name>CNT</name><addressOffset>0x24</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Counter</description></register>
+        <register><name>PSC</name><addressOffset>0x28</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Prescaler</description></register>
+        <register><name>ARR</name><addressOffset>0x2C</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Auto-reload</description></register>
+      </registers>
+    </peripheral>
+  </peripherals>
+  <memory>
+    <memory><name>FLASH</name><start>0x08000000</start><size>0x10000</size><access>rx</access></memory>
+    <memory><name>RAM</name><start>0x20000000</start><size>0x5000</size><access>rw</access></memory>
+  </memory>
+</device>

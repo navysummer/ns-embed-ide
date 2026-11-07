@@ -439,6 +439,40 @@ impl BreakpointStore {
             true
         }
     }
+    /// Toggle a breakpoint between software and hardware execution.
+    /// Returns the new `hardware` state, or `None` if there is no breakpoint
+    /// at `path:line`. Changing the kind invalidates any previous verification.
+    pub fn set_hardware(&mut self, path: &str, line: usize) -> Option<bool> {
+        let breakpoint = self
+            .breakpoints
+            .iter_mut()
+            .find(|breakpoint| breakpoint.path == path && breakpoint.line == line)?;
+        let hardware = match breakpoint.kind {
+            BreakpointKind::Hardware => {
+                // Back to a plain software breakpoint (preserving any
+                // condition/log message the user had set).
+                breakpoint.kind = if breakpoint.log_message.is_empty() {
+                    if breakpoint.condition.is_empty() {
+                        BreakpointKind::Line
+                    } else {
+                        BreakpointKind::Conditional
+                    }
+                } else {
+                    BreakpointKind::Log
+                };
+                false
+            }
+            _ => {
+                breakpoint.kind = BreakpointKind::Hardware;
+                true
+            }
+        };
+        breakpoint.verified = None;
+        if !breakpoint.stale {
+            breakpoint.reason.clear();
+        }
+        Some(hardware)
+    }
 
     /// Set the hit-count limit (`N`): pause on the N-th hit. Empty clears the limit.
     /// Changing it invalidates any previous verification state.
@@ -742,6 +776,32 @@ mod tests {
         // Clearing the condition of a non-existent breakpoint does nothing.
         assert!(!store.set_condition("src/other.c", 9, ""));
     }
+    #[test]
+    fn set_hardware_toggles_kind_and_preserves_metadata() {
+        let mut store = BreakpointStore::default();
+        store.toggle("src/main.c", 7);
+        assert!(store.set_condition("src/main.c", 7, "count == 10"));
+        assert!(store.set_log_message("src/main.c", 7, "count = {count}"));
+        store.mark_verified("src/main.c", 7, true, "");
+
+        // Switch to a hardware breakpoint: kind flips, condition/log preserved,
+        // verification invalidated so the adapter re-syncs it.
+        assert_eq!(store.set_hardware("src/main.c", 7), Some(true));
+        let bp = store.find("src/main.c", 7).unwrap();
+        assert_eq!(bp.kind, BreakpointKind::Hardware);
+        assert_eq!(bp.condition, "count == 10");
+        assert_eq!(bp.log_message, "count = {count}");
+        assert_eq!(bp.verified, None);
+
+        // Switch back to software: a log message keeps the Log kind.
+        assert_eq!(store.set_hardware("src/main.c", 7), Some(false));
+        let bp = store.find("src/main.c", 7).unwrap();
+        assert_eq!(bp.kind, BreakpointKind::Log);
+
+        // Absent breakpoints report None.
+        assert_eq!(store.set_hardware("src/other.c", 9), None);
+    }
+
 
     #[test]
     fn clear_file_keeps_other_files() {

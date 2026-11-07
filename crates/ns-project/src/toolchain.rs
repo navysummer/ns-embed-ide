@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::language::Language;
 
@@ -13,12 +14,61 @@ impl Tool {
         self.path.is_some()
     }
 
+    /// First non-empty line of `tool --version` (or the first line of the
+    /// tool's help when `--version` is not supported). Used to show the
+    /// detected version in the wizard/toolchain status.
+    pub fn version(&self) -> Option<String> {
+        let path = self.path.as_ref()?;
+        for flag in ["--version", "-version", "-V"] {
+            if let Ok(output) = Command::new(path).arg(flag).output() {
+                if output.status.success() {
+                    let text = String::from_utf8_lossy(&output.stdout);
+                    let line = text
+                        .lines()
+                        .find(|line| !line.trim().is_empty())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if !line.is_empty() {
+                        return Some(line.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn label(&self) -> String {
         match &self.path {
             Some(path) => path.display().to_string(),
             None => "未安装".to_string(),
         }
     }
+}
+
+/// Installation hint for a tool that is not on PATH. Returns the suggested
+/// package/install command per tool family, or `None` for unknown tools.
+pub fn missing_guide(name: &str) -> Option<&'static str> {
+    let known: &[(&str, &str)] = &[
+        ("arm-none-eabi-gcc", "brew install arm-none-eabi-gcc (或下载 ARM GNU Toolchain)"),
+        ("arm-none-eabi-gdb", "brew install arm-none-eabi-gdb (或下载 ARM GNU Toolchain)"),
+        ("clang", "brew install llvm (或 Xcode Command Line Tools)"),
+        ("gcc", "brew install gcc"),
+        ("rustc", "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"),
+        ("cargo", "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"),
+        ("zig", "brew install zig (或下载 ziglang.org)"),
+        ("lldb", "xcode-select --install (Xcode Command Line Tools)"),
+        ("gdb", "brew install gdb"),
+        ("openocd", "brew install open-ocd"),
+        ("pyocd", "pip install pyocd"),
+        ("JLinkExe", "下载 SEGGER J-Link 安装包"),
+        ("probe-rs", "cargo install probe-rs-tools"),
+        ("qemu-system-arm", "brew install qemu"),
+        ("qemu-system-riscv32", "brew install qemu"),
+    ];
+    known
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, guide)| *guide)
 }
 
 pub fn find_command(name: &str) -> Option<PathBuf> {
@@ -132,5 +182,38 @@ mod tests {
     fn preferred_tool_prefers_installed() {
         let list = tools(&["definitely-not-a-real-tool-xyz", "sh"]);
         assert_eq!(preferred_or_first(&list).as_deref(), Some("sh"));
+    }
+    #[test]
+    fn version_reports_first_line_for_installed_tool() {
+        // `sh` always exists on Unix; its `--version` (or `-V`) may not, so
+        // only assert the probe returns a value or None without panicking.
+        if let Some(path) = find_command("sh") {
+            let tool = Tool {
+                name: "sh".to_string(),
+                path: Some(path),
+            };
+            let _ = tool.version();
+        }
+    }
+
+    #[test]
+    fn missing_tool_reports_none_for_unknown() {
+        assert_eq!(missing_guide("sh"), None);
+    }
+
+    #[test]
+    fn missing_guide_covers_known_tools() {
+        assert!(missing_guide("openocd").is_some());
+        assert!(missing_guide("arm-none-eabi-gcc").is_some());
+        assert!(missing_guide("rustc").is_some());
+    }
+
+    #[test]
+    fn absent_tool_has_no_version() {
+        let tool = Tool {
+            name: "definitely-not-real-xyz".to_string(),
+            path: None,
+        };
+        assert_eq!(tool.version(), None);
     }
 }

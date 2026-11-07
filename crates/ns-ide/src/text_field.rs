@@ -60,6 +60,10 @@ pub struct TextField {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<gpui::Bounds<Pixels>>,
     is_selecting: bool,
+    /// Called with the field text when the user presses Enter while focused.
+    on_submit: Option<Box<dyn Fn(&str, &mut Window, &mut Context<Self>)>>,
+    /// Called with the field text after every edit.
+    on_change: Option<Box<dyn Fn(&str, &mut Window, &mut Context<Self>)>>,
 }
 
 impl TextField {
@@ -74,6 +78,8 @@ impl TextField {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            on_submit: None,
+            on_change: None,
         }
     }
 
@@ -87,6 +93,42 @@ impl TextField {
         self.selection_reversed = false;
         self.marked_range = None;
         cx.notify();
+    }
+
+    /// Register a callback invoked with the current text when Enter is pressed.
+    pub fn set_on_submit(
+        &mut self,
+        callback: impl Fn(&str, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        self.on_submit = Some(Box::new(callback));
+    }
+
+    /// Register a callback invoked with the current text after each edit.
+    pub fn set_on_change(
+        &mut self,
+        callback: impl Fn(&str, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        self.on_change = Some(Box::new(callback));
+    }
+
+
+    fn emit_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(callback) = self.on_change.as_ref() {
+            let text = self.content.to_string();
+            callback(&text, window, cx);
+        }
+    }
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(callback) = self.on_submit.as_ref() {
+            let text = self.content.to_string();
+            callback(&text, window, cx);
+            // Clear the field after a submit so the next expression starts fresh.
+            self.content = "".into();
+            self.selected_range = 0..0;
+            self.selection_reversed = false;
+            self.marked_range = None;
+            cx.notify();
+        }
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -323,7 +365,7 @@ impl EntityInputHandler for TextField {
         &mut self,
         range_utf16: Option<Range<usize>>,
         new_text: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let range = range_utf16
@@ -339,8 +381,10 @@ impl EntityInputHandler for TextField {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.selection_reversed = false;
         self.marked_range.take();
+        self.emit_change(window, cx);
         cx.notify();
     }
+
 
     fn replace_and_mark_text_in_range(
         &mut self,
@@ -598,6 +642,13 @@ impl Render for TextField {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key.as_str() == "enter"
+                    && !event.keystroke.modifiers.shift
+                {
+                    this.submit(window, cx);
+                }
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))

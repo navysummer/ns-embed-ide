@@ -23,17 +23,41 @@ pub const COMMANDS: &[CommandEntry] = &[
     CommandEntry { id: "save", title: "保存当前文件", keys: "cmd/ctrl+s", keywords: "save 保存" },
     CommandEntry { id: "build", title: "构建项目", keys: "cmd/ctrl+b", keywords: "build compile 构建 编译 b" },
     CommandEntry { id: "run", title: "构建并运行", keys: "cmd/ctrl+r", keywords: "run 构建 运行 r" },
+    CommandEntry { id: "stop-run", title: "停止运行", keys: "", keywords: "stop run 停止 运行" },
     CommandEntry { id: "debug", title: "开始调试（构建并启动）", keys: "f5", keywords: "debug f5 调试 启动" },
+    CommandEntry { id: "embedded-debug", title: "嵌入式调试（目标 attach）", keys: "", keywords: "embedded debug target attach openocd stlink jlink pyocd probe-rs 嵌入式 调试 目标" },
     CommandEntry { id: "stop-debug", title: "停止调试", keys: "shift+f5", keywords: "stop debug 停止 调试" },
+    CommandEntry { id: "run-to-cursor", title: "运行到光标", keys: "cmd/ctrl+f10", keywords: "run to cursor continueTo until 运行到光标 执行到" },
     CommandEntry { id: "find", title: "全局文件搜索…", keys: "cmd/ctrl+shift+f", keywords: "find search 搜索 查找" },
     CommandEntry { id: "toggle-output", title: "显示/隐藏输出面板", keys: "cmd/ctrl+j", keywords: "output 输出 面板 panel" },
+    CommandEntry { id: "git", title: "显示 Git 面板", keys: "", keywords: "git version control 版本 控制 提交 提交 vcs" },
+    CommandEntry { id: "static-analysis", title: "静态分析", keys: "", keywords: "static analysis lint clang-tidy clippy 静态 分析 检查" },
+    CommandEntry { id: "terminal", title: "打开终端", keys: "", keywords: "terminal shell console 终端 控制台 shell" },
+    CommandEntry { id: "serial-monitor", title: "打开串口助手", keys: "", keywords: "serial monitor uart 串口 助手 监视器 波特率 端口" },
+    CommandEntry { id: "agent", title: "打开 Agent 面板", keys: "", keywords: "agent task subagent 任务 子代理 代理 面板 zed" },
     CommandEntry { id: "breakpoints", title: "显示断点面板", keys: "", keywords: "breakpoints 断点 面板" },
     CommandEntry { id: "clear-breakpoints", title: "清除全部断点", keys: "cmd/ctrl+shift+f9", keywords: "clear breakpoints 清除 断点" },
     CommandEntry { id: "add-watchpoint", title: "添加观察点（数据断点）…", keys: "", keywords: "watchpoint data breakpoint 观察点 数据断点 监视" },
     CommandEntry { id: "close-tab", title: "关闭当前标签页", keys: "cmd/ctrl+w", keywords: "close tab 关闭 标签" },
     CommandEntry { id: "toggle-diagnostics", title: "显示问题面板", keys: "", keywords: "problems diagnostics errors 问题 错误" },
     CommandEntry { id: "focus-next-tab", title: "切换到下一个标签页", keys: "ctrl+tab", keywords: "next tab 下一个 标签" },
-    CommandEntry { id: "focus-prev-tab", title: "切换到上一个标签页", keys: "ctrl+shift+tab", keywords: "prev 上一个 标签" },
+    CommandEntry { id: "restart-run", title: "重新运行", keys: "", keywords: "restart rerun run again 重新 运行 重启" },
+    CommandEntry { id: "settings", title: "项目设置…", keys: "cmd/ctrl+,", keywords: "settings preferences project 设置 偏好 项目配置" },
+    CommandEntry { id: "flash", title: "烧写固件", keys: "cmd/ctrl+shift+f10", keywords: "flash program burn firmware 烧写 固件 下载" },
+    CommandEntry { id: "flash-erase", title: "擦除芯片", keys: "", keywords: "flash erase chip 擦除 芯片 烧写" },
+    CommandEntry { id: "flash-verify", title: "校验固件", keys: "", keywords: "flash verify 校验 固件 烧写" },
+    CommandEntry { id: "flash-read", title: "读回固件（保存 BIN）", keys: "", keywords: "flash read readback dump 读回 固件 保存" },
+    CommandEntry { id: "flash-and-run", title: "烧写并运行", keys: "", keywords: "flash run flash-and-run 烧写 运行 复位" },
+    CommandEntry { id: "flash-and-debug", title: "烧写并调试", keys: "", keywords: "flash debug flash-and-debug 烧写 调试" },
+    CommandEntry { id: "toolchain", title: "工具链路径…", keys: "", keywords: "toolchain path global 工具链 路径 全局 配置" },
+    CommandEntry { id: "go-to-definition", title: "跳转到定义", keys: "f12", keywords: "go to definition jump 跳转 定义 声明" },
+    CommandEntry { id: "find-references", title: "查找引用", keys: "shift+f12", keywords: "find references usages 查找 引用" },
+    CommandEntry { id: "hover", title: "显示悬停提示", keys: "cmd/ctrl+k cmd/ctrl+i", keywords: "hover type signature tooltip 悬停 提示 类型" },
+    CommandEntry { id: "signature-help", title: "签名帮助", keys: "cmd/ctrl+shift+space", keywords: "signature help parameter args 签名 帮助 参数" },
+    CommandEntry { id: "inlay-hints", title: "内联提示", keys: "", keywords: "inlay hints 内联 提示 type param" },
+    CommandEntry { id: "semantic-tokens", title: "语义着色", keys: "", keywords: "semantic tokens color 语义 着色 token" },
+    CommandEntry { id: "show-completion", title: "触发代码补全", keys: "cmd/ctrl+space", keywords: "completion autocomplete 补全 自动 完成" },
+    CommandEntry { id: "simulation", title: "仿真运行（内建指令级）", keys: "", keywords: "simulation simulate simulator 仿真 模拟 指令级 run" },
 ];
 
 /// Rank `COMMANDS` for the given query.
@@ -114,23 +138,31 @@ mod tests {
         assert_eq!(rank("   "), (0..COMMANDS.len()).collect::<Vec<_>>());
     }
 
+    /// Index of the entry with the given stable id in `COMMANDS`.
+    fn index_of(id: &str) -> usize {
+        COMMANDS
+            .iter()
+            .position(|command| command.id == id)
+            .expect("command id must exist")
+    }
+
     #[test]
     fn exact_title_wins() {
         let ranked = rank("构建项目");
-        assert_eq!(ranked.first().copied(), Some(3)); // build entry
+        assert_eq!(ranked.first().copied(), Some(index_of("build")));
     }
 
     #[test]
     fn subsequence_matches_multiple() {
         let ranked = rank("断点");
-        assert!(ranked.contains(&9)); // 显示断点面板
-        assert!(ranked.contains(&10)); // 清除全部断点
+        assert!(ranked.contains(&index_of("breakpoints")));
+        assert!(ranked.contains(&index_of("clear-breakpoints")));
     }
 
     #[test]
     fn keywords_match() {
         let ranked = rank("f5");
-        assert!(ranked.contains(&5)); // debug
+        assert!(ranked.contains(&index_of("debug")));
     }
 
     #[test]
@@ -146,6 +178,14 @@ mod tests {
     #[test]
     fn prefix_beats_scattered() {
         let ranked = rank("run");
-        assert_eq!(ranked[0], 4); // 构建并运行 — "run" hits title
+        assert_eq!(ranked[0], index_of("run"));
+    }
+
+    #[test]
+    fn flash_commands_are_ranked() {
+        let ranked = rank("烧写");
+        assert!(ranked.contains(&index_of("flash")));
+        assert!(ranked.contains(&index_of("flash-and-run")));
+        assert!(ranked.contains(&index_of("flash-and-debug")));
     }
 }

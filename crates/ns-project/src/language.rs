@@ -69,8 +69,125 @@ impl Language {
             _ => None,
         }
     }
+}
 
-    /// Relative path + contents of the starter source file for a new project.
+/// A selectable C starter template for a new project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CTemplate {
+    /// Default: an empty `while(1)` loop.
+    Empty,
+    /// LED Blink: toggles a GPIO pin in a busy loop.
+    LedBlink,
+    /// UART Loopback: echoes received bytes back over the UART.
+    UartLoopback,
+}
+
+impl CTemplate {
+    pub const ALL: &'static [CTemplate] = &[
+        CTemplate::Empty,
+        CTemplate::LedBlink,
+        CTemplate::UartLoopback,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CTemplate::Empty => "空模板（while(1) 循环）",
+            CTemplate::LedBlink => "LED Blink（GPIO 翻转）",
+            CTemplate::UartLoopback => "UART 回环（收发回显）",
+        }
+    }
+
+    pub fn source(self) -> &'static str {
+        match self {
+            CTemplate::Empty => r#"#include <stdint.h>
+
+/*
+ * ns-embed-ide 项目模板
+ * 从这里开始编写你的嵌入式程序。
+ */
+
+int main(void) {
+    volatile uint32_t counter = 0;
+
+    while (1) {
+        counter++;
+    }
+}
+"#,
+            CTemplate::LedBlink => r#"#include <stdint.h>
+
+/*
+ * ns-embed-ide LED Blink 模板
+ * 通过 GPIO 端口输出寄存器翻转一个引脚，形成闪烁。
+ *
+ * 引脚与端口按目标设备调整：
+ *   - STM32: 将下方 GPIOB_ODR 改为实际端口（如 GPIOA_ODR）。
+ *   - nRF/RP2040/ESP32: 改用对应 SVD 的 GPIO 寄存器。
+ */
+
+#define GPIOB_ODR  (*(volatile uint32_t *)0x40010C0CUL) // STM32F1 GPIOB 输出数据
+
+static void delay(volatile uint32_t ticks) {
+    while (ticks--) {
+        __asm__ volatile ("nop");
+    }
+}
+
+int main(void) {
+    while (1) {
+        GPIOB_ODR ^= (1u << 13);  // 翻转 PB13（板载 LED）
+        delay(500000);
+    }
+}
+"#,
+            CTemplate::UartLoopback => r#"#include <stdint.h>
+
+/*
+ * ns-embed-ide UART 回环模板
+ * 轮询 UART 状态寄存器，读到字节后原样写回发送寄存器。
+ *
+ * 寄存器地址按目标设备调整；以下为 STM32F1 USART1 的示例。
+ */
+
+#define USART1_SR   (*(volatile uint32_t *)0x40013800UL)  // 状态
+#define USART1_DR   (*(volatile uint32_t *)0x40013804UL)  // 数据
+#define USART1_CR1  (*(volatile uint32_t *)0x4001380CUL)  // 控制1
+
+#define SR_RXNE   (1u << 5)
+#define SR_TXE    (1u << 7)
+#define CR1_UE    (1u << 13)
+#define CR1_TE    (1u << 3)
+#define CR1_RE    (1u << 2)
+
+int main(void) {
+    USART1_CR1 = CR1_UE | CR1_TE | CR1_RE;  // 使能 UART、发送、接收
+
+    while (1) {
+        if (USART1_SR & SR_RXNE) {
+            uint8_t byte = (uint8_t)(USART1_DR & 0xFFu);
+            while (!(USART1_SR & SR_TXE)) { /* 等待发送就绪 */ }
+            USART1_DR = byte;  // 回环发送
+        }
+    }
+}
+"#,
+        }
+    }
+}
+
+impl Language {
+    /// The C starter template source for a new project, selected by kind.
+    pub fn starter_source_for_template(
+        self,
+        template: Option<CTemplate>,
+    ) -> (&'static str, &'static str) {
+        if self == Language::C {
+            let template = template.unwrap_or(CTemplate::Empty);
+            ("src/main.c", template.source())
+        } else {
+            self.starter_source()
+        }
+    }
     pub fn starter_source(self) -> (&'static str, &'static str) {
         match self {
             Language::C => (

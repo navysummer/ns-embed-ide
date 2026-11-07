@@ -64,6 +64,7 @@ actions!(
         Cut,
         Copy,
         ToggleBreakpoint,
+        ToggleFold,
     ]
 );
 
@@ -98,6 +99,8 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-x", Cut, Some("Editor")),
         KeyBinding::new("ctrl-x", Cut, Some("Editor")),
         KeyBinding::new("f9", ToggleBreakpoint, Some("Editor")),
+        KeyBinding::new("cmd-k cmd-0", ToggleFold, Some("Editor")),
+        KeyBinding::new("ctrl-k ctrl-0", ToggleFold, Some("Editor")),
     ]
 }
 
@@ -120,6 +123,21 @@ pub struct Editor {
     undo: Vec<String>,
     redo: Vec<String>,
     is_selecting: bool,
+    /// In-editor find bar state.
+    find_open: bool,
+    find_query: String,
+    find_replace: String,
+    find_matches: Vec<Range<usize>>,
+    find_current: usize,
+    /// Folded regions: (start line, end line), 0-based inclusive.
+    folded: Vec<(usize, usize)>,
+    /// Find-bar query/replace text fields.
+    find_query_field: Option<gpui::Entity<crate::text_field::TextField>>,
+    find_replace_field: Option<gpui::Entity<crate::text_field::TextField>>,
+    /// Semantic token overlays from the LSP (0-based line, start char, length, kind index).
+    semantic: Vec<SemanticSpan>,
+    /// Inlay hints from the LSP (0-based line, start char, label).
+    inlay_hints: Vec<InlayHint>,
 }
 
 impl Editor {
@@ -149,12 +167,35 @@ impl Editor {
             undo: Vec::new(),
             redo: Vec::new(),
             is_selecting: false,
+            find_open: false,
+            find_query: String::new(),
+            find_replace: String::new(),
+            find_matches: Vec::new(),
+            find_current: 0,
+            folded: Vec::new(),
+            find_query_field: None,
+            find_replace_field: None,
+            semantic: Vec::new(),
+            inlay_hints: Vec::new(),
         }
+    }
+
+    /// Set the semantic token overlays (0-based line, start char, length, kind index).
+    pub fn set_semantic_tokens(&mut self, spans: Vec<SemanticSpan>, cx: &mut Context<Self>) {
+        self.semantic = spans;
+        cx.notify();
+    }
+
+    /// Set the inlay hints (0-based line, start char, label).
+    pub fn set_inlay_hints(&mut self, hints: Vec<InlayHint>, cx: &mut Context<Self>) {
+        self.inlay_hints = hints;
+        cx.notify();
     }
 
     pub fn text(&self) -> &str {
         &self.text
     }
+
 
     pub fn selected_text(&self) -> String {
         if self.selection.is_empty() {
@@ -198,7 +239,7 @@ impl Editor {
     }
 
     fn content_height(&self) -> f32 {
-        self.text.split('\n').count().max(1) as f32 * LINE_HEIGHT
+        self.visible_line_count().max(1) as f32 * LINE_HEIGHT
     }
 
     fn max_scroll(&self) -> f32 {
@@ -252,6 +293,11 @@ impl Editor {
         cx.notify();
     }
 
+    /// The set of breakpoint lines (1-based) currently set in this editor.
+    pub fn breakpoint_lines(&self) -> BTreeSet<usize> {
+        self.breakpoints.clone()
+    }
+
     fn toggle_breakpoint_line(&mut self, line: usize, cx: &mut Context<Self>) {
         if line == 0 {
             return;
@@ -271,6 +317,27 @@ impl Editor {
         (line + 1, column + 1)
     }
 
+    /// Insert `text` at the cursor, replacing any selection. Used by the
+    /// LSP completion confirm path, which has no window handle.
+    pub fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return;
+        }
+        let range = self.marked_range.clone().unwrap_or(self.selection.clone());
+        let range = clamp_range(&self.text, range);
+        self.snapshot();
+        self.text = self.text[0..range.start].to_owned()
+            + text
+            + &self.text[range.end..];
+        let cursor = range.start + text.len();
+        self.cursor = clamp_boundary(&self.text, cursor);
+        self.selection = self.cursor..self.cursor;
+        self.selection_reversed = false;
+        self.preferred_column = None;
+        self.marked_range.take();
+        self.dirty = true;
+        cx.notify();
+    }
     pub fn set_cursor_line(&mut self, line_number: usize, cx: &mut Context<Self>) {
         let starts = line_starts(&self.text);
         let line = line_number.saturating_sub(1).min(starts.len().saturating_sub(1));
@@ -280,10 +347,252 @@ impl Editor {
         cx.notify();
     }
 
+    /// Fold or unfold the region at `line` (0-based). Returns whether any fold
+    /// state changed.
+    pub fn toggle_fold(&mut self, line: usize, cx: &mut Context<Self>) {
+        if let Some(pos) = self.folded.iter().position(|(start, _)| *start == line) {
+            self.folded.remove(pos);
+            cx.notify();
+            return;
+        }
+        for (start, end) in self.fold_regions() {
+            if start == line && end > line {
+                self.folded.push((start, end));
+                cx.notify();
+                return;
+            }
+        }
+    }
+
+
+    /// Map a document line to its visible line, accounting for folded regions.
+    /// Returns `(visible_line, is_hidden)`.
+    pub fn visible_line(&self, line: usize) -> (usize, bool) {
+        visible_line_in(&self.text, &self.folded, line)
+    }
+
+    pub fn visible_line_count(&self) -> usize {
+        visible_lines_in(&self.text, &self.folded).len()
+    }
+
+    /// Return the list of document line indices that should be drawn.
+    pub fn visible_lines(&self) -> Vec<usize> {
+        visible_lines_in(&self.text, &self.folded)
+    }
+
+    pub fn find_query_field_entity(&self) -> Option<gpui::Entity<crate::text_field::TextField>> {
+        self.find_query_field.clone()
+    }
+
+    pub fn find_replace_field_entity(&self) -> Option<gpui::Entity<crate::text_field::TextField>> {
+        self.find_replace_field.clone()
+    }
+
+    pub fn find_open(&self) -> bool {
+        self.find_open
+    }
+    /// Open the in-editor find bar, seeding the query from the current selection.
+    pub fn open_find(&mut self, cx: &mut Context<Self>) {
+        if !self.selection.is_empty() && self.find_query.is_empty() {
+            self.find_query = self.text[self.selection.clone()].to_string();
+        }
+        if self.find_query_field.is_none() {
+            let entity = cx.entity();
+            let field = cx.new(|cx| {
+                let mut field = crate::text_field::TextField::new("查找", cx);
+                field.set_on_change(move |text, _window, _cx| {
+                    entity.update(_cx, |editor, cx| {
+                        editor.set_find_query(text, cx);
+                    });
+                });
+                field
+            });
+            field.update(cx, |field, _cx| field.set_text(self.find_query.clone(), _cx));
+            self.find_query_field = Some(field);
+        }
+        if self.find_replace_field.is_none() {
+            let entity = cx.entity();
+            let field = cx.new(|cx| {
+                let mut field = crate::text_field::TextField::new("替换为", cx);
+                field.set_on_change(move |text, _window, _cx| {
+                    entity.update(_cx, |editor, cx| {
+                        editor.set_find_replace(text, cx);
+                    });
+                });
+                field
+            });
+            self.find_replace_field = Some(field);
+        }
+        self.find_open = true;
+        self.refresh_find(cx);
+        cx.notify();
+    }
+
+    pub fn close_find(&mut self, cx: &mut Context<Self>) {
+        self.find_open = false;
+        self.find_matches.clear();
+        self.find_current = 0;
+        cx.notify();
+    }
+
+
+
+    pub fn find_match_count(&self) -> usize {
+        self.find_matches.len()
+    }
+
+    pub fn find_current(&self) -> usize {
+        self.find_current
+    }
+
+    pub fn set_find_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        self.find_query = query.to_string();
+        self.refresh_find(cx);
+        cx.notify();
+    }
+
+    pub fn set_find_replace(&mut self, replacement: &str, cx: &mut Context<Self>) {
+        self.find_replace = replacement.to_string();
+        cx.notify();
+    }
+
+    /// Recompute all match ranges for the current query, in document order.
+    fn refresh_find(&mut self, cx: &mut Context<Self>) {
+        self.find_matches.clear();
+        self.find_current = 0;
+        if self.find_query.is_empty() {
+            cx.notify();
+            return;
+        }
+        let query = &self.find_query;
+        let mut search_from = 0;
+        while let Some(relative) = self.text[search_from..].find(query) {
+            let start = search_from + relative;
+            let end = start + query.len();
+            self.find_matches.push(start..end);
+            search_from = end;
+            if query.is_empty() {
+                break;
+            }
+        }
+    }
+
+    /// Move to the next match (or the previous if `backwards`).
+    pub fn find_next(&mut self, backwards: bool, cx: &mut Context<Self>) {
+        if self.find_matches.is_empty() {
+            return;
+        }
+        if backwards {
+            if self.find_current == 0 {
+                self.find_current = self.find_matches.len() - 1;
+            } else {
+                self.find_current -= 1;
+            }
+        } else {
+            self.find_current = (self.find_current + 1) % self.find_matches.len();
+        }
+        let range = self.find_matches[self.find_current].clone();
+        let (line, _) = self.line_col(range.start);
+        self.cursor = range.start;
+        self.selection = range;
+        self.selection_reversed = false;
+        self.preferred_column = None;
+        self.reveal_line(line);
+        cx.notify();
+    }
+
+    /// Replace the currently-selected match with the replacement text.
+    pub fn find_replace_current(&mut self, cx: &mut Context<Self>) {
+        if self.find_matches.is_empty() {
+            return;
+        }
+        let range = self.find_matches[self.find_current].clone();
+        let replacement = self.find_replace.clone();
+        self.snapshot();
+        self.text = self.text[0..range.start].to_owned()
+            + &replacement
+            + &self.text[range.end..];
+        self.dirty = true;
+        self.refresh_find(cx);
+        let count = self.find_matches.len();
+        if count == 0 {
+            self.cursor = clamp_boundary(&self.text, range.start + replacement.len());
+            self.selection = self.cursor..self.cursor;
+        } else {
+            self.find_current = self.find_current.min(count - 1);
+            let next = self.find_matches[self.find_current].clone();
+            let (line, _) = self.line_col(next.start);
+            self.cursor = next.start;
+            self.selection = next;
+            self.reveal_line(line);
+        }
+        cx.notify();
+    }
+
+    /// Replace every match with the replacement text.
+    pub fn find_replace_all(&mut self, cx: &mut Context<Self>) {
+        if self.find_matches.is_empty() {
+            return;
+        }
+        let replacement = self.find_replace.clone();
+        self.snapshot();
+        let mut result = String::with_capacity(self.text.len());
+        let mut last = 0;
+        for range in self.find_matches.iter() {
+            result.push_str(&self.text[last..range.start]);
+            result.push_str(&replacement);
+            last = range.end;
+        }
+        result.push_str(&self.text[last..]);
+        self.text = result;
+        self.dirty = true;
+        self.refresh_find(cx);
+        self.cursor = clamp_boundary(&self.text, self.cursor);
+        self.selection = self.cursor..self.cursor;
+        cx.notify();
+    }
+    /// Offset of the bracket matching the bracket at `offset`, if any.
+    ///
+    /// `offset` is the byte offset of the opening/closing bracket. Returns the
+    /// offset of its partner. Handles `()`, `[]`, `{}` and respects nesting by
+    /// scanning outward.
+    fn matching_bracket(&self, offset: usize) -> Option<usize> {
+        matching_bracket_in(&self.text, offset)
+    }
+
+    /// The bracket pair around the cursor (open/close offsets), if the cursor is
+    /// adjacent to a bracket or inside a pair.
+    pub fn bracket_pair_around_cursor(&self) -> Option<(usize, usize)> {
+        // The cursor may sit right after an opening bracket or before a closing one.
+        let candidates = [
+            self.cursor.checked_sub(1),
+            Some(self.cursor),
+            Some(self.cursor),
+        ];
+        for candidate in candidates {
+            let Some(offset) = candidate else { continue };
+            if offset >= self.text.len() {
+                continue;
+            }
+            if let Some(partner) = self.matching_bracket(offset) {
+                return Some((offset.min(partner), offset.max(partner)));
+            }
+        }
+        None
+    }
+
+    /// Compute fold regions for the document based on indentation.
+    ///
+    /// Each region is the 0-based start line (where the fold marker appears) and
+    /// the last line contained. Lines that are blank or less indented than the
+    /// following non-blank line begin a region.
+    pub fn fold_regions(&self) -> Vec<(usize, usize)> {
+        fold_regions_in(&self.text)
+    }
+
     fn line_starts(&self) -> Vec<usize> {
         line_starts(&self.text)
     }
-
     fn line_col(&self, offset: usize) -> (usize, usize) {
         let offset = clamp_boundary(&self.text, offset);
         let starts = self.line_starts();
@@ -529,6 +838,11 @@ impl Editor {
         self.toggle_breakpoint_line(line + 1, cx);
     }
 
+    fn toggle_fold_action(&mut self, _: &ToggleFold, _: &mut Window, cx: &mut Context<Self>) {
+        let (line, _) = self.line_col(self.cursor);
+        self.toggle_fold(line, cx);
+    }
+
     fn on_right_mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -571,8 +885,14 @@ impl Editor {
         if let Some(bounds) = self.last_bounds {
             if event.position.x < bounds.left() + px(GUTTER_WIDTH) {
                 let top = bounds.top() - px(self.scroll_y);
-        let line = self.line_for_y(event.position.y, top);
-                self.toggle_breakpoint_line(line, cx);
+                let line = self.line_for_y(event.position.y, top);
+                // Clicking the left fold strip (first ~10px of the gutter) toggles
+                // the fold at that line; elsewhere in the gutter toggles a breakpoint.
+                if event.position.x < bounds.left() + px(10.) {
+                    self.toggle_fold(line.saturating_sub(1), cx);
+                } else {
+                    self.toggle_breakpoint_line(line, cx);
+                }
                 self.is_selecting = false;
                 return;
             }
@@ -845,6 +1165,7 @@ impl Render for Editor {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::toggle_breakpoint))
+            .on_action(cx.listener(Self::toggle_fold_action))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -864,6 +1185,25 @@ impl Render for Editor {
     }
 }
 
+/// A semantic token overlay from the LSP: 0-based line, start character,
+/// length in characters, and a semantic token type index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticSpan {
+    pub line: usize,
+    pub start: usize,
+    pub length: usize,
+    pub token_type: usize,
+}
+
+/// An inlay hint from the LSP: 0-based line, start character, label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlayHint {
+    pub line: usize,
+    pub start: usize,
+    pub label: String,
+}
+
+
 struct CodeElement {
     editor: Entity<Editor>,
 }
@@ -876,6 +1216,10 @@ struct PrepaintState {
     debug_line: Option<PaintQuad>,
     debug_marker: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
+    fold_quads: Vec<PaintQuad>,
+    bracket_quads: Vec<PaintQuad>,
+    /// Inlay hint labels positioned after their anchor column.
+    inlays: Vec<(Pixels, Pixels, ShapedLine)>,
 }
 
 impl IntoElement for CodeElement {
@@ -927,9 +1271,12 @@ impl Element for CodeElement {
         let cursor = editor.cursor;
         let breakpoints = editor.breakpoints.clone();
         let debug_line = editor.debug_line;
+        let mut inlays = Vec::new();
+
 
         let code_left = bounds.left() + px(GUTTER_WIDTH);
-        let total_lines = text.split('\n').count().max(1) as f32;
+        let visible_lines = editor.visible_lines();
+        let total_lines = visible_lines.len().max(1) as f32;
         let viewport: f32 = bounds.size.height.into();
         let scroll_y = editor
             .scroll_y
@@ -942,10 +1289,18 @@ impl Element for CodeElement {
         let starts = line_starts(&text);
         let code_font = font(theme::MONO_FONT);
         let number_font = font(theme::UI_FONT);
+        let folded = editor.folded.clone();
 
-        for (line_index, line) in text.split('\n').enumerate() {
+        for (row, line_index) in visible_lines.iter().copied().enumerate() {
+            let line = text.split('\n').nth(line_index).unwrap_or("");
             let spans = highlight_line(line, language.unwrap_or(Language::C), &mut block_comment);
-            let runs = build_runs(line, &spans, &code_font);
+            let line_semantic: Vec<SemanticSpan> = editor
+                .semantic
+                .iter()
+                .filter(|token| token.line == line_index)
+                .copied()
+                .collect();
+            let runs = build_runs_with_semantic(line, &spans, &line_semantic, &code_font);
             let shape = window.text_system().shape_line(
                 SharedString::from(line.to_string()),
                 px(FONT_SIZE),
@@ -985,11 +1340,35 @@ impl Element for CodeElement {
                     Bounds::new(
                         Point::new(
                             code_left + x_start,
-                            top + px(line_index as f32 * LINE_HEIGHT),
+                            top + px(row as f32 * LINE_HEIGHT),
                         ),
                         size((x_end - x_start).max(px(2.)), px(LINE_HEIGHT)),
                     ),
                     theme::alpha(theme::ACCENT, 0.2),
+                ));
+            }
+
+            // Inlay hints for this line: shape the label and position it after the anchor.
+            for hint in editor.inlay_hints.iter().filter(|hint| hint.line == line_index) {
+                let hint_x = shape.x_for_index(hint.start.min(line.len()));
+                let hint_run = TextRun {
+                    len: hint.label.len(),
+                    font: code_font.clone(),
+                    color: theme::color(theme::TEXT_FAINT),
+                    background_color: Some(theme::color(theme::BG_1)),
+                    underline: None,
+                    strikethrough: None,
+                };
+                let hint_shape = window.text_system().shape_line(
+                    SharedString::from(hint.label.clone()),
+                    px(FONT_SIZE),
+                    &[hint_run],
+                    None,
+                );
+                inlays.push((
+                    code_left + hint_x,
+                    top + px(row as f32 * LINE_HEIGHT),
+                    hint_shape,
                 ));
             }
 
@@ -998,24 +1377,34 @@ impl Element for CodeElement {
 
         let breakpoint_quads = breakpoints
             .iter()
-            .filter(|line| **line >= 1 && **line <= line_shapes.len())
-            .map(|line| {
-                let y = top + px((*line as f32 - 1.0) * LINE_HEIGHT);
-                fill(
-                    Bounds::new(
-                        Point::new(bounds.left() + px(13.), y + px((LINE_HEIGHT - 8.) / 2.)),
-                        size(px(8.), px(8.)),
-                    ),
-                    theme::color(theme::CINNABAR),
+            .filter(|line| **line >= 1)
+            .filter_map(|line| {
+                let (visible, hidden) = editor.visible_line(*line - 1);
+                if hidden {
+                    return None;
+                }
+                let y = top + px(visible as f32 * LINE_HEIGHT);
+                Some(
+                    fill(
+                        Bounds::new(
+                            Point::new(bounds.left() + px(13.), y + px((LINE_HEIGHT - 8.) / 2.)),
+                            size(px(8.), px(8.)),
+                        ),
+                        theme::color(theme::CINNABAR),
+                    )
+                    .corner_radii(px(4.)),
                 )
-                .corner_radii(px(4.))
             })
             .collect();
 
         let (debug_line, debug_marker) = debug_line
-            .filter(|line| *line >= 1 && *line <= line_shapes.len())
-            .map(|line| {
-                let y = top + px((line as f32 - 1.0) * LINE_HEIGHT);
+            .filter(|line| *line >= 1)
+            .and_then(|line| {
+                let (visible, hidden) = editor.visible_line(line - 1);
+                if hidden {
+                    return None;
+                }
+                let y = top + px(visible as f32 * LINE_HEIGHT);
                 let quad = fill(
                     Bounds::new(
                         Point::new(bounds.left(), y),
@@ -1038,23 +1427,81 @@ impl Element for CodeElement {
                     &[marker_run],
                     None,
                 );
-                (Some(quad), Some(marker))
+                Some((Some(quad), Some(marker)))
             })
             .unwrap_or((None, None));
 
         let (cursor_line, cursor_column) = line_col_in(&text, &starts, cursor);
-        let cursor_quad = line_shapes.get(cursor_line).map(|shape| {
-            fill(
-                Bounds::new(
-                    Point::new(
-                        code_left + shape.x_for_index(cursor_column),
-                        top + px(cursor_line as f32 * LINE_HEIGHT),
+        let (cursor_visible, cursor_hidden) = editor.visible_line(cursor_line);
+        let cursor_quad = if cursor_hidden {
+            None
+        } else {
+            line_shapes.get(cursor_visible).map(|shape| {
+                fill(
+                    Bounds::new(
+                        Point::new(
+                            code_left + shape.x_for_index(cursor_column),
+                            top + px(cursor_visible as f32 * LINE_HEIGHT),
+                        ),
+                        size(px(2.0), px(LINE_HEIGHT)),
                     ),
-                    size(px(2.0), px(LINE_HEIGHT)),
+                    theme::color(theme::ACCENT_3),
+                )
+            })
+        };
+
+        // Fold marker: a small triangle drawn at the left edge of each folded
+        // region's start line, plus a horizontal indicator line.
+        let mut fold_quads = Vec::new();
+
+
+        for (start, _end) in folded.iter() {
+            let (visible, hidden) = editor.visible_line(*start);
+            if hidden {
+                continue;
+            }
+            let y = top + px(visible as f32 * LINE_HEIGHT);
+            fold_quads.push(fill(
+                Bounds::new(
+                    Point::new(bounds.left() + px(2.), y + px((LINE_HEIGHT - 8.) / 2.)),
+                    size(px(7.), px(8.)),
                 ),
-                theme::color(theme::ACCENT_3),
-            )
-        });
+                theme::color(theme::TEXT_FAINT).opacity(0.7),
+            ));
+            fold_quads.push(fill(
+                Bounds::new(
+                    Point::new(code_left, y + px(LINE_HEIGHT - 1.)),
+                    size(bounds.size.width, px(1.)),
+                ),
+                theme::alpha(theme::STROKE, 0.25),
+            ));
+        }
+
+        // Bracket match highlight: draw a subtle box around both brackets when
+        // the cursor is adjacent to a pair.
+        let mut bracket_quads = Vec::new();
+        if let Some((open, close)) = editor.bracket_pair_around_cursor() {
+            for offset in [open, close] {
+                let (line, column) = line_col_in(&text, &starts, offset);
+                let (visible, hidden) = editor.visible_line(line);
+                if hidden {
+                    continue;
+                }
+                if let Some(shape) = line_shapes.get(visible) {
+                    let x = code_left + shape.x_for_index(column);
+                    let y = top + px(visible as f32 * LINE_HEIGHT);
+                    let width = (shape.x_for_index(column + 1) - shape.x_for_index(column))
+                        .max(px(6.));
+                    bracket_quads.push(fill(
+                        Bounds::new(
+                            Point::new(x - px(1.), y),
+                            size(width, px(LINE_HEIGHT)),
+                        ),
+                        theme::alpha(theme::ACCENT, 0.18),
+                    ));
+                }
+            }
+        }
 
         PrepaintState {
             lines: line_shapes,
@@ -1064,6 +1511,9 @@ impl Element for CodeElement {
             debug_line,
             debug_marker,
             cursor: cursor_quad,
+            fold_quads,
+            bracket_quads,
+            inlays,
         }
     }
 
@@ -1099,6 +1549,10 @@ impl Element for CodeElement {
             theme::alpha(theme::STROKE, 0.09),
         ));
 
+        for bracket in prepaint.bracket_quads.drain(..) {
+            window.paint_quad(bracket);
+        }
+
         if let Some(debug_line) = prepaint.debug_line.take() {
             window.paint_quad(debug_line);
         }
@@ -1111,17 +1565,24 @@ impl Element for CodeElement {
             window.paint_quad(breakpoint);
         }
 
+        for fold in prepaint.fold_quads.drain(..) {
+            window.paint_quad(fold);
+        }
+
         if let Some(marker) = prepaint.debug_marker.take() {
             if let Some(line) = self.editor.read(cx).debug_line {
-                let y = top + px((line as f32 - 1.0) * LINE_HEIGHT);
-                marker
-                    .paint(
-                        Point::new(bounds.left() + px(27.), y + px((LINE_HEIGHT - 10.) / 2.)),
-                        px(LINE_HEIGHT),
-                        window,
-                        cx,
-                    )
-                    .ok();
+                let (visible, hidden) = self.editor.read(cx).visible_line(line.saturating_sub(1));
+                if !hidden {
+                    let y = top + px(visible as f32 * LINE_HEIGHT);
+                    marker
+                        .paint(
+                            Point::new(bounds.left() + px(27.), y + px((LINE_HEIGHT - 10.) / 2.)),
+                            px(LINE_HEIGHT),
+                            window,
+                            cx,
+                        )
+                        .ok();
+                }
             }
         }
 
@@ -1156,6 +1617,12 @@ impl Element for CodeElement {
             )
             .ok();
         }
+
+        // Draw inlay hints on top of the line text.
+        for (x, y, hint) in prepaint.inlays.drain(..) {
+            hint.paint(Point::new(x, y), px(LINE_HEIGHT), window, cx).ok();
+        }
+
 
         if focus_handle.is_focused(window) {
             if let Some(cursor) = prepaint.cursor.take() {
@@ -1196,6 +1663,93 @@ fn build_runs(line: &str, spans: &[HighlightSpan], font: &gpui::Font) -> Vec<Tex
             strikethrough: None,
         })
         .collect()
+}
+
+/// Build text runs for a line, overlaying semantic token colors where the LSP
+/// reports a token. Characters outside any semantic token keep the syntax color.
+fn build_runs_with_semantic(
+    line: &str,
+    spans: &[HighlightSpan],
+    semantic: &[SemanticSpan],
+    font: &gpui::Font,
+) -> Vec<TextRun> {
+    if line.is_empty() {
+        return vec![TextRun {
+            len: 0,
+            font: font.clone(),
+            color: theme::color(theme::TEXT),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }];
+    }
+    if semantic.is_empty() {
+        return build_runs(line, spans, font);
+    }
+
+    // Build per-character colors: start from the syntax span color, then overlay.
+    let mut char_colors = vec![None; line.chars().count()];
+    let mut char_index = 0usize;
+    for span in spans {
+        let color = token_color(span.kind);
+        for _ in 0..span.len {
+            if char_index < char_colors.len() {
+                char_colors[char_index] = Some(color);
+            }
+            char_index += 1;
+        }
+    }
+    for token in semantic {
+        let color = semantic_token_color(token.token_type);
+        let start = token.start.min(char_colors.len());
+        let end = (token.start + token.length).min(char_colors.len());
+        for slot in &mut char_colors[start..end] {
+            *slot = Some(color);
+        }
+    }
+
+    // Collapse into runs.
+    let mut runs = Vec::new();
+    let mut index = 0usize;
+    while index < char_colors.len() {
+        let color = char_colors[index].unwrap_or(theme::color(theme::TEXT));
+        let mut len = 1usize;
+        while index + len < char_colors.len() && char_colors[index + len] == char_colors[index] {
+            len += 1;
+        }
+        runs.push(TextRun {
+            len,
+            font: font.clone(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+        index += len;
+    }
+    if runs.is_empty() {
+        runs.push(TextRun {
+            len: 0,
+            font: font.clone(),
+            color: theme::color(theme::TEXT),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+    }
+    runs
+}
+
+fn semantic_token_color(token_type: usize) -> gpui::Hsla {
+    match token_type {
+        1 => theme::color(theme::JADE),          // type
+        2 | 4 | 5 => theme::color(0xe8d5ab),     // enum/struct/function/method
+        7 => theme::color(theme::ACCENT),        // keyword
+        9 => theme::color(theme::TEXT_FAINT),    // comment
+        10 => theme::color(0xa8b57a),            // string
+        11 => theme::color(theme::ACCENT_3),     // number
+        _ => theme::color(theme::TEXT),          // plain
+    }
 }
 
 fn token_color(kind: TokenKind) -> gpui::Hsla {
@@ -1245,6 +1799,121 @@ fn clamp_range(text: &str, range: Range<usize>) -> Range<usize> {
     let start = clamp_boundary(text, range.start);
     let end = clamp_boundary(text, range.end.max(start));
     start..end
+}
+
+fn matching_bracket_in(text: &str, offset: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let ch = *bytes.get(offset)?;
+    let (open, close, direction) = match ch {
+        b'(' => (b'(', b')', 1),
+        b'[' => (b'[', b']', 1),
+        b'{' => (b'{', b'}', 1),
+        b')' => (b'(', b')', -1),
+        b']' => (b'[', b']', -1),
+        b'}' => (b'{', b'}', -1),
+        _ => return None,
+    };
+    let (seek, nest) = if direction == 1 { (close, open) } else { (open, close) };
+    let mut depth = 0i32;
+    let mut index = offset as isize;
+    loop {
+        index += direction;
+        if index < 0 || index as usize >= bytes.len() {
+            return None;
+        }
+        let byte = bytes[index as usize];
+        if byte == nest {
+            depth += 1;
+        } else if byte == seek {
+            if depth == 0 {
+                return Some(index as usize);
+            }
+            depth -= 1;
+        }
+    }
+}
+
+fn fold_regions_in(text: &str) -> Vec<(usize, usize)> {
+    // Find brace pairs line by line: a `{` opens a region, its matching `}`
+    // closes it. This is robust to comments and strings at the cost of only
+    // handling `{}` — good enough for fold markers in C-like code.
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut regions = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let mut block_comment = false;
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if block_comment {
+                if let Some(rel) = line[i..].find("*/") {
+                    i += rel + 2;
+                    block_comment = false;
+                    continue;
+                }
+                break;
+            }
+            if line[i..].starts_with("/*") {
+                block_comment = true;
+                i += 2;
+                continue;
+            }
+            if line[i..].starts_with("//") {
+                break;
+            }
+            match bytes[i] {
+                b'"' | b'\'' => {
+                    let quote = bytes[i];
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != quote {
+                        if bytes[i] == b'\\' {
+                            i += 1;
+                        }
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                b'{' => stack.push(index),
+                b'}' => {
+                    if let Some(start) = stack.pop() {
+                        if start < index {
+                            regions.push((start, index));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    regions.sort_unstable();
+    regions
+}
+
+fn visible_line_in(text: &str, folded: &[(usize, usize)], line: usize) -> (usize, bool) {
+    let mut visible = 0usize;
+    for (index, _) in text.split('\n').enumerate() {
+        if index >= line {
+            return (visible, false);
+        }
+        if folded.iter().any(|(start, end)| index > *start && index <= *end) {
+            continue;
+        }
+        visible += 1;
+    }
+    (visible, false)
+}
+
+fn visible_lines_in(text: &str, folded: &[(usize, usize)]) -> Vec<usize> {
+    let total = text.split('\n').count();
+    let mut lines = Vec::new();
+    for index in 0..total {
+        if folded.iter().any(|(start, end)| index > *start && index <= *end) {
+            continue;
+        }
+        lines.push(index);
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -1298,5 +1967,45 @@ mod tests {
         // `->` splits the member access, so only the member name is returned.
         assert_eq!(word(text, 24), "count");
         assert_eq!(word(text, 4), "flags.bits");
+    }
+
+    #[test]
+    fn bracket_matching_pairs() {
+        let text = "fn main() { let x = (1 + 2); }";
+        // `(` at 7 pairs with `)` at 8.
+        assert_eq!(matching_bracket_in(text, 7), Some(8));
+        assert_eq!(matching_bracket_in(text, 8), Some(7));
+        // `{` at 10 pairs with `}` at 29.
+        assert_eq!(matching_bracket_in(text, 10), Some(29));
+        assert_eq!(matching_bracket_in(text, 29), Some(10));
+        // Not a bracket.
+        assert_eq!(matching_bracket_in(text, 4), None);
+    }
+
+    #[test]
+    fn bracket_matching_nested_ignores_inner() {
+        let text = "f(g(h(x)))";
+        // `(` at 1 pairs with `)` at 9; `(` at 3 pairs with `)` at 8.
+        assert_eq!(matching_bracket_in(text, 1), Some(9));
+        assert_eq!(matching_bracket_in(text, 3), Some(8));
+    }
+
+    #[test]
+    fn fold_regions_indentation() {
+        let text = "fn main() {\n    let x = 1;\n    if x > 0 {\n        y();\n    }\n}\n";
+        let regions = fold_regions_in(text);
+        assert!(regions.contains(&(0, 5)), "function block: {regions:?}");
+        assert!(regions.contains(&(2, 4)), "if block: {regions:?}");
+    }
+
+    fn visible_lines_skip_folded() {
+        let folded = vec![(1, 2)];
+        // 5 lines (last is the empty line after the final `\n`).
+        assert_eq!(visible_lines_in("a\nb\nc\nd\n", &folded), vec![0, 3, 4]);
+        assert_eq!(visible_line_in("a\nb\nc\nd\n", &folded, 0), (0, false));
+        assert_eq!(visible_line_in("a\nb\nc\nd\n", &folded, 1), (1, true));
+        assert_eq!(visible_line_in("a\nb\nc\nd\n", &folded, 2), (1, true));
+        assert_eq!(visible_line_in("a\nb\nc\nd\n", &folded, 3), (1, false));
+        assert_eq!(visible_lines_in("a\nb\nc\nd\n", &folded).len(), 3);
     }
 }

@@ -135,6 +135,75 @@ pub fn plan_build(project: &Project) -> Result<BuildPlan> {
         Language::ZR => plan_zr(project, &compiler, artifact),
     }
 }
+/// Plan a static-analysis run for the project's language. Returns `None` when
+/// no analyzer for the language is found on PATH, so the IDE can report the
+/// tool as unavailable rather than fail the run.
+pub fn plan_static_analysis(project: &Project) -> Option<BuildPlan> {
+    let language = project.config.project.language;
+    let sources = project.source_files().ok()?;
+    match language {
+        Language::C | Language::Cpp => {
+            let clang_tidy = find_program("clang-tidy")?;
+            let mut args = vec![];
+            for source in &sources {
+                args.push(source.display().to_string());
+            }
+            args.push(format!("--std={}", project.config.compiler.std));
+            for define in &project.config.compiler.defines {
+                args.push(format!("-D{define}"));
+            }
+            for include in &project.config.compiler.includes {
+                let include = project.root.join(include);
+                args.push(format!("-I{}", include.display()));
+            }
+            Some(BuildPlan {
+                program: clang_tidy,
+                args,
+                cwd: project.root.clone(),
+                env: vec![],
+                artifact: project.build_dir(),
+            })
+        }
+        Language::Rust => {
+            let cargo = find_program("cargo")?;
+            Some(BuildPlan {
+                program: cargo,
+                args: vec!["clippy".into(), "--message-format=short".into()],
+                cwd: project.root.clone(),
+                env: vec![],
+                artifact: project.build_dir(),
+            })
+        }
+        Language::Zig => {
+            let zig = find_program("zig")?;
+            let entry = project.entry_file();
+            let mut args = vec!["build-exe".into(), entry.display().to_string()];
+            args.push(format!("-fno-emit-bin={}", project.build_dir().display()));
+            Some(BuildPlan {
+                program: zig,
+                args,
+                cwd: project.root.clone(),
+                env: vec![],
+                artifact: project.build_dir(),
+            })
+        }
+        Language::ZR => find_program("zr-lint").map(|zr_lint| BuildPlan {
+            program: zr_lint,
+            args: sources
+                .iter()
+                .map(|source| source.display().to_string())
+                .collect(),
+            cwd: project.root.clone(),
+            env: vec![],
+            artifact: project.build_dir(),
+        }),
+    }
+}
+
+fn find_program(name: &str) -> Option<String> {
+    let path = ns_project::toolchain::find_command(name)?;
+    Some(path.display().to_string())
+}
 
 fn plan_native(project: &Project, compiler: &str, artifact: PathBuf) -> Result<BuildPlan> {
     let sources = project.source_files()?;
@@ -300,7 +369,11 @@ fn plan_zr(project: &Project, compiler: &str, artifact: PathBuf) -> Result<Build
 pub fn resolve_compiler(project: &Project) -> String {
     let configured = project.config.compiler.path.trim();
     if !configured.is_empty() {
-        return configured.to_string();
+        // Expand `$config["key"]` / built-in variables for cross-platform paths.
+        let expanded = project.expand_path(configured);
+        if !expanded.is_empty() {
+            return expanded;
+        }
     }
     let named = project.config.project.compiler.trim();
     if !named.is_empty() {
@@ -565,5 +638,31 @@ mod tests {
             artifact: PathBuf::new(),
         };
         assert!(plan.command_line().contains("'/tmp/my project/app.elf'"));
+    }
+
+    #[test]
+    fn static_analysis_plan_uses_language_analyzer() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-embed-ide-static-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"t\"\nversion = \"0.1.0\"\nlanguage = \"C\"\ntarget = \"x86_64\"\ncompiler = \"cc\"\nsimulator = \"\"\ndebugger = \"lldb\"\nflasher = \"\"\n\n[compiler]\nstd = \"c11\"\nopt = \"-O0\"\ndefines = []\nincludes = []\n\n[debugger]\ninterface = \"swd\"\n\n[flasher]\ninterface = \"swd\"\n\n[build]\nconfig = \"debug\"\nout_dir = \"build\"\n\n[sim]\ncpu = \"\"\nperiod = 0\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
+
+        let project = Project::open(&root).unwrap();
+        // clang-tidy is not guaranteed to be installed; the plan must either
+        // return None (tool absent) or a clang-tidy plan. Both are valid.
+        if let Some(plan) = plan_static_analysis(&project) {
+            assert_eq!(plan.program, find_program("clang-tidy").unwrap());
+            assert!(plan.args.iter().any(|arg| arg == "--std=c11"));
+        }
+
+        let _ = fs::remove_dir_all(root);
     }
 }

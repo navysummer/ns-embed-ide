@@ -684,3 +684,83 @@ fn dap_watchpoint_resolves_and_stops_on_write() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+/// Hardware breakpoint (`setBreakpoints` with `mode: "hardware"`) must bind and
+/// stop the debuggee, and the adapter must confirm it as verified.
+#[test]
+fn dap_hardware_breakpoint_binds_and_stops() {
+    if ns_debug::find_dap_adapter().is_none() {
+        eprintln!("lldb-dap 不可用，跳过端到端测试");
+        return;
+    }
+    if Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("cc 不可用，跳过端到端测试");
+        return;
+    }
+
+    let (root, source, program) = compile_fixture();
+    let source_display = source.display().to_string();
+    let config = DebugConfig {
+        program,
+        args: Vec::new(),
+        cwd: root.clone(),
+        breakpoints: vec![DebugBreakpoint {
+            path: source_display.clone(),
+            line: 4,
+            hardware: true,
+            ..Default::default()
+        }],
+    };
+    let handle = ns_debug::spawn(&config).expect("failed to launch debug session");
+
+    // The adapter must confirm the hardware location bound.
+    let results = wait_for(
+        &handle,
+        |msg| matches!(msg, DebugMessage::BreakpointResults { .. }),
+        Duration::from_secs(10),
+        "hardware breakpoint results",
+    );
+    let DebugMessage::BreakpointResults { file, results } = results else {
+        unreachable!()
+    };
+    assert_eq!(file, source_display);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].line, 4);
+    assert!(
+        results[0].verified,
+        "expected the adapter to confirm the hardware location: {}",
+        results[0].reason
+    );
+
+    // The hardware breakpoint must actually stop the debuggee.
+    let stop = wait_for(
+        &handle,
+        |msg| matches!(msg, DebugMessage::Stopped { .. }),
+        Duration::from_secs(10),
+        "hardware breakpoint stop",
+    );
+    let DebugMessage::Stopped { thread_id, .. } = stop else {
+        unreachable!()
+    };
+    handle.send(DebugCommand::GetStackTrace { thread_id }).unwrap();
+    let frames = wait_for(
+        &handle,
+        |msg| matches!(msg, DebugMessage::StackTrace { .. }),
+        Duration::from_secs(10),
+        "stack trace",
+    );
+    let DebugMessage::StackTrace { frames } = frames else {
+        unreachable!()
+    };
+    assert_eq!(frames.first().and_then(|frame| frame.line), Some(4));
+
+    handle.send(DebugCommand::Stop).unwrap();
+    wait_for(
+        &handle,
+        |msg| matches!(msg, DebugMessage::Terminated),
+        Duration::from_secs(15),
+        "process exit",
+    );
+
+    let _ = fs::remove_dir_all(root);
+}

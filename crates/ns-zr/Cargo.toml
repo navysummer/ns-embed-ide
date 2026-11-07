@@ -1,0 +1,14 @@
+[package]
+name = "ns-zr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "zr-lsp"
+path = "src/bin/zr-lsp.rs"
