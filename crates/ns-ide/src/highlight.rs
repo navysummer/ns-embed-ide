@@ -63,6 +63,16 @@ pub fn highlight_line(
             push(&mut spans, bytes.len() - i, TokenKind::Comment);
             break;
         }
+        // Assembly line comments: `;` (GNU as / most targets) and `@` (ARM
+        // syntax). Only for assembly; C/C++ keep `//`/`/* */` semantics.
+        // Detected at the current scan position so identifiers/registers
+        // before the comment are still classified normally.
+        if language == Language::Asm
+            && (rest.starts_with(';') || rest.starts_with('@'))
+        {
+            push(&mut spans, bytes.len() - i, TokenKind::Comment);
+            break;
+        }
 
         let ch = rest.chars().next().unwrap();
         let ch_len = ch.len_utf8();
@@ -132,6 +142,30 @@ pub fn highlight_line(
             }
             let word = &line[i..i + len];
             let kind = classify_identifier(word, line, i + len, language);
+            push(&mut spans, len, kind);
+            i += len;
+            has_code = true;
+            continue;
+        }
+
+        // Assembly directive: `.section`, `.text`, `.word` ... read the dot
+        // plus the following directive word as one keyword token.
+        if language == Language::Asm && ch == '.' {
+            let mut len = ch_len;
+            while i + len < bytes.len() {
+                let next = line[i + len..].chars().next().unwrap();
+                if is_ident_continue(next) {
+                    len += next.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let word = &line[i..i + len];
+            let kind = if keywords(language).contains(&word) {
+                TokenKind::Keyword
+            } else {
+                TokenKind::Punctuation
+            };
             push(&mut spans, len, kind);
             i += len;
             has_code = true;
@@ -208,6 +242,11 @@ fn classify_identifier(
     if types(language).contains(&word) {
         return TokenKind::Type;
     }
+    // Assembly label: `name:` at the end of an identifier (with only a label
+    // suffix following) marks a branch target / subroutine entry.
+    if language == Language::Asm && line[end..].starts_with(':') {
+        return TokenKind::Function;
+    }
     let rest = line[end..].trim_start();
     if rest.starts_with('(') || rest.starts_with("!(") || (rest.starts_with('!') && !rest.starts_with("!=")) {
         return TokenKind::Function;
@@ -249,6 +288,32 @@ fn keywords(language: Language) -> &'static [&'static str] {
             "continue", "struct", "enum", "trait", "impl", "pub", "use", "mod", "match",
             "unsafe", "extern", "asm", "true", "false", "const",
         ],
+        // Assembly: ARM / RISC-V mnemonics + directives common to GCC/as and
+        // the vendor assemblers (arm-none-eabi-as, riscv-none-elf-as, sdcc).
+        Language::Asm => &[
+            // ARM Thumb/ARM mnemonics
+            "mov", "movs", "movw", "movt", "add", "adds", "adc", "adcs", "sub", "subs", "sbc",
+            "sbcs", "and", "ands", "eor", "eors", "orr", "orrs", "bic", "bics", "mvn", "mvns",
+            "cmp", "cmn", "tst", "teq", "lsl", "lsr", "asr", "ror", "rrx", "mul", "mla", "mls",
+            "umull", "smull", "ldr", "ldrb", "ldrh", "ldrsb", "ldrsh", "str", "strb", "strh",
+            "ldm", "stm", "push", "pop", "bx", "blx", "b", "bl", "bx", "cbz", "cbnz", "it",
+            "itt", "ite", "itee", "svc", "bkpt", "nop", "dmb", "dsb", "isb", "wfi", "wfe", "sev",
+            "mrs", "msr", "cpsid", "cpsie", "rev", "rev16", "revsh", "rbit", "clz", "sxtb",
+            "sxth", "uxtb", "uxth", "udiv", "sdiv",
+            // RISC-V
+            "addi", "slti", "sltiu", "xori", "ori", "andi", "slli", "srli", "srai", "jal",
+            "jalr", "beq", "bne", "blt", "bge", "bltu", "bgeu", "lw", "lh", "lhu", "lb", "lbu",
+            "sw", "sh", "sb", "fence", "fence.i", "ecall", "ebreak", "mret", "wfi", "csrrw",
+            "csrrs", "csrrc", "csrrwi", "csrrsi", "csrrci", "auipc", "lui",
+            // Directives & pseudo-ops
+            ".section", ".text", ".data", ".bss", ".rodata", ".global", ".globl", ".extern",
+            ".type", ".size", ".align", ".balign", ".p2align", ".word", ".hword", ".short",
+            ".byte", ".long", ".ascii", ".asciz", ".string", ".space", ".fill", ".zero",
+            ".equ", ".set", ".include", ".macro", ".endm", ".if", ".else", ".endif", ".org",
+            ".thumb", ".arm", ".thumb_func", ".syntax", ".cpu", ".fpu", ".arch", ".code",
+            ".weak", ".comm", ".lcomm", ".option", ".ltorg", ".pool", ".req", ".unreq", ".irq",
+            ".fnstart", ".fnend", ".cantunwind",
+        ],
     }
 }
 
@@ -277,6 +342,16 @@ fn types(language: Language) -> &'static [&'static str] {
         Language::ZR => &[
             "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128",
             "isize", "f32", "f64", "bool", "void", "Self",
+        ],
+        // Assembly register names.
+        Language::Asm => &[
+            "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+            "r13", "r14", "r15", "sp", "lr", "pc", "fp", "ip", "x0", "x1", "x2", "x3", "x4",
+            "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16",
+            "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
+            "x28", "x29", "x30", "x31", "zero", "ra", "gp", "tp", "t0", "t1", "t2", "s0",
+            "s1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "s2", "s3", "s4", "s5",
+            "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6", "s0", "s1",
         ],
     }
 }
@@ -341,5 +416,37 @@ mod tests {
         let line = "fn f<'a>(x: &'a str) {}";
         let spans = highlight_line(line, Language::Rust, &mut block);
         assert_eq!(total(&spans), line.len());
+    }
+
+    #[test]
+    fn assembly_highlights_mnemonics_labels_comments() {
+        let mut block = false;
+        // ARM reset handler line: label + mnemonic + comment.
+        let spans = highlight_line(
+            "Reset_Handler: ldr r0, =_estack @ init sp",
+            Language::Asm,
+            &mut block,
+        );
+        assert_eq!(total(&spans), "Reset_Handler: ldr r0, =_estack @ init sp".len());
+        // The label `Reset_Handler` reads as a function (branch target).
+        assert!(spans.iter().any(|s| s.kind == TokenKind::Function));
+        // `ldr` is a mnemonic.
+        assert!(spans.iter().any(|s| s.kind == TokenKind::Keyword));
+        // `@` comment tail is a comment.
+        assert!(spans.iter().any(|s| s.kind == TokenKind::Comment));
+    }
+
+    #[test]
+    fn assembly_semicolon_comment_and_directive() {
+        let mut block = false;
+        let spans = highlight_line(
+            ".section .text, \"ax\" ; code section",
+            Language::Asm,
+            &mut block,
+        );
+        assert_eq!(total(&spans), ".section .text, \"ax\" ; code section".len());
+        // `.section` directive is a keyword.
+        assert!(spans.iter().any(|s| s.kind == TokenKind::Keyword));
+        assert!(spans.iter().any(|s| s.kind == TokenKind::Comment));
     }
 }

@@ -24,12 +24,13 @@ fn main() {
     let initial = std::env::args().nth(1).map(PathBuf::from);
 
     Application::new().run(move |cx: &mut App| {
+        // Load user keystroke overrides so the keymap honors `keybindings.json`.
+        let overrides = ns_project::KeybindingOverrides::load();
         let mut bindings = Vec::new();
-        bindings.extend(app::bindings());
+        bindings.extend(app::bindings_with(&overrides));
         bindings.extend(editor::bindings());
         bindings.extend(text_field::bindings());
         cx.bind_keys(bindings);
-
         let bounds = Bounds::centered(None, size(px(1380.), px(860.)), cx);
         cx.open_window(
             WindowOptions {

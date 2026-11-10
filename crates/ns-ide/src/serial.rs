@@ -11,7 +11,7 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use gpui::prelude::*;
-use gpui::{Context, Entity, EventEmitter, Render, Window, div, px, rgb};
+use gpui::{Context, Entity, EventEmitter, Render, Window, div, px};
 use serde::{Deserialize, Serialize};
 
 use crate::text_field::TextField;
@@ -333,7 +333,7 @@ impl Render for SerialMonitor {
                                     .rounded(px(5.))
                                     .bg(theme::alpha(theme::STROKE, 0.08))
                                     .text_size(px(10.))
-                                    .text_color(rgb(theme::TEXT))
+                                    .text_color(theme::color(theme::TEXT))
                                     .child(if config.port.is_empty() {
                                         "选择串口设备…".to_string()
                                     } else {
@@ -376,7 +376,7 @@ impl Render for SerialMonitor {
                     .bg(theme::alpha(theme::STROKE, 0.04))
                     .p(px(6.))
                     .text_size(px(10.))
-                    .text_color(rgb(theme::TEXT))
+                    .text_color(theme::color(theme::TEXT))
                     .child(if receive.is_empty() {
                         "（接收区为空）".to_string()
                     } else {
@@ -389,7 +389,7 @@ impl Render for SerialMonitor {
                     .items_center()
                     .gap(px(8.))
                     .text_size(px(9.))
-                    .text_color(rgb(theme::TEXT_FAINT))
+                    .text_color(theme::color(theme::TEXT_FAINT))
                     .child(format!("RX {rx_bytes} B · TX {tx_bytes} B"))
                     .child(toggle("hex-recv", "HEX 显示", hex_receive, cx))
                     .child(toggle("ts", "时间戳", ts, cx))
@@ -429,7 +429,7 @@ impl Render for SerialMonitor {
                 style.child(
                     div()
                         .text_size(px(10.))
-                        .text_color(rgb(theme::DANGER))
+                        .text_color(theme::color(theme::DANGER))
                         .child(error.unwrap_or_default()),
                 )
             })
@@ -453,7 +453,7 @@ fn baud_selector(current: u32, _is_open: bool, cx: &mut Context<SerialMonitor>) 
                     theme::alpha(theme::STROKE, 0.05)
                 })
                 .text_size(px(9.))
-                .text_color(if selected { rgb(theme::ACCENT) } else { rgb(theme::TEXT_DIM) })
+                .text_color(if selected { theme::color(theme::ACCENT) } else { theme::color(theme::TEXT_DIM) })
                 .child(rate.to_string())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.inner.lock().unwrap().config.baud = rate;
@@ -477,7 +477,7 @@ fn port_chip(name: String, current: &str, cx: &mut Context<SerialMonitor>) -> im
             theme::alpha(theme::STROKE, 0.05)
         })
         .text_size(px(9.))
-        .text_color(if selected { rgb(theme::ACCENT) } else { rgb(theme::TEXT_DIM) })
+        .text_color(if selected { theme::color(theme::ACCENT) } else { theme::color(theme::TEXT_DIM) })
         .child(name.clone())
         .on_click(cx.listener(move |this, _, _, cx| {
             this.set_port(name.clone(), cx);
@@ -502,7 +502,7 @@ fn toggle(
             theme::alpha(theme::STROKE, 0.05)
         })
         .text_size(px(9.))
-        .text_color(if checked { rgb(theme::ACCENT) } else { rgb(theme::TEXT_FAINT) })
+        .text_color(if checked { theme::color(theme::ACCENT) } else { theme::color(theme::TEXT_FAINT) })
         .child(label.to_string())
         .on_click(cx.listener(move |this, _, _, cx| {
             let mut inner = this.inner.lock().unwrap();

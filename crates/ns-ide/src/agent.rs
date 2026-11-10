@@ -14,7 +14,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use gpui::prelude::*;
-use gpui::{Context, Entity, EventEmitter, FontWeight, Render, Window, div, px, rgb};
+use gpui::{Context, Entity, EventEmitter, FontWeight, Render, Window, div, px};
 
 use crate::text_field::TextField;
 use crate::{theme, widgets};
@@ -287,7 +287,7 @@ impl Render for AgentPanel {
                         div()
                             .text_size(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(theme::TEXT))
+                            .text_color(theme::color(theme::TEXT))
                             .child(format!("Agent 任务 ({})", self.task_count())),
                     )
                     .child(
@@ -359,7 +359,7 @@ impl Render for AgentPanel {
                                                     .text_ellipsis()
                                                     .whitespace_nowrap()
                                                     .text_size(px(11.))
-                                                    .text_color(rgb(theme::TEXT))
+                                                    .text_color(theme::color(theme::TEXT))
                                                     .child(task.title.clone()),
                                             )
                                             .child(
@@ -398,7 +398,7 @@ impl Render for AgentPanel {
                                                 div()
                                                     .text_size(px(11.))
                                                     .font_weight(FontWeight::SEMIBOLD)
-                                                    .text_color(rgb(theme::TEXT))
+                                                    .text_color(theme::color(theme::TEXT))
                                                     .child(task.title.clone()),
                                             )
                                             .child(
@@ -406,7 +406,7 @@ impl Render for AgentPanel {
                                                     .mt(px(4.))
                                                     .text_size(px(10.5))
                                                     .whitespace_normal()
-                                                    .text_color(rgb(theme::TEXT_DIM))
+                                                    .text_color(theme::color(theme::TEXT_DIM))
                                                     .child(if task.output.is_empty() {
                                                         "(无输出)".to_string()
                                                     } else {
@@ -418,7 +418,7 @@ impl Render for AgentPanel {
                                     .unwrap_or_else(|| {
                                         div()
                                             .text_size(px(11.))
-                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
                                             .child("选择一个任务查看输出")
                                             .into_any_element()
                                     }),

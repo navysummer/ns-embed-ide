@@ -61,6 +61,10 @@ pub struct FlashRequest {
     pub read_to: Option<PathBuf>,
     /// Optional adapter serial/device overrides, passed through to the tool.
     pub device: Option<String>,
+    /// Optional external flash-algorithm geometry (from a `.FLM` file). When
+    /// present, adapters use its page size / base address to configure the
+    /// flash programming.
+    pub algorithm: Option<crate::flash_algorithm::FlashAlgorithm>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +257,18 @@ impl Flasher for OpenOcd {
 
     fn run(&self, request: &FlashRequest, on_line: &mut dyn FnMut(&str)) -> Result<FlashOutcome> {
         let image = load_firmware(&request.firmware)?;
+        // Optional FLM geometry: use the algorithm's base as the program /
+        // verify / readback address; a page size drives the erase span.
+        let flash_base = request
+            .algorithm
+            .as_ref()
+            .map(|flm| flm.base_address)
+            .unwrap_or(image.base as u32);
+        let page_size = request
+            .algorithm
+            .as_ref()
+            .map(|flm| flm.page_size)
+            .unwrap_or(0);
         let action_args = match request.action {
             FlashAction::Flash => {
                 let cmd = match image.format {
@@ -260,16 +276,27 @@ impl Flasher for OpenOcd {
                         format!("program {} verify reset", request.firmware.display())
                     }
                     _ => format!(
-                        "program {} {} verify reset",
+                        "program {} {:#x} verify reset",
                         request.firmware.display(),
-                        image.base
+                        flash_base
                     ),
                 };
                 vec!["-c".to_string(), cmd]
             }
-            FlashAction::Erase => vec!["-c".to_string(), "erase flash".to_string()],
+            FlashAction::Erase => {
+                let cmd = if page_size > 0 {
+                    format!("flash erase_address {:#x} {}", flash_base, page_size)
+                } else {
+                    "erase flash".to_string()
+                };
+                vec!["-c".to_string(), cmd]
+            }
             FlashAction::Verify => {
-                let cmd = format!("verify_image {} {}", request.firmware.display(), image.base);
+                let cmd = format!(
+                    "verify_image {} {:#x}",
+                    request.firmware.display(),
+                    flash_base
+                );
                 vec!["-c".to_string(), cmd]
             }
             FlashAction::Read => {
@@ -277,9 +304,9 @@ impl Flasher for OpenOcd {
                     request.firmware.with_extension("readback.bin")
                 });
                 let cmd = format!(
-                    "dump_image {} {} {}",
+                    "dump_image {} {:#x} {}",
                     out.display(),
-                    image.base,
+                    flash_base,
                     image.bytes.len()
                 );
                 vec!["-c".to_string(), cmd]
@@ -314,22 +341,27 @@ impl Flasher for PyOcd {
     }
 
     fn run(&self, request: &FlashRequest, on_line: &mut dyn FnMut(&str)) -> Result<FlashOutcome> {
+        let device = request
+            .device
+            .clone()
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| "stm32f103c8".to_string());
         let args: Vec<String> = match request.action {
             FlashAction::Flash => vec![
                 "flash".to_string(),
                 "-t".to_string(),
-                "stm32f103c8".to_string(),
+                device.clone(),
                 request.firmware.to_string_lossy().into_owned(),
             ],
             FlashAction::Erase => vec![
                 "erase".to_string(),
                 "-t".to_string(),
-                "stm32f103c8".to_string(),
+                device.clone(),
             ],
             FlashAction::Verify => vec![
                 "verify".to_string(),
                 "-t".to_string(),
-                "stm32f103c8".to_string(),
+                device.clone(),
                 request.firmware.to_string_lossy().into_owned(),
             ],
             FlashAction::Read => {
@@ -339,7 +371,7 @@ impl Flasher for PyOcd {
                 vec![
                     "save".to_string(),
                     "-t".to_string(),
-                    "stm32f103c8".to_string(),
+                    device.clone(),
                     out.to_string_lossy().into_owned(),
                 ]
             }
@@ -370,13 +402,25 @@ impl Flasher for JLink {
     }
 
     fn run(&self, request: &FlashRequest, on_line: &mut dyn FnMut(&str)) -> Result<FlashOutcome> {
+        let device = request
+            .device
+            .clone()
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| "STM32F103C8".to_string());
         let interface = match request.interface.as_str() {
             "jtag" => "JTAG",
             _ => "SWD",
         };
+        // Optional FLM geometry: J-Link's `verifybin`/`savebin` take an explicit
+        // base address; the algorithm's base refines the default 0x0800_0000.
+        let flash_base = request
+            .algorithm
+            .as_ref()
+            .map(|flm| flm.base_address)
+            .unwrap_or(0x0800_0000);
         let mut args = vec![
             "-device".to_string(),
-            "STM32F103C8".to_string(),
+            device,
             "-if".to_string(),
             interface.to_string(),
             "-speed".to_string(),
@@ -394,13 +438,27 @@ impl Flasher for JLink {
                 commands.push_str("erase\n");
             }
             FlashAction::Verify => {
-                commands.push_str(&format!("verifybin {}\n", request.firmware.display()));
+                commands.push_str(&format!(
+                    "verifybin {} {:#x}\n",
+                    request.firmware.display(),
+                    flash_base
+                ));
             }
             FlashAction::Read => {
                 let out = request.read_to.clone().unwrap_or_else(|| {
                     request.firmware.with_extension("readback.bin")
                 });
-                commands.push_str(&format!("savebin {} 0x8000000 0x8000\n", out.display()));
+                let size = request
+                    .algorithm
+                    .as_ref()
+                    .map(|flm| flm.device_size)
+                    .unwrap_or(0x8000);
+                commands.push_str(&format!(
+                    "savebin {} {:#x} {:#x}\n",
+                    out.display(),
+                    flash_base,
+                    size
+                ));
             }
         }
         commands.push_str("exit\n");
@@ -567,6 +625,7 @@ mod tests {
             interface: "swd".to_string(),
             read_to: None,
             device: None,
+            algorithm: None,
         };
         let flasher = OpenOcd::new(stub.to_str().unwrap());
         let outcome = flasher.run(&request, &mut |_| {}).unwrap();
@@ -640,6 +699,7 @@ mod tests {
             interface: project.config.flasher.interface.clone(),
             read_to: None,
             device: None,
+            algorithm: None,
         };
         let outcome = adapter.run(&request, &mut |_| {}).unwrap();
         assert!(outcome.success, "flash should succeed: {}", outcome.combined_output());

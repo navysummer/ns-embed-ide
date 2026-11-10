@@ -12,7 +12,7 @@
 |---|---|
 | 名称 | ns-embed-ide（商量嵌入式开发环境） |
 | 定位 | 面向嵌入式 MCU/SoC 的跨平台集成开发环境（IDE） |
-| 支持语言 | C、C++、Rust、Zig、**ZR**（自研新语言） |
+| 支持语言 | C、C++、Rust、Zig、**ZR**（外部语言 zrlang.github.io） |
 | 核心机制 | 一切工具链行为（编译/仿真/调试/烧写/运行）由项目根目录 `project.toml` 驱动 |
 | 平台 | Windows / macOS / Linux |
 | 技术栈 | Rust + GPUI |
@@ -37,7 +37,7 @@
    - 只用假数据、只跑通演示路径，却声称功能已完成。
    - 无法在当前迭代完成的能力，必须明确标注为**未完成**，列出缺口与验收方式，且不得出现在“已完成”清单中。
 3. **交付即验证**：提交前必须在本机实际运行验证（`cargo check/build/test` + 启动应用走通关键路径）；UI 改动尽量截图核对；测试失败或存在警告不得提交。
-4. **文档同步**：`AGENT.md` / `README.md` 中的范围与完成状态必须与代码一致；新增功能须同步更新规划、验收标准与完成状态表。
+4. **文档同步**：`AGENTS.md` / `README.md` 中的范围与完成状态必须与代码一致；新增功能须同步更新规划、验收标准与完成状态表。
 
 ---
 
@@ -54,7 +54,7 @@
 │  lsp (语言服务) · terminal · logging                 │
 ├─────────────────────────────────────────────────────┤
 │              工具链适配层 (外部进程)                   │
-│  gcc/clang/zig/zrc · gdb/llvm · openocd/jlink/...    │
+│  gcc/clang/zig/zr · gdb/llvm · openocd/jlink/...   │
 │  仿真器 (内建或外部) · 烧写器 (openocd/pyocd/...)     │
 └─────────────────────────────────────────────────────┘
 ```
@@ -74,7 +74,7 @@
 | `ns-lsp` | 语言服务客户端（LSP over stdio），诊断/补全/跳转 |
 | `ns-syntax` | 语法高亮（tree-sitter 或内建词法） |
 | `ns-device` | 目标设备库：SVD 寄存器、启动文件、链接脚本模板 |
-| `ns-zr` | ZR 语言定义、编译器协议、语法 |
+| `ns-zr` | （已移除；ZR 由外部 `zr` 语言提供，见 F4.2） |
 | `ns-log` | 日志、事件总线 |
 
 > crate 划分可在实现阶段调整；此处仅作规划约束。
@@ -96,7 +96,7 @@
 | F9 | 运行编排 | 一键 编译→烧写→调试/运行，按 project.toml 协调 |
 | F10 | 工具链管理 | 工具自动发现、版本、路径配置、缺失提示 |
 | F11 | 目标设备支持 | MCU 选择、SVD 寄存器、启动文件、链接脚本 |
-| F12 | ZR 语言 | 自研语言：编译器协议、语法、库 |
+| F12 | ZR 语言 | 外部 `zr` 语言：编译器与 LSP 接入 |
 | F13 | 界面框架 | Dock 布局、命令面板、主题、多窗口、快捷键 |
 | F14 | 辅助功能 | 终端、输出/日志、搜索、版本控制、静态分析、设置 |
 
@@ -202,14 +202,14 @@ period = 0                    # 仿真周期参数（可选）
 - **跳转到包含头文件**：`#include`/`use` 解析定位。
 - **符号跳转**：文件大纲、面包屑、全局符号搜索入口。
 - **查找引用**、**重命名符号**（含跨文件重命名）。
-- 跳转来源优先级：**LSP**（clangd / rust-analyzer / zls / zr-lsp）→ tree-sitter 符号索引 → 文本扫描回退；回退时提示精确度受限。
+- 跳转来源优先级：**LSP**（clangd / rust-analyzer / zls / zr lsp）→ tree-sitter 符号索引 → 文本扫描回退；回退时提示精确度受限。
 - 多定义歧义（重载/宏）弹出候选列表；跨文件跳转自动打开并聚焦目标文件。
 - **返回历史栈**（Alt+←/→）：跳转后按顺序回退/前进。
 - 与诊断联动：问题面板点击错误/警告直接定位到源码行。
 
 #### F3.3 代码提示
 
-- **补全**：LSP 触发词（`clangd`/`rust-analyzer`/`zls`/`zr-lsp`）；tree-sitter 符号索引回退补全（文件内符号 + 关键字 + 片段）。
+- **补全**：LSP 触发词（`clangd`/`rust-analyzer`/`zls`/`zr lsp`）；tree-sitter 符号索引回退补全（文件内符号 + 关键字 + 片段）。
 - **悬停提示**：类型/签名/文档说明（LSP `hover`；回退为语义近似）。
 - **签名帮助**：函数调用括号内显示参数列表与当前参数高亮（LSP `signatureHelp`）。
 - **参数/内联提示**：实参名提示（`inlayHints`）、类型提示。
@@ -224,15 +224,15 @@ period = 0                    # 仿真周期参数（可选）
 | 能力 | C | C++ | Rust | Zig | ZR |
 |---|---|---|---|---|---|
 | 语法高亮 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 补全/跳转（LSP） | clangd | clangd | rust-analyzer | zls | zr-lsp（自研） |
-| 构建系统 | Make/CMake | Make/CMake | Cargo | build.zig | zr build |
+| 补全/跳转（LSP） | clangd | clangd | rust-analyzer | zls | zr lsp |
+| 构建系统 | Make/CMake | Make/CMake | Cargo | build.zig | zr 直接编译 |
 | 单测集成 | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-#### F4.2 ZR 语言（自研新语言）
-- 定义语言规范与编译器 `zrc` 的 CLI/LSP 协议。
-- 面向嵌入式：位域、寄存器映射、中断、裸函数、无 GC 内存模型。
-- 语法高亮、错误诊断。
-- 内建标准库（`zr-std`）规划：GPIO/UART/TIMER/中断抽象。
+#### F4.2 ZR 语言（外部语言）
+- 接入外部 `zr` 语言（https://zrlang.github.io/），编译器为 `zr`。
+- 构建：`zr <entry> --target <triple> -o <artifact>`（裸机 RISC-V → `riscv32-unknown-none`，ARM Cortex-M → `arm-none-eabi`）。
+- LSP：`zr lsp`（stdio），与 clangd/rust-analyzer 同构驱动。
+- 语法高亮、错误诊断由 `zr` 自身提供。
 
 ### F5 编译与构建
 
@@ -246,7 +246,7 @@ period = 0                    # 仿真周期参数（可选）
   - C/C++：Make / CMake 生成或直接编译。
   - Rust：`cargo build --target <embedded-triple>`。
   - Zig：`zig build`。
-  - ZR：`zrc build`。
+  - ZR：`zr <entry> --target <triple> -o <artifact>`。
 
 ### F6 仿真
 
@@ -342,12 +342,11 @@ period = 0                    # 仿真周期参数（可选）
 - 启动文件、链接脚本模板（按设备生成）。
 - 设备选择入口：向导第 7 步 + 项目设置。
 
-### F12 ZR 语言（见 F4.2，此处为独立模块条目）
+### F12 ZR 语言（外部，见 F4.2）
 
-- 语言规范（语法、语义、嵌入式扩展）。
-- `zr-lsp`：语言服务器协议实现。
-- `zrc` 编译器调用约定、`zr build` 构建后端。
-- 标准库 `zr-std`（GPIO/UART/TIMER/中断）。
+- 外部 `zr` 语言（https://zrlang.github.io/），编译器与 LSP 均由上游提供。
+- `zr` 编译器调用约定（`zr <entry> --target <triple> -o <artifact>`）。
+- `zr lsp` 语言服务器接入。
 
 ### F13 界面框架
 
@@ -386,7 +385,7 @@ period = 0                    # 仿真周期参数（可选）
 | **M7 仿真** | 内建指令级仿真器、虚拟外设、仿真视图 | F6 |
 | **M8 语言增强** | LSP 补全/跳转、rust-analyzer/clangd/zls 集成 | F3、F4 |
 | **M9 设备库** | SVD 解析、设备选择、链接脚本生成 | F11 |
-| **M10 ZR 完善** | `zr-lsp`、`zrc` 调用、`zr-std` | F4.2、F12 |
+| **M10 ZR 接入** | 外部 `zr` 编译器与 `zr lsp` 接入 | F4.2、F12 |
 | **M11 工具链管理** | 自动探测、版本、缺失指引 | F10 |
 | **M12 辅助与体验** | 终端、搜索、Git、主题、命令面板、静态分析 | F14 |
 
@@ -400,6 +399,8 @@ period = 0                    # 仿真周期参数（可选）
 - **M1 项目与配置**：新建向导（语言 → 编译器 → 仿真/调试/烧写 → 生成项目）、`project.toml` 读写/校验、最近项目、工具探测。
 - **M2 语言基础**：C/C++/Rust/Zig/ZR 内建词法高亮；gcc/clang/rust 诊断解析并在问题面板定位。
 - **M3 构建**：按 `project.toml` 调用编译器、构建输出面板、问题面板点击跳转。
+- **M3 构建进度与取消（F5 切片）**：构建输出**逐行流式**追加到输出面板（`ns_build::execute_stream`，stdout/stderr 双线程读，不在进程退出后一次性 dump，长构建可见中间输出）；构建中状态栏显示「■ 取消构建」按钮，点击置位取消标志（`ns_build::execute_stream_cancelable`）终止子进程并在输出面板如实报告「构建已取消」；单测覆盖逐行送达与取消（预置取消标志→失败报告+无后续输出）。
+- **F5 并行构建（M3 切片）**：`project.toml` 新增 `[build] jobs`（0=自动检测 CPU 数，上限 32）；`Project::build_jobs` 解析；CMake 后端 `cmake --build ... -j N`、Make 后端 `make -jN`、Rust `cargo build -j N` 全部透传并行作业数；设置页新增「并行作业数」字段（保存校验：0 或正整数，写回 `[build] jobs`）；单测覆盖 cmake/make 透传 `-j` 与 cargo 配置 jobs 生效。
 - **F14 全局文件搜索**：`Cmd/Ctrl+Shift+F` 打开搜索面板（类命令面板样式），对项目执行大小写不敏感的**内容 + 文件名**搜索（跳过 .git/build/target/node_modules、跳过二进制与 >1MB 文件），↑↓ 选择、Enter/点击跳转，`Esc` 关闭；支持以当前选区文本作为预填关键词。单位测试覆盖大小写不敏感、目录跳过、上限 200 条、空关键词。
 - **编辑器虚拟视口**：编辑器改为手动虚拟滚动（行号槽/断点/命中行/当前行随滚动同步，滚动到底/顶自动夹紧，跳转诊断/断点/搜索结果会自动把目标行滚动进可见区域）。
 - **F7.1 编辑器内断点子集**：行号槽点击切换、F9 切换当前行、`Cmd/Ctrl+Shift+F9` 清除全部、断点随项目保存到 `.ns-ide/breakpoints.json`（重新打开恢复）、独立“断点”面板（按文件分组、勾选启用/禁用、点击跳转源码、删除单条、清除全部、启用计数、显示条件表达式）、状态栏启用计数。
@@ -410,23 +411,24 @@ period = 0                    # 仿真周期参数（可选）
   - **断点状态（已验证/命中/未绑定/未同步/失效/已禁用）逐行展示**：`setBreakpoints` 响应中每个断点的 `verified`/`reason` 由适配器解析为 `BreakpointResults`，启动与运行时重新同步时写入断点存储并持久化；命中断点后 `mark_hit` 标记为「命中」，继续运行后自动清除；文件被删除/重命名或源码缩短导致行号越界时，同步前自动重新校验并标记「失效」且显示原因（不再下发给适配器，恢复后自动重新同步）；面板新增「状态」列（玉色=已验证、朱色=命中/未绑定、金色=未同步/失效、灰=已禁用），并在属性摘要后显示未绑定/失效原因；右键「编辑断点属性…」可同屏编辑条件/命中次数/日志消息。
   - **观察点（数据断点，DAP `dataBreakpointInfo` + `setDataBreakpoints`）**：断点面板下方「观察点」区新增/编辑/删除/启用·禁用观测表达式（如 `marker`、`obj.field`），点击访问类型徽章在**读取 / 写入 / 读写**间循环；变量面板每行右侧「👁」一键把变量加入观察点，编辑器右键「添加观察点（数据断点）…」以光标所在标识符预填；命令面板「添加观察点（数据断点）…」。实现要点：每次暂停后清空旧的适配器 `dataId` 并重新解析（`dataBreakpointInfo` 只传 `variablesReference`，因此先在 Locals/Globals 变量列表中找到表达式所在作用域，找不到再退回 frame/global 上下文），解析完成后一次性下发 `setDataBreakpoints`；`setDataBreakpoints` 响应按请求顺序回填每个观察点的已验证/未绑定状态与原因；观察点随 `.ns-ide/breakpoints.json` 持久化（`watchpoints` 字段），继续运行/会话结束时清除「命中」标记。e2e 用例 `dap_watchpoint_resolves_and_stops_on_write` 验证解析 dataId、下发写入观察点、继续后在写入处停下。
   - **硬件断点**：断点面板/编辑器右键「改用硬件断点」把断点切换为硬件执行（DAP `setBreakpoints` 的 `mode: "hardware"`，受目标硬件资源限制，绑定失败时适配器回传未绑定原因并如实显示），切换回软件断点保留条件/日志/命中次数属性；`BreakpointStore::set_hardware` 切换 `BreakpointKind::Hardware` 并失效化验证状态；下发时 `DebugBreakpoint`/`DebugBreakpointLocation` 携带 `hardware` 标志，`send_breakpoint_set` 据此写入 `mode`。e2e 用例 `dap_hardware_breakpoint_binds_and_stops` 验证绑定（verified）并实际在源码行停下。
-- **M4 调试切片（宿主机构件）**：**LLDB DAP 适配器（lldb-dap）**，`NS_DEBUG_ADAPTER` 可覆盖、自动发现（PATH + xcrun + Command Line Tools 路径）。`F5`/顶部「调试」构建并启动会话；`Shift+F5` 停止；`F10` 步过 / `F11` 步入 / `Shift+F11` 跳出；命中断点后：命中行高亮（jade 底色 + ▶ 标记 + 反汇编中 PC 行高亮）、调用栈面板（点击帧跳转源码）、变量面板（**作用域切换：Locals/Globals/Registers，变量可递归展开**）、调试控制台（程序输出）；**内存视图（hex dump + ASCII，地址输入、64/128/256 字节）、反汇编源码混排视图（从 PC 读取 24 条指令并高亮当前指令；带源码行映射的指令之间插入可点击的源码行头部——`file:line` + 源码文本，点击跳转到该文件该行的编辑器；映射来源为 lldb-dap `disassemble` 响应的 `line`/`location`，源码文本按需从打开的编辑器文本或磁盘读取；无映射的尾部/溢出指令保持裸行不插头部）**；调试中增删/启停/清除断点**即时同步**到适配器；条件断点经 `condition` 下发并命中（e2e 验证）；会话结束自动清理高亮。
-- **跟踪窗口（SWO/SWV）配置面板**：调试面板「跟踪」页配置并启用/停用 Cortex-M trace 窗口——ITM 刺激端口、SWO 分频、DWT 数据跟踪（比较器 + 监视地址）、运行模式（仅运行时/始终）；启用时校验后经 `DebugCommand::ConfigureTrace` 下发目标侧寄存器写入序列（DEMCR/TPIU/ITM/DWT，含 CoreSight 解锁），`writeMemory` 完成回 `TraceConfigured` 并标记「已启用」；配置随项目持久化到 `.ns-ide/trace.json`（打开项目时恢复）。面板**如实**显示 `package_support` 的状态：未找到 SWV 探针或 SWO 流尚未接入 IDE 时给出明确说明，不假装能收到包。
+- **M4 调试切片（宿主机构件）**：**LLDB DAP 适配器（lldb-dap）**，`NS_DEBUG_ADAPTER` 可覆盖、自动发现（PATH + xcrun + Command Line Tools 路径）。`F5`/顶部「调试」构建并启动会话；`Shift+F5` 停止；`F10` 步过 / `F11` 步入 / `Shift+F11` 跳出；命中断点后：命中行高亮（jade 底色 + ▶ 标记 + 反汇编中 PC 行高亮）、调用栈面板（点击帧跳转源码）、变量面板（**作用域切换：Locals/Globals/Registers，变量可递归展开**）、调试控制台（程序输出）；**内存视图（hex dump + ASCII，地址输入、64/128/256 字节；**编辑**：hex 字节输入 + 「写入」（DAP `writeMemory`，成功后自动重读）；**多区域**：命名区域栏 + 「＋区域」/「－区域」（`MemoryRegion` 保存/切换/删除，区域随会话内状态切换）；**暂停时实时刷新**（`refresh_memory_on_stop` 在每个停止事件后自动重读当前区域）**）、反汇编源码混排视图（从 PC 读取 24 条指令并高亮当前指令；带源码行映射的指令之间插入可点击的源码行头部——`file:line` + 源码文本，点击跳转到该文件该行的编辑器；映射来源为 lldb-dap `disassemble` 响应的 `line`/`location`，源码文本按需从打开的编辑器文本或磁盘读取；无映射的尾部/溢出指令保持裸行不插头部）**；调试中增删/启停/清除断点**即时同步**到适配器；条件断点经 `condition` 下发并命中（e2e 验证）；会话结束自动清理高亮。
+- **F7 反汇编断点（M4 切片）**：反汇编每行左侧新增**断点槽**（`dbg-disasm-bp-*`）——该指令有源码映射（`Instruction.file`/`line`）时点击切换对应源码行断点（复用 `on_breakpoint_toggled` → `BreakpointStore` + 调试器即时同步），槽内圆点颜色随断点启用/禁用（朱=启用、灰=禁用、空环=无断点）；无源码映射的指令（尾部/溢出/纯汇编）点击如实提示「该指令无源码映射，无法设置源码断点」，不静默。单测 `disasm_row_toggles_source_breakpoint` 验证切换添加/删除。
+- **跟踪窗口（SWO/SWV）配置面板**：
   - 底层 `ns-debug::swvd`：DWT 比较器编码、ITM 包解码（`decode`）、探针发现（`NS_TRACE_PROBE`/ST-Link GDB server/OpenOCD 端口）、`parse_address`、`validate`/`requests`/`stop_requests`；单测覆盖寄存器写入顺序、包解码、探针支持说明、配置校验与文件回退。
 - **构建**：debug 配置自动加 `-g`（native）/`-C debuginfo=2`（rustc），产物调试可用。
 - **F14 Git 集成（M12 切片）**：状态栏「Git」项（点击打开面板）显示分支与变更数；Git 面板（输出区新标签）列出变更文件（暂存/取消暂存/删除/未跟踪徽章），选中文件显示 unified diff，提交框输入信息后一键提交；**可折叠「历史 · 分支」区**（提交 hash/subject 列表 + 分支计数，PyCharm 式）；非仓库目录如实提示。底层 `ns-ide::git`：`repo_status`（`status --porcelain` 解析 + `branch --show-current`，含 unborn 分支）、`diff`/`stage`/`unstage`/`commit`、`log`/`branches`；单测覆盖分支/未跟踪/暂存/提交/diff/非仓库/空提交拒绝。
-- **F10 工具链管理（M11 切片）**：`ns-project::toolchain` 增加 `Tool::version`（运行 `--version` 探测首行）与 `missing_guide`（按工具给安装建议）；新建项目向导的工具步骤为每个工具显示「路径 · 版本」，缺失则显示**安装命令指引**（`missing_guide`，如 `brew install arm-none-eabi-gcc` / `pip install pyocd` / `cargo install probe-rs-tools`），检测结果按需缓存（不逐帧起子进程）；单测覆盖版本探测/安装建议/未知工具。
+  - **F10 工具链管理（M11 切片）**：`ns-project::toolchain` 增加 `Tool::version`（运行 `--version` 探测首行）与 `missing_guide`（按工具给安装建议）；新建项目向导的工具步骤为每个工具显示「路径 · 版本」，缺失则显示**安装命令指引**（`missing_guide`，如 `brew install arm-none-eabi-gcc` / `pip install pyocd` / `cargo install probe-rs-tools`），检测结果按需缓存（不逐帧起子进程）；`missing_guide` 覆盖 Keil/IAR 交叉工具链（`avr-gcc`/`msp430-elf-gcc`/`v850-elf-gcc`/`rx-elf-gcc`/`rl78-elf-gcc`/`sdcc`，SDCC 支持 8051/80251/STM8 目标），缺失时给出对应安装指引；单测覆盖版本探测/安装建议/未知工具与交叉工具链指引。
 - **F10 工具链校验（M11 切片）**：`Project::tool_warnings` 校验 `project.toml` 中配置的编译器/仿真器/调试器/烧写器是否在 PATH（空值=自动发现跳过），缺失时给出安装建议；`Project::open` 仅对结构性错误（空名称/版本/输出目录）失败，工具缺失作为警告在打开项目后显示到「问题」面板。
-- **F14 静态分析（M12 切片）**：命令面板「静态分析」按语言运行 `clang-tidy`（C/C++，按 `project.toml` 传 `--std`/`-D`/`-I`）、`cargo clippy --message-format=short`（Rust）、`zig build-exe -fno-emit-bin`（Zig）、`zr-lint`（ZR），结果经统一诊断解析进「问题」面板；工具缺失时如实提示。底层 `ns_build::plan_static_analysis`；端到端单测用可告警的 Rust 工程跑 `cargo clippy` 并断言 `clone_on_copy` 被解析。
+- **F14 静态分析（M12 切片）**：命令面板「静态分析」按语言运行 `clang-tidy`（C/C++，按 `project.toml` 传 `--std`/`-D`/`-I`）、`cargo clippy --message-format=short`（Rust）、`zig build-exe -fno-emit-bin`（Zig）、`zr <entry> -c`（ZR，仅检查不产出），结果经统一诊断解析进「问题」面板；工具缺失时如实提示。底层 `ns_build::plan_static_analysis`；端到端单测用可告警的 Rust 工程跑 `cargo clippy` 并断言 `clone_on_copy` 被解析。
 - **F14 终端（M12 切片）**：命令面板「打开终端」启动系统 shell（`Terminal` 基于 `portable-pty`，PTY 100×30，非阻塞 `drain_events` 轮询），实时流式渲染、输入回显、Ctrl+C 中断、清屏、退出码/尺寸显示、`Drop` 时关 PTY；命令面板「打开串口监视器」用 `NS_SERIAL_PORT` 启动串口会话（`TerminalKind::Serial`），未设置时如实提示。端到端单测用真实 `sh` 起 PTY 断言输出；`strip_ansi` 单测覆盖 SGR/光标移动/OSC title。
 - **F14 会话恢复（M12 切片）**：打开文件标签 + 活动标签持久化到 `.ns-ide/session.json`（`ns_project::Session`，打开/切换/关闭/退出保存，重开项目恢复，缺失文件安全跳过），往返单测覆盖。
 - **F13 设置页（M12 切片）**：`Cmd/Ctrl+,` 或命令面板「项目设置…」打开设置模态，编辑 `project.toml` 常用字段（项目名称/目标 MCU/编译器路径/构建配置/输出目录/调试器路径/烧写器路径/烧写器类型），保存写回 `project.toml`（校验：名称非空、构建配置 debug|release、烧写器类型 openocd|pyocd|jlink，失败如实提示）；`ns_project` 设置保存/重开往返单测覆盖。
 - **F8 烧写（M5 切片）**：命令面板「烧写固件」/ 顶部「烧写」/ `Cmd/Ctrl+Shift+F10` 用 `project.toml` 的 `[flasher]`（`kind` openocd|pyocd|jlink + `path` + `interface`）烧写构建产物，结果进输出面板并如实报告退出码。底层 `ns_flash` crate：`Flasher` trait + `adapter_for` + OpenOCD/pyOCD/J-Link 适配器（ELF/Intel HEX/BIN 固件，HEX 解码含校验和/EOF 校验、扩展线性/段地址）；端到端单测用 stub 工具验证命令构造与 `adapter_for` 从 `project.toml` 解析。
 - **F9 运行编排（M6 切片）**：顶部「烧写并运行」（编译→烧写→复位运行）与「烧写并调试」（编译→烧写→连接调试器），命令面板「烧写并运行」/「烧写并调试」同源；`pending_flash` 状态机：构建成功才烧写，烧写成功才运行/调试，任一环节失败即停止并如实报告（不静默继续）。
 - **F10 工具链全局路径（M11 切片）**：命令面板「工具链路径…」编辑全局覆盖（`ToolchainConfig::set_override`，arm-none-eabi-gcc/gdb、clang、gcc、rustc、zig、openocd、pyocd、JLinkExe），留空=从 PATH 探测；覆盖优先于自动发现，保存在用户配置目录 `toolchain.json` 跨项目共享；`registry`（语言→可用编译器，向导级联）。单测覆盖覆盖优先/清理/注册表/serde 往返。
-- **F3.2/F3.3 语言服务（M8 切片）**：`ns_lsp` crate（LSP-over-stdio：Content-Length 帧、后台读写线程、请求/通知路由、`server_for_language`/`server_available`）；项目打开时按语言自动启动（C/C++→clangd、Rust→rust-analyzer、Zig→zls、ZR→zr-lsp），`didOpen`/`didChange` 实时同步；`publishDiagnostics` 合并进问题面板并点击跳转；`F12` 跳转定义、`Shift+F12` 查找引用、`Cmd/Ctrl+K Cmd/Ctrl+I` 悬停（状态栏）、`Cmd/Ctrl+Space` 补全（浮动面板，↑/↓、Enter/Tab 确认、Esc 关闭）。单测：mock 服务器（initialize/补全/定义/诊断）+ 真实 clangd 端到端。
+- **F3.2/F3.3 语言服务（M8 切片）**：`ns_lsp` crate（LSP-over-stdio：Content-Length 帧、后台读写线程、请求/通知路由、`server_for_language`/`server_available`）；项目打开时按语言自动启动（C/C++→clangd、Rust→rust-analyzer、Zig→zls、ZR→`zr lsp`），`didOpen`/`didChange` 实时同步；`publishDiagnostics` 合并进问题面板并点击跳转；`F12` 跳转定义、`Shift+F12` 查找引用、`Cmd/Ctrl+K Cmd/Ctrl+I` 悬停（状态栏）、`Cmd/Ctrl+Space` 补全（浮动面板，↑/↓、Enter/Tab 确认、Esc 关闭）。单测：mock 服务器（initialize/补全/定义/诊断）+ 真实 clangd 端到端。
 - **F11 目标设备（M9 切片）**：`ns_device` crate——CMSIS-SVD XML 解析（`parse_svd`：外设→寄存器→位域，`bitRange`/`bitOffset`/`lsb`-`msb`、hex/binary/dec 数字）、内置目录（stm32f103c8/stm32f407vg/nrf52840/rp2040，`CATALOG`/`device_for_target`/`catalog_entry`）、`linker_script`/`startup_file`（flash/RAM 映射 + 向量表/复位处理，Cortex-M0+/M3/M4）、`memory_map`/`registers_by_peripheral`；向导「目标设备」步显示核/Flash/RAM 并在生成时自动写出 `link.ld` 与 `src/startup.s`（`Wizard::generate_device_files`）；调试面板「设备」页按 SVD 展示外设寄存器（地址/复位值/位域）。单测覆盖解析/生成/目录/未知目标。
-- **F4.2 ZR 语言（M10 切片）**：`ns_zr` crate——ZR 词法分析（`lex`：关键字/标识符/数字/字符串/注释/`->` 复合符号）、诊断分析（`analyze`：不匹配/未闭合定界符、未知标识符、符号表）、`offset_at`；`zr-lsp` 内建语言服务二进制（LSP-over-stdio：`initialize`/`didOpen`/`didChange`/`publishDiagnostics`/`completion`/`hover`/`shutdown`/`exit`）；`ns_lsp::find_command` 增加 workspace target 目录回退，使 IDE 自动发现并驱动 `zr-lsp`（无需 `cargo install`），ZR 项目由此获得诊断/补全/悬停；`zrc build` 构建计划与 `zr-lint` 静态分析计划保留。单测覆盖词法/诊断/偏移与 LSP 端到端。
+- **F4.2 ZR 语言（M10 切片）**：ZR 由外部 `zr` 语言提供（https://zrlang.github.io/）。IDE 接入其编译器 `zr` 与语言服务 `zr lsp`：构建后端调用 `zr <entry> --target <triple> -o <artifact>`（`ns_build::plan_zr`，按 MCU 核选 `riscv32-unknown-none`/`arm-none-eabi`），LSP 客户端以 `zr lsp`（stdio）驱动，`didOpen`/`didChange`/`publishDiagnostics`/补全/悬停同构；工具缺失时如实提示。`ns_zr` crate 已移除（不再自研语言）。
 - **F6 仿真（M7 切片）**：`ns_sim` crate——内建指令级仿真器（RV32I：`registers[32]`/`pc`/`memory[64KiB]`/`cycle_count`、`load_elf`/`load_image`/`reset`、`step`/`run`/`step_over`/`set_breakpoint`/`clear_breakpoint`、`sign_extend`/`jal_immediate`/`branch_immediate`、`ecall` 停机、`read_reg`/`write_u32`/`snapshot`）；虚拟外设（`VirtualPeripherals`：内存映射 UART `uart_base` + `putchar` 回调 + `outputs`）；IDE：命令面板「仿真运行（内建指令级）」加载构建产物（ELF 优先，否则按 `ENTRY_POINT` 原始加载），调试面板「仿真」页（加载并运行/单步/运行/复位/停止、PC/周期/状态、32 寄存器 ABI 名 + 值、UART 输出）。单测覆盖 ALU（加/减）、循环累加（1..10=55）、断点命中、load/store、ecall 停机、寄存器命名、快照，及真实 ELF32 端到端（入口→循环→a0=55→停机）。
 - **F14 设置页扩展（M12 切片）**：设置模态扩展为**全量配置页**——`project.toml` 全部字段（`[project]` 名称/版本/语言/目标/编译器/仿真器/调试器/烧写器、`[compiler]` 路径/标准/优化/宏定义/头文件目录、`[build]` 配置/输出目录、`[debugger]` 路径/接口/服务器/探针/GDB、`[flasher]` 路径/类型/接口、`[sim]` CPU/周期）+ **全局设置**（终端 shell → `terminal.json`、全局配置键 `$config["key"]` → `config.json`）；保存写回整个 `project.toml`（校验：名称非空、构建配置 debug|release、烧写器类型 openocd|pyocd|jlink|stlink|probe-rs、探针类型 openocd|stlink|jlink|pyocd|probe-rs、语言 C|C++|Rust|Zig|ZR）。
 - **F14 Agent 面板（参考 Zed agent）**：输出区新增「Agent」标签（命令面板「打开 Agent 面板」/标签页），任务列表（状态点：排队中/运行中/成功/失败/已取消 + 命令标题）、选中任务输出区、底部 shell 命令输入 + 运行按钮；后台线程跑 `sh -c`/`cmd /C`（平台自适应），stdout/stderr 并行读取流式追加，`drain_events` 轮询重渲染（镜像终端面板）；「清空」保留运行中任务、「全部取消」置取消位。
@@ -435,17 +437,62 @@ period = 0                    # 仿真周期参数（可选）
 - **F1.2 项目模板（F1.2 切片）**：C 项目模板——空模板（`main.c` 空循环 + `counter`）、**LED Blink**（GPIOB 端口翻转，GPIO 驱动）、**UART 回环**（USART1 收发回环）——新建向导新增「模板」步（仅 C 语言显示，`CTemplate` 枚举），生成时写入 `src/main.c` 并按模板填充外设初始化；单测覆盖三模板源码生成。
 - **F5/F8 烧写扩展（M5 切片）**：`ns_flash::firmware::convert`（ELF→Intel HEX / 纯 BIN 转换）；烧写面板接入**擦除/校验/读回**（`FlashAction`，读回结果写 `out/readback.bin`）；烧写进度显示（工具输出流式 + 完成状态）。
 - **F9 运行编排扩展（M6 切片）**：重启运行会话（停止后重新编译→运行）；运行/调试会话的停止与重启状态机完善。
+- **F5 构建系统（Make/CMake）**：`[build] system`（`auto`/`direct`/`make`/`cmake`，默认 `auto`）；`plan_cmake`（`sh -c` 包装 `cmake -S . -B <out>/cmake -DCMAKE_BUILD_TYPE=<config>` + `cmake --build`，`CMAKE_RUNTIME/LIBRARY/ARCHIVE_OUTPUT_DIRECTORY` 指向 `artifact_path()` 父目录，`NS_IDE_DEFINES`/`NS_IDE_INCLUDES` 转发 `[compiler]` 宏与头文件）；`plan_make`（`make -f <makefile> BUILD_DIR=… CONFIG=… OUTPUT=… all`）；`auto` 检测优先 `CMakeLists.txt` → `Makefile` → 直接编译；向导为 C/C++ 生成 `CMakeLists.txt`（`file(GLOB)` 收集 `src/*.c`/`.S`，项目名替换，`SUFFIX ".elf"`）；4 项单测含真实 cmake 端到端（产物在预期路径、宏生效），本机真实 `cmake`/`make` 构建验证。
+- **F6 周期级外设时序**：`tick_peripherals_for(cycles)` 按周期数推进外设（Timer 每周期 tick、溢出置 IRQ，`tick_peripherals()` 保留为 1 周期兼容包装）；`step()` 全部 12 个架构路径在返回前统一推进外设——修复 11 个非 RISC-V 分支（MCS-51/ARM/80251/C166/Xtensa/AVR/MSP430/V850/STM8/RX/RL78）此前完全跳过外设推进、以及 cycle-accurate 模式外设慢 N 倍（`cycle_count` 按指令延迟前进但 Timer 只走 1 周期）两处缺陷；2 项单测（含 ARM 外设推进回归测试），ns-sim 185 项全绿。
 - **F7 调试扩展（F7 切片）**：运行到光标（`RunToCursor`，DAP `continueTo`）；设置变量值（DAP `setVariable`）；监视（watch）表达式面板（变量面板 watch 输入，`evaluate`）；调试控制台表达式求值入口。
 - **F3 编辑器扩展（F3 切片）**：当前文件查找/替换（编辑器内查找栏，`Cmd/Ctrl+F` + 替换）；括号匹配高亮（光标处括号配对高亮）；代码折叠（基于缩进/语法，fold 区域）；文件页签编辑保存（`Cmd/Ctrl+S` 写回磁盘，脏标记）。
+- **F3.2 编辑体验补充**：跳转返回历史栈（`Alt+←/→`，`push_nav_entry` 记录跳转并按序回退/前进）；跳转到包含头文件（`#include`/`use` 解析定位，`parse_include_directive`）；迷你地图（编辑器右侧缩略渲染，点击/拖拽定位）；多光标编辑（`Cmd/Ctrl+Alt+↑/↓` 添加垂直光标、`Cmd/Ctrl+D` 选中下一个、`Esc` 清空）；单测覆盖 include 解析与多光标清除。
 - **F3.2/F3.3 LSP 扩展（M8 切片）**：签名帮助（`signatureHelp`）；inlay hints（`inlayHint` 请求与渲染）；语义高亮叠加（`semanticTokens` 请求与编辑器着色）。
+- **F3.3 符号重命名（M8 切片）**：`Cmd/Ctrl+Shift+R` / 命令面板「重命名符号」按光标标识符发起 LSP `textDocument/rename`，响应 `WorkspaceEdit`（`changes` 映射）解析为文件编辑并**跨文件应用**（`parse_workspace_edit`、`apply_edit_to_text`、`Editor::apply_text_edit`，0 基 line/char 范围替换，越界拒绝）；单测覆盖 `parse_workspace_edit` 展平/跳过畸形项与编辑应用越界拒绝。
 - **F11 设备库扩展（M9 切片）**：外部 SVD 文件加载（`parse_svd` 文件入口）；启动文件模板库（按设备核选择更多 MCU 模板）；设备选择写回 `project.toml` 的 SVD 路径。
 - **F6 仿真扩展（M7 切片）**：周期级/外设时序（GPIO/TIMER/中断控制器）；仿真断点下发到源码（源码行↔地址映射）；C 源码映射（符号表/行号表 → 编辑器定位）。
-- **F4.2 ZR 标准库（M10 切片）**：`ns_zr::std`——`zr-std` 声明库（GPIO/UART/TIMER 内存映射外设 + `std_registry`/`peripheral`/`std_api`），供 `zr-lsp` 补全/签名与 ZR 编译绑定；单测覆盖注册表与 API 表面。
-
-🚧 未完成（不得声称已实现）：
+- **F6 仿真外设状态视图**：仿真页新增 **GPIO 状态视图**（32 引脚方块，按方向/电平着色——输出高=jade、输入高=accent、低=暗，输出高/输出使能计数）与 **TIMER 状态视图**（每定时器一行：基址、启用/禁用、计数器/自动重载、预分频、溢出计数）；状态随 `tick_peripherals` 周期更新；单测覆盖 GPIO 翻转事件记录与 TIMER 计数/IRQ 触发。
+- **F4.2 ZR 标准库（M10 切片）**：ZR 标准库由上游 `zr` 语言提供（`zr pkg` 包管理），IDE 不内置 `zr-std`；外设 API（GPIO/UART/TIMER）经 `zr` 的 FFI/裸机目标使用。
+- **F14 静态分析增强（M12 切片）**：`plan_static_analysis` 的 **Zig** 分支现传 `-target <triple>`（复用 `zr_target_triple` 按 MCU 核映射：RISC-V→`riscv32-unknown-none`、ARM Cortex-M→`arm-none-eabi`，未知目标保持主机）及 `-Werror`（分析诊断作为错误进问题面板）；单测 `static_analysis_plan_zig_passes_target_and_werror` 用 stub `zig` 捕获 argv 断言透传。静态分析单测共享 `PATH_LOCK` 串行化 PATH 修改（clang-tidy/zig stub 注入与 `find_program` 扫描竞争），消除并发偶发失败。
+- **F3.2/F3.3 签名帮助自动消失**：`signature_anchor: Option<(PathBuf, usize, usize)>` 记录签名帮助显示时的光标锚点；编辑器 `observe` 回调比对当前光标位置，移出锚点（或切换/关闭标签）即清空 `signature_help`，弹窗不再滞留。
+- **F3.3 inlay hints 去重**：`Editor::set_inlay_hints` 按 `(line, start)` 组合去重后存储，慢 LSP 响应重叠时不再渲染双提示；单测 `inlay_hints_dedup_by_position` 验证重复项折叠。
+- **F6 仿真 TIMER 溢出精度**：`Timer::tick()` 返回 `u64` 精确溢出次数，`counter` 越过 `auto_reload` 若干倍时按 `counter / reload` 累计 `update_count`（`saturating_add`），不再视为单事件；`tick_peripherals` 以 `tick() > 0` 判 IRQ；单测 `timer_tick_counts_exact_overflows` 验算 10 倍溢出/正常递增/恰在重载/禁用四种路径。
+- **F6 仿真 GPIO 事件对齐 PC**：`gpio_events` 由 `(cycle, pin, value)` 改为 `GpioEvent { cycle, pin, value, pc }`，记录触发翻转的 store 指令 PC；IDE 仿真页新增「GPIO 事件（最近 6 条）」日志视图（pin/电平/PC/cycle）；单测断言事件 PC 与当前 PC 一致。
+- **F3.3 LSP 代码片段补全**：`ns_lsp::CompletionItem` 增加 `insert_text: Option<String>` 与 `snippet: bool`；`parse_completion_items` 优先 `textEdit.newText` > `insertText` > `label`，并读 `insertTextFormat: 2` 标记 snippet；`expand_snippet` 展开 `${1:default}`（取 default）、`$0`/`${0}`（标记最终光标）、`$N` 编号制表位（空）、`$TM_FILENAME`/`$TM_DIRECTORY`/`$TM_FILEPATH`；`Editor::insert_completion(text, replace_prefix, cursor_at)` 删除光标前已输入单词前缀并按 `$0` 定位光标（多光标同步）；`completion_confirm` 接入全部路径；单测覆盖片段解析/展开/插入（5 项）与多光标插入。
+- **F3 编辑器自动缩进**：`Enter` 换行时自动延续缩进——`auto_indent_for_line` 继承当前行首空白，行（去尾随空白）以 `{`/`(`/`[` 结尾时追加一级（4 空格）；`Editor::newline` 接入；`Tab` 选中多行时 `Editor::indent_lines` 在每行首插入 4 空格（光标同步），单行/无选区插入 4 空格；单测覆盖自动缩进 6 路径与多行/单行缩进 2 项。
+- **F11 设备选择器增强**：调试面板「设备」页顶部新增**目标设备选择器**（`device-picker-current` 点击展开内置 `ns_device::CATALOG` 列表，选中项经 `set_project_target` 写回 `project.toml`，含 SVD 源跟随/清理）；设备页改为可切换 MCU，不再仅靠向导初选。
+- **F11 外设寄存器实时监视**：调试面板「设备」页每个寄存器现显示**实时值**——仿真激活时经 `Simulator::read_u32` 读内存（玉色=实时），调试会话停止时经 `refresh_device_registers_on_stop` 按外设基址批量 `ReadMemory` 并在 `DebugMessage::Memory` 回包时写入 `debug.device_reg_values`（调试源优先）；无活动源回退复位值（灰）。
+- **F11 外设寄存器写入编辑**：调试面板「设备」页寄存器值**可点击编辑**——点击当前值（`dev-reg-val-*`）进入编辑（`begin_device_reg_edit` 预填当前实时值），Enter 提交（`commit_device_reg_edit` 解析 0x/bare hex 或十进制，32 位上限），写回目标：仿真激活走 `Simulator::write_u32`（状态栏「（仿真）」），否则调试会话走 DAP `writeMemory`（4 字节小端，自动重读回填 `device_reg_values`），两者都无时如实提示；单测 `device_reg_edit_parses_32bit_value`（hex/十进制/拒绝超 32 位）与 `device_reg_edit_commits_to_simulator`（写入到达仿真内存）。
+- **F11 设备文件生成**：
+- **F2/F5 多目标/多配置支持**：`project.toml` 新增 `[[targets]]` 数组（`TargetSection`：`target` + `config` debug|release），`Project::build_config` 按活动 target 解析——匹配条目优先，否则回退共享 `[build] config`；`toggle_build_config` 与设置页保存写回**活动目标对应条目**（无条目则新建，保存失败按 `RollbackKind` 精确回滚），状态栏/设置页显示**有效配置**；`artifact_path` 与 `ns_build` 全部构建分支改用 `build_config()`；单测 `build_config_resolves_per_target_override` 覆盖匹配/回退/往返。
+- **F3.3 LSP 补全文档预览**：`ns_lsp::CompletionItem` 增加 `documentation: String`；`parse_completion_items` 解析 `documentation` 的字符串或 `MarkupContent.value`；`render_completion_popup` 在选中项有文档时于列表下方显示独立滚动预览区（上边框分隔、最多 120px，随选中项切换更新）；单测覆盖纯字符串与 MarkupContent 两种形式。
+- **F3.3 LSP 悬停提示浮窗**：LSP `textDocument/hover` 结果不再仅写状态栏——`App` 新增 `hover_tooltip: Option<String>` 与 `hover_anchor: Option<(PathBuf, usize, usize)>`；`lsp_hover` 成功分支设置两者（path/line/column），空/超时清空；`render_hover_tooltip` 左上绝对定位浮窗（top/left 12、max_w 560/max_h 300、边框/阴影/独立滚动、等宽多行文本，id `hover-tooltip`），编辑器叠加层在签名帮助后叠加；observe 回调镜像签名帮助——光标移动或换文件时自动清空。状态栏文本保留。
+- **F6 仿真多架构框架 + RISC-V 接入**：`ns_sim::Arch`（RiscV/Arm/Mcs51/Xtensa）与 `from_elf_machine`（e_machine 243=RISC-V、40=ARM）/`from_target`（riscv/esp32c→RiscV、esp32→Xtensa、8051/mcs51→Mcs51、stm32/nrf/rp2040/cortex→Arm、未知→RiscV）；`Simulator.arch` + `for_arch`（非 RISC-V 返回「尚未实现」错误）；`load_elf` 校验 e_machine 与 `arch` 匹配（不匹配报错，不再静默误解码）；IDE `start_simulation` 按项目 target→ELF e_machine→默认 RISC-V 选架构，`for_arch` 失败如实提示并清空旧内核，仿真视图 PC 行显示架构标签。**RV32I 中断向量**：`Csr`（mstatus/mtvec/mepc/mcause/mie/mhartid）+ CSR 指令（CSRRW/CSRRS/CSRRC/CSRRWI/CSRRSI/CSRRCI）+ `mret`；`take_interrupt` 取最低挂起启用行（MIE 门控、保存 mepc/mcause、direct/vectored 跳转），`step()` 指令边界取中断；单测覆盖 CSR/mret/向量跳转/门控/定时器 IRQ。
+- **F6 8051（MCS-51）仿真内核 + SDCC 构建**：`ns_sim::mcs51::Mc51Core` 全 8 位指令集模拟器——ACC/B/PSW（CY/AC/OV/RS1:RS0/P）、DPTR、SP（复位 0x07）、256B 内部 RAM、64KiB 外部数据 RAM（MOVX @DPTR/@Ri）、64KiB 代码 ROM、4 寄存器组（RS1:RS0）、位寻址区（0x20-0x2F + SFR 位）；指令覆盖 MOV/MOVX/ADD/ADDC/SUBB/INC/DEC/DA/RLC/RRC/SWAP/ANL/ORL/XRL/XCH/XCHD/MUL/DIV、JMP/LJMP/AJMP/LCALL/ACALL/RET/RETI、JZ/JNZ/JC/JNC/JB/JNB/JBC/CJNE/DJNZ、SETB/CLR/CPL/MOV C,bit 等；SFR P0-P3/TCON/TMOD/TL0/TL1/TH0/TH1/IE/IP。`Simulator` 集成：`for_arch(Mcs51)`、`step()` 分发（断点转 u16）、`load_mcs51`、`program_counter()`。`ns_build::plan_mcs51`（`sdcc -mmcs51 --model-small`，缺失如实提示）+ `artifact_path` 8051 返回 `.ihx`；`ns_device::CATALOG` `mcs51` 条目；IDE `start_simulation` 8051 走 Intel HEX 解码（`ns_flash::decode_intel_hex`）加载。单测 10 项覆盖 MOV/ADD/DA/位/MOVX/栈/跳转/SFR/寄存器组/断点。
+- **F6 ARM Cortex-M（Thumb/Thumb-2）仿真内核**：`ns_sim::arm::ArmCore`——16 个 32 位寄存器 R0-R15（R13=SP、R14=LR、R15=PC）、xPSR（N/Z/C/V + Thumb 位 + IPSR 异常号）、PRIMASK/BASEPRI/FAULTMASK/CONTROL、VTOR 向量表、64MiB 平坦缓冲；地址窗口映射（flash 0x0800_0000→offset 0、SRAM 0x2000_0000→offset 0x0200_0000，未映射丢弃）。指令：Thumb-1 全 16 位（移位/ADD/SUB/MOV/CMP/ALU/高寄存器/BX/PC 相对 LDR/寄存器与立即偏移 load/store 含 LDRSB/LDRSH/SP 相对/ADR/ADD SUB SP/PUSH POP/STM LDM/条件与无条件分支/SVC）+ Thumb-2 常用 32 位（BL/BLX/MOVW/MOVT/ADDW/SUBW/B.W/LDR STR imm12/LDRB/LDRH/DMB DSB ISB）。向量表复位（SP=vector[0]、PC=vector[1]|1）；`load_elf` 记录最低 PT_LOAD 为 flash 基址。`Simulator` 集成：`for_arch(Arm)`、`step()` 分发（断点/PC 同步）、`reset` 走向量表、`load_elf` 写 ARM 缓冲、`read_reg`/`read_u32`/`read_u8`/`write_u32` 路由；IDE 寄存器视图显示 r0-r15（ARM）与内存视图经映射访问。单测 12 项 arm.rs + 3 项集成。
+- **F6 80251（MCS-251）仿真内核**：`ns_sim::x51::X51Core`——16 位累加器 A/B、PSW（CY/AC/OV）、SP、24 位 DPTR、16×16 位寄存器组、64KiB 扩展 RAM（`read_xram`/`write_xram`）、24 位程序空间、`load_image`。指令：NOP、MOV Rn/#imm16、MOV A↔Rn、ADD/SUBB A,Rn（进位/借位）、INC/DEC、MUL/DIV AB、MOVX @DPTR/@Ri、MOV DPTR #imm24、LCALL/RET（24 位 PC）、LJMP、SJMP、JZ/JNZ/JC/JNC、JMP @A+DPTR。`Simulator` 集成：`for_arch(Mcs251)`、`step()` 分发、`load_x51`、`program_counter`/`read_reg` 路由。单测 11 项 x51.rs + 2 项集成。
+- **F6 C166/XC166/XC2000 仿真内核**：`ns_sim::c166::C166Core`——16×16 位寄存器组、PSW（N/C/V/Z）、SP、DPP0-3、64KiB 数据/程序空间、`load_image`。指令：NOP、MOV Rn↔Rm/#imm16、ADD/SUB（进位/借位）、AND/OR/XOR、MUL（32 位积）、DIV（商/余）、LOAD/STORE 字、JMP rel、JZ/JNZ、CALL/RET（栈）。`Simulator` 集成：`for_arch(C166)`、`step()` 分发、`load_c166`、`program_counter`/`read_reg` 路由。`ns_build`：8051 家族含 80251 默认 SDCC（`-mmcs51` 兼容子集），C166 需供应商工具链（Tasking/Keil）未安装时报清晰错误；`ns_device::CATALOG` 增加 80251/C166/XC166/XC2000 条目；IDE `start_simulation` 80251/C166 走 Intel HEX/raw 加载。单测 11 项 c166.rs + 2 项集成。
+- **F6 Xtensa（LX6/LX7, ESP32/ESP32-S3）仿真内核**：`ns_sim::xtensa::Lx6Core`——64 物理寄存器窗口（4×16, `window_base`）、A0-A15 架构寄存器（A0=返回地址、A1=栈指针）、PS、64MiB 平坦缓冲（ESP32 代码 0x4000_0000/数据 0x3FF0_0000 窗口,低位直映）。指令：NOP、RRR 算术（ADD/SUB/AND/OR/XOR,op2 选操作）、MOVI（imm12 符号扩展）、L32I/S32I/L8UI/S8I（imm4）、MOV、EXTUI、BEQ/BNE/BLT/BGE、CALL0/CALLX0、RET（A0 返回）。`Simulator` 集成：`for_arch(Xtensa)`、`step()` 分发（断点/PC 同步）、`load_image`/`write_bytes`/`zero_bytes` 路由、`read_reg`（a0-a15）/内存访问路由。`from_elf_machine` 加 EM_XTENSA（94）。`ns_build::plan_xtensa`（`xtensa-esp32-elf-gcc -mlongcalls`）；`ns_device::CATALOG` 增加 esp32/esp32s3；IDE `start_simulation` ELF 加载与 a0-a15 寄存器视图、默认内存地址 0x3FF0_0000。单测 14 项 xtensa.rs + 3 项集成。
+  - **F6 仿真页观测增强**：`ns_sim::reg_count_for`/`reg_label_for` 按架构返回寄存器数量与标签（RISC-V 32 x0-x31、ARM 16 r0-r15、Xtensa 16 a0-a15、8051 13 ACC/B/PSW/SP/DPTR+当前 R0-R7、80251 21 +R0-R15、C166 16 R0-R15、AVR 32 R0-R31、MSP430 16 PC/SP/SR/CG2+R4-R15、V850 32（r/sp/gp/tp/ep/lp）、STM8 5 A/X/Y/SP/CC、RX 16 r0-r15、RL78 16 X/A/C/B/E/D/L/H+bank）；`Simulator::read_reg` 增加 `mcs51` 分支（索引 0-4 映射 ACC/B/PSW/SP/DPTR、5-20 按 PSW RS1:RS0 选 bank 的 R0-R7）；`ns_sim::disassemble_one(arch, pc, read)` 各架构单条指令反汇编（RISC-V 全 opcode/ARM Thumb-1/Xtensa/8051/80251/C166/AVR/MSP430/STM8/RX/RL78/V850）；IDE 仿真页寄存器视图改用新 API 显示专用标签，PC/周期行下显示当前指令（等宽强调色），断点列表显示地址+反汇编并在 PC 命中断点时红色高亮「← 命中」。单测 `disassembles_riscv_instructions`/`disassembles_xtensa_and_8051`/`register_metadata_per_architecture`（验证 11 架构寄存器计数与标签）。
+- **F6 仿真调试体验**：IDE 仿真页新增「步过」按钮（id `sim-step-over`，接 `ns_sim::step_over`：运行至调用返回/断点/停机），`sim_step_over` 方法镜像 `sim_step` 状态更新；`sim_run` 断点命中后经 `line_for_address`+`source_files` 打开源文件、`set_cursor_line` 定位、`set_debug_line` 高亮当前行（镜像调试器停靠，借用提前释放避免冲突）。仿真页内存视图新增 hex 编辑框（`sim-mem-write`，Enter/按钮提交）与 `sim_write_memory`（解析 hex → `write_bytes`，写后自动重读）；`ensure_sim_mem_input` 惰性创建字段（Enter 提交）。
+- **F3.3 LSP 文档格式化**：`ns_lsp::LspCommand::Formatting` + `textDocument/formatting` 请求（`options` tabSize 4/insertSpaces true）；`parse_format_edits` 解析 `TextEdit[]`（0 基 range+newText）；IDE 命令面板「格式化文档」（`format-document`，`shift+alt+f`）经 `lsp_format_document` 请求并用 `Editor::apply_text_edit` 应用（无变更/超时如实提示）。
+- **F3.3 LSP 代码动作**：`ns_lsp::LspCommand::CodeAction` + `textDocument/codeAction` 请求（range 含光标、context 空诊断）；`parse_code_actions` 解析 `CodeAction[]`（title + `edit.changes` 经 `parse_workspace_edit`，跳过 command-only 动作）；IDE 命令面板「快速修复（代码动作）」（`code-action`）经 `lsp_code_action` 应用首个含 edits 的动作（`apply_workspace_edit` 复用，无动作/命令型如实提示）。单测 `parses_format_edits_array`/`parses_code_actions_with_edits`（2 项）。
+- **F6 仿真寄存器/PC 编辑与断点管理**：`ns_sim::write_reg(index, value)` 跨架构路由（ARM `regs`、8051 ACC/B/PSW/SP/DPTR+按 PSW 选 bank 的 R0-R7、80251、C166、Xtensa `set_reg`、RISC-V `registers`，x0 只读忽略；`read_reg` 逆操作）；`ns_sim::set_program_counter(pc)` 同步顶层 `pc` 并路由各架构（ARM `set_pc` 保留 Thumb 位、Xtensa `set_pc`、8051/80251/C166 16 位 PC；`program_counter()` 逆操作）。IDE 仿真页寄存器单元格可点击（`sim-reg-N`）→ `begin_reg_edit` 预填当前值并聚焦 → 回车 `sim_write_reg`（hex → `write_reg`）；PC 行可点击（`sim-pc`）→ `begin_pc_edit` → 回车 `sim_set_pc`；断点区新增地址输入（`sim-bp-add`）+「添加」→ `sim_add_breakpoint`，列表每行「✕」（`sim-bp-del-N`）→ `sim_remove_breakpoint`。单测 `write_reg_routes_per_architecture`/`write_reg_mcs51_and_x51_special_registers`/`set_program_counter_routes_per_architecture`（3 项）。
+  - **F6 仿真 Keil/IAR 全芯片支持（规划）**：以 Keil 官方产品家族（ARM7/ARM9/Cortex-M、C16x/XC16x/ST10、C251/80C251、Cx51/8051）与 IAR 支持架构（Arm、RISC-V、AVR、MSP430、STM8、Renesas RL78/RX、8051、C166、V850）为范围，对照 `ns_sim::Arch` 逐项梳理。**已支持（全部）**：RISC-V（RV32I）、ARM（A32 ARM7/ARM9/Cortex-A + Thumb/Thumb-2 Cortex-M，`arm_state` 标志切换）、8051/80251（Mcs51/Mcs251）、C166/XC166/XC2000/ST10（C166，ST10 同源可复用）、Xtensa（ESP32/ESP32-S3）、AVR（ATmega/ATtiny/AT90，IAR AVR）、MSP430（IAR MSP430）、STM8（IAR STM8）、Renesas RX（RX600/RX62N）、Renesas RL78（RL78/G10-G14，IAR RL78）、Renesas V850（V850E，IAR V850）。**范围原则**：优先实现纯软件可完整验证的架构（AVR→MSP430→ARM 态→STM8→Renesas）；厂商工具链（Tasking/Keil/IAR）未安装时构建后端如实报错，不假装可用；每个架构新增 `Arch` 变体 + `ns_sim` 内核 + `from_target` 识别 + 设备目录条目 + 反汇编 + 单测。单测 `for_arch_supports_implemented_cores` 验证 11 个架构均可构造、`from_target_maps_every_catalog_key` 验证全部 24 个设备目录键（含 ST10→C166、AT90S8515→AVR）映射到正确架构。
+  - **ARM A32（ARM7/ARM9/Cortex-A）**：`ArmCore` 的 `arm_state` 标志选择 A32 解码（`execute_arm`，32 位字）；`reset_from_vector_table` 按向量表类型自动进入正确状态——Cortex-M 数据向量（word0=初始 SP、word1=复位 PC|Thumb 位）走 Thumb，ARM7/ARM9 代码向量（word0 为 `0xE` ARM 分支指令）用 ELF 入口（位 0 清=ARM 态）复位，SP 取默认；`map_addr` 覆盖 ARM7/ARM9 SRAM 窗口（S3C2440 0x3000_0000、LPC2148 0x4000_0000）与 Cortex-M 窗口（0x0800_0000/0x2000_0000）。IDE 仿真页默认内存地址按目标选择：LPC21xx/22xx→0x40000000、S3C24xx→0x30000000、其余 ARM→0x20000000（与设备目录 flash/ram 对齐）。覆盖 A32：条件执行（cond 字段）、分支/BL、BX/BLX（寄存器，自动切换 Thumb）、数据块传输（STM/LDM IA/IB/DA/DB + 回写）、单数据传输（LDR/STR 字/字节，寄存器/立即偏移）、半字/有符号传输（LDRH/STRH/LDRSB/LDRSH）、数据操作（AND/EOR/SUB/RSB/ADD/ADC/SBC/RSC/TST/TEQ/CMP/CMN/ORR/MOV/BIC/MVN，操作数 2 移位）、MUL/MLA、长乘（UMULL/SMULL/UMUAL/SMUAL）、MOVW/MOVT、MRS/MSR（CPSR 标志位）、CLZ、SWP（如实 halt）、SVC（取异常）。`from_target` 识别 ARM7/ARM9/ARM926/ARM920/LPC21x/LPC22x/S3C24xx/AT91/i.MX（`lpc2148`/`s3c2440`/`at91sam7`/`imx6`/`arm926ej-s` → `Arch::Arm`）；设备目录新增 `lpc2148`（ARM7TDMI-S，flash 0x0/RAM 0x4000_0000）与 `s3c2440`（ARM920T，flash 0x0/RAM 0x3000_0000）条目；A32 单测 12 项（块传输/BX 切 Thumb/MLA/MOVW-MOVT/复位向量选 ARM 态等）。**A32 反汇编**：`disassemble_one_state(arch, pc, read, arm_state)` 按 `arm_state` 选 A32/Thumb 解码（`disassemble_a32` 覆盖分支/BL、BX/BLX、块传输、单/半字传输、数据操作、MUL/MLA、长乘、MOVW/MOVT、MRS/MSR、CLZ、SVC、条件后缀）；`Simulator::arm_state()` 暴露状态，IDE 仿真页当前指令与断点列表改用状态感知反汇编；单测 `disassembles_a32_instructions` 验证 A32/Thumb 分流与 MOVW/ADD/LDR/B 解码。**A32 构建后端**：`plan_build` 识别 ARM7/ARM9/ARM926/ARM920/LPC21xx/22xx/S3C24xx/AT91/i.MX 目标，走 `plan_arm_a32`（`arm-none-eabi-gcc -marm -mcpu=<core>`，强制 ARM 态而非 Thumb，`-mcpu` 按核选 `arm7tdmi`/`arm920t`/`arm926ej-s`/`cortex-a7`）；`zr_target_triple` 为 ARM7TDMI-S/ARM920T/ARM926EJ-S/Cortex-A 返回 `arm-none-eabi`；单测 `arm_a32_build_plan_forces_arm_state_and_cpu` 验证 `-marm`/`-mcpu=arm7tdmi`。复位与内存窗口单测：`arm7_code_vector_resets_to_arm_state_entry`/`cortex_m_data_vector_resets_sp_and_pc`。
+  - **RL78 内核（本次新增）**：`ns_sim::rl78::Rl78Core`——8 位寄存器 X/A/C/B/E/D/L/H（双 bank）、16 位对 AX/BC/DE/HL、PSW（Z/AC/CY/RBS/IE）、SP、CS/ES 段寄存器（20 位寻址）、1 MiB 平坦内存。覆盖 MOV/MOVW（全部寻址模式）、ADD/ADDC/SUB/SUBC/CMP/AND/OR/XOR（字节+字，reg-reg 与 ES:[HL+imm]/ES:[addr]）、INC/DEC/INCW/DECW、PUSH/POP（rp 与 PSW）、RET/RETI/RETB、BR AX、BRK/BRK1/HALT/STOP、SKc/BH/BNH、XCH、ROL/ROR/ROLC/RORC/ROLWC、MOVS。`Arch::Rl78` 变体 + `from_target`（rl78）+ `from_elf_machine`（EM_RL78=197）+ 设备目录条目（rl78g14）+ 反汇编 + 单测 13 项 + 集成测试 1 项（load/run/read_reg/PC）。构建后端 `plan_rl78`（`rl78-elf-gcc -mmcu=rl78`），IDE 仿真页经 ELF 加载、内存默认 0xFFE00。
+  - **Keil/IAR 构建产物与工具链指引**：SDCC 目标（MCS-51/80251/STM8）构建产出 Intel HEX（`.ihx`），ELF 目标产出 `.elf`；`Project::artifact_path` 现按目标识别 HEX 格式（含 80251/STM8），IDE 能正确找到构建产物；`missing_guide` 覆盖 Keil/IAR 交叉工具链（`avr-gcc`/`msp430-elf-gcc`/`v850-elf-gcc`/`rx-elf-gcc`/`rl78-elf-gcc`/`sdcc`），缺失时如实提示安装指引。
+- **F1.2 FreeRTOS 模板**：新建向导「模板」步新增 **FreeRTOS** 选项（`CTemplate::Freertos`）——自包含协作式任务调度器 + 两个任务（`task_led`/`task_monitor`），无需外部内核下载即可构建；换成真正 FreeRTOS 内核时把调度循环改为 `vTaskStartScheduler`、任务函数改 `xTaskCreate` 入口即可。源码经 host gcc `-Wall -Wextra` 零警告编译验证；单测 `c_template_generates_matching_source` 扩展覆盖 FreeRTOS 分支。
+- **F13 浅色主题**：`theme.rs` 双调色板——默认暖墨金深色 + 浅色（`L_BG_0..L_DARK_TEXT`，暖纸底/深墨字/加深金玉朱强调）；`theme::set_light`/`is_light`/`resolve` 把全部色令牌经 `color`/`alpha` 路由到活动主题（286 处 `rgb(theme::X)` 直调改走 `theme::color`，不再绕过映射）；命令面板「切换主题（深/浅色）」（`toggle-theme`）切换并持久化到 `theme.json`（`ns_project::ThemeSettings`/`ThemeMode`，`App::new` 启动恢复）；单测覆盖 resolve 映射/未知字面量保持与 ThemeSettings JSON 往返。
+- **F14 崩溃恢复增强（会话状态）**：`Session` 新增 `views: Vec<FileView>`（每文件 `path`/`cursor`/`scroll_ratio`）与 `saved_at` 时间戳；`Editor::scroll_ratio` 暴露滚动位置，`save_session` 写入每文件光标+滚动，`load_project` 恢复（`set_cursor_line_column`+`scroll_to_ratio`）；`Session::save_stamped` 记录墙钟时间用于崩溃恢复排序；打开项目后每 30s 后台自动快照会话（崩溃最多丢失 30s 标签/光标状态，而非整个编辑器）；单测覆盖往返/时间戳。
+- **F13 多窗口/多工作区**：命令面板「新建窗口」（`new-window`）经 GPUI `App::open_window` 打开独立 `IdeApp`（每窗口独立工作区：标签/输出/面板/项目选择互不影响），`open_new_window` 复用主窗口的 `WindowOptions`（1380×860、最小 980×620、毛玻璃标题栏）；palette 单测覆盖命令注册。
+- **F1.2 文件树拖拽移动**：`TreeDragPayload`（`source`+`is_dir`）经 GPUI `on_drag`/`on_drop`/`can_drop`——目录项接受放下（`can_drop` 拒绝文件项/自投/目录投入），树容器空放下→项目根；`move_tree_entry` 调 `std::fs::rename` 并刷新打开标签路径；纯函数 `tree_move_plan` 校验（拒绝同父/自身/后代/目标已存在），单测覆盖拒绝与目标计算。
+- **F7.1 断点命中计数持久化**：`Breakpoint` 新增持久化字段 `hits: u64`（`mark_hit` 每次命中 `saturating_add(1)`，`#[serde(default)]` 向后兼容旧状态文件）；`BreakpointStore::reset_hits` 清零；断点面板状态徽标旁显示「命中 N」胶囊（命中数>0），随 `.ns-ide/breakpoints.json` 持久化，重开项目恢复；单测 `hit_count_increments_persists_and_resets` 覆盖累加/往返/清零。
+- **F6 仿真看门狗外设（本轮新增）**：`ns_sim::Watchdog`——内存映射 WDT（`base+0x00` 喂狗写 `0xAA55` 重载、`base+0x04` 启用/禁用、`base+0x08` 超时周期、`base+0x0C` 读复位计数、`base+0x10` 读复位 PC）；`tick_peripherals_for` 按周期推进，超时 `reset_count+1` 并记录 `last_reset_pc`（固件未喂狗跑飞可见而非静默停滞）；`peripheral_read`/`peripheral_write` 路由 WDT 寄存器；IDE 仿真页新增「看门狗」状态视图（启用/超时/已过/复位次数）；单测 `watchdog_fires_when_unfed_and_resets_on_feed`（启用→超时复位、喂狗重载、非喂狗不重载）。
+- **F8 烧写外部 loader 完善（本轮新增）**：`FlashRequest.device` 现由 IDE 传入项目 `target`；pyOCD 适配器用 `request.device`（非空覆盖硬编码 `stm32f103c8`）、J-Link 用 `request.device` + FLM `base_address`/`device_size`（`verifybin`/`savebin` 显式基址与尺寸，替代硬编码 `0x8000000`/`0x8000`）；FLM 几何（`base_address`/`page_size`）此前已接入 OpenOCD，现扩展至全部适配器。
+- **F13 快捷键可配置（本轮新增）**：`ns_project::KeybindingOverrides`（`keybindings.json` 用户配置目录，action 名→键位字符串，`BTreeMap` 确定性序列化，空值=恢复默认）；`app::bindings_with(&overrides)` 按 action 名应用覆盖（覆盖时该 action 只保留一条绑定，不再产生重复 cmd/ctrl 对）；`main.rs` 启动时加载覆盖；命令面板「快捷键设置…」（`keybindings`）打开编辑模态（每可重映射 action 一行：命令名+默认键位+编辑框，保存/取消，Enter 确认、Esc 取消）；单测 `overrides_round_trip_via_serde`/`empty_value_is_treated_as_unbound`/`save_drops_empty_values`/`bindings_apply_keystroke_overrides`。
+- **F3 编辑器分屏（本轮）**：命令面板「编辑器分屏（右侧）」/ `Cmd/Ctrl+\` 打开**独立第二编辑窗格**（`SplitPane`：独立 `Entity<Editor>` + LSP 同步/断点/右键菜单/定义订阅，`build_split_editor` 复用标签页接线）；分屏关闭 `Cmd/Ctrl+Shift+\` /「关闭分屏」；分屏脏状态经 `Cmd+S` 一并保存（`save_split_pane`，外部修改同样弹窗）；断点增删经 `sync_editor_breakpoints` 同步到分屏；会话持久化（`Session.split` 项目相对路径，重开项目恢复分屏）；单测 `split_view_opens_and_closes`。
+- **F4.1 单元测试集成运行器（本轮）**：`ns_build::plan_tests` 按语言/构建系统选测试命令——Rust `cargo test --target-dir <build> -j N`、C/C++ CMake `ctest --test-dir <build>/cmake`、Makefile `make test`、Zig `zig build test`（需 `build.zig`）、ZR/汇编 `None`（无内建运行器，如实提示）；命令面板「运行单元测试」（`run-tests`）→ 输出面板流式结果 + 问题面板诊断；单测 `plans_test_runner_by_language_and_build_system`。
+- **F14 静态分析增强——栈使用分析（本轮）**：`ns_build::plan_stack_usage`（C/C++：`-fstack-usage -c` 逐源编译到 `<build>/stack-usage/`）、`parse_stack_usage_su`（`\t<file>\t<function>\t<bytes>\t<static|dynamic>`）、`collect_stack_usage`（扫描 `.su` 并按文件/栈深排序）；命令面板「栈使用分析（-fstack-usage）」（`stack-usage`）→ 输出面板按函数列出静态/动态栈深；单测 `parses_stack_usage_and_plans_only_for_c`。
+- **F14 覆盖率工具接入（本轮）**：`ns_build::plan_coverage`（C/C++：`--coverage` 编译+链接单测试二进制）、`run_coverage`（运行二进制 → `gcov -o <dir> <stem>` 汇总）、`parse_gcov_report`（`File '<path>'` + `Lines executed:<pct>% of <n>`）、`CoverageFile::percent`；命令面板「覆盖率分析（gcov）」（`coverage`）→ 输出面板按文件列出行覆盖率；`gcov` 缺失/非 C 如实提示；单测 `parses_gcov_report_and_plans_coverage_only_for_c` + 真实 gcov 端到端 `coverage_runs_end_to_end_with_gcov`。
 
 - **M4 调试（嵌入式目标 attach）**：**已实现但未验证**（`ns-debug::embedded`：OpenOCD/ST-Link/J-Link/pyOCD/probe-rs 探针适配器 + `target remote` GDB attach 会话，命令面板「嵌入式调试（目标 attach）」→ 编译→烧写→attach；因需要硬件，尚未在本机验证，勿声称可用）。
-- **M10 ZR 其余**：真实 `zrc` 编译器集成验证（`zr-std` 声明库已提供，编译器本体后续接入）。
+- **M10 ZR 接入**：外部 `zr` 编译器与 `zr lsp` 已接入构建/LSP 后端；`zr` 工具需安装在 PATH 上（构建与 LSP 缺失时如实提示）。
 
 ---
 
@@ -454,7 +501,7 @@ period = 0                    # 仿真周期参数（可选）
 | 维度 | IAR | 本项目 |
 |---|---|---|
 | 配置模型 | 专有 `.ewp/.eww` 工程文件 | 开放、人类可读的 `project.toml` |
-| 工具链 | 厂商绑定（IAR 编译器） | 开放适配器：GCC/Clang/Cargo/Zig/zrc 可插拔 |
+| 工具链 | 厂商绑定（IAR 编译器） | 开放适配器：GCC/Clang/Cargo/Zig/zr 可插拔 |
 | 语言 | C/C++/汇编 | C/C++/Rust/Zig/**ZR**（新增） |
 | 调试 | C-SPY 专有 | GDB/LLDB 标准协议 + 可插拔厂商适配 |
 | 许可 | 商业授权 | 开源（LICENSE 见仓库） |

@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 ns-project.workspace = true
+ns-device.workspace = true
 serde.workspace = true

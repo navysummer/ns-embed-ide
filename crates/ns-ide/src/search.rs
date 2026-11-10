@@ -125,6 +125,46 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// Collect every source file under `root` (relative paths, forward slashes),
+/// skipping VCS/build directories, hidden entries and binary files. Used by
+/// Quick Open to enumerate the project's files for fuzzy filtering.
+pub fn collect_files(root: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    collect_walk(root, root, &mut files);
+    files
+}
+
+fn collect_walk(dir: &Path, root: &Path, files: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
+    children.sort();
+    for path in children {
+        if path.is_dir() {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            collect_walk(&path, root, files);
+            continue;
+        }
+        if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+            if BINARY_EXTENSIONS
+                .iter()
+                .any(|binary| extension.eq_ignore_ascii_case(binary))
+            {
+                continue;
+            }
+        }
+        files.push(relative_path(root, &path));
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +241,26 @@ mod tests {
         let root = fixture_root("binary_files_match_by_name_but_never_by_content");
         let matches = search_project(&root, "data", 100);
         assert!(matches.iter().all(|m| !(m.path.ends_with("data.bin") && m.origin == MatchOrigin::Content)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Quick Open's flat file list includes source files, excludes build/VCS
+    /// directories and binary files, and reports forward-slash relative paths.
+    #[test]
+    fn collect_files_lists_sources_only() {
+        let root = fixture_root("collect_files_lists_sources_only");
+        let files = collect_files(&root);
+        assert!(files.contains(&"src/main.c".to_string()));
+        assert!(files.contains(&"src/other.c".to_string()));
+        assert!(files.contains(&"README.md".to_string()));
+        assert!(
+            !files.iter().any(|f| f.starts_with("build/")),
+            "build dir excluded: {files:?}"
+        );
+        assert!(
+            !files.iter().any(|f| f.ends_with("data.bin")),
+            "binary files excluded: {files:?}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

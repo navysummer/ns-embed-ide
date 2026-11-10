@@ -120,6 +120,9 @@ pub struct DebugConfig {
     pub program: PathBuf,
     /// Arguments passed to the debuggee.
     pub args: Vec<String>,
+    /// Environment variables as `KEY=value` applied on top of the inherited
+    /// environment when the debuggee starts.
+    pub env: Vec<String>,
     /// Working directory for the debuggee.
     pub cwd: PathBuf,
     /// Breakpoints to apply before the session starts.
@@ -177,7 +180,7 @@ pub enum DebugMessage {
     /// Adapter finished initialization and the program is ready to run.
     Ready,
     /// The debuggee paused (breakpoint hit, step completed, pause requested, …).
-    Stopped { reason: String, thread_id: u64 },
+    Stopped { reason: String, thread_id: u64, description: Option<String> },
     /// The debuggee resumed.
     Continued,
     /// Full call stack for the most recent stop.
@@ -188,6 +191,9 @@ pub enum DebugMessage {
     Variables { reference: u64, variables: Vec<Variable> },
     /// Memory bytes starting at `address` (result of `readMemory`).
     Memory { address: u64, data: Vec<u8> },
+    /// A `writeMemory` completed successfully at `address`; the caller should
+    /// re-read the region to refresh its view.
+    MemoryWritten { address: u64, bytes: usize },
     /// Disassembly instructions starting at the given address.
     Disassembly { instructions: Vec<Instruction> },
     /// Output from the debuggee or the adapter.
@@ -233,6 +239,9 @@ pub enum DebugMessage {
     },
     /// Every trace register write succeeded; the window is now armed.
     TraceConfigured { config: TraceConfig },
+    /// Decoded SWO trace packets streamed from the probe (SWO/SWV window).
+    /// Delivered as the reader thread decodes them.
+    TracePackets(Vec<swvd::Packet>),
     /// Result of [`DebugCommand::Evaluate`].
     Evaluated {
         expression: String,
@@ -271,7 +280,11 @@ pub enum DebugCommand {
     /// Fetch the scopes for a frame; the answer arrives as [`DebugMessage::Scopes`].
     GetScopes { frame_id: u64 },
     /// Fetch memory bytes starting at `reference` (a hex address like `0x1000003E8`).
+    /// Fetch memory bytes starting at `reference` (a hex address like `0x1000003E8`).
     ReadMemory { reference: String, count: u64 },
+    /// Write `data` bytes at `reference` (a hex address). The answer arrives as
+    /// [`DebugMessage::MemoryWritten`] so the caller can re-read the region.
+    WriteMemory { reference: String, data: Vec<u8> },
     /// Fetch disassembly instructions starting at `reference` (a hex address).
     Disassemble { reference: String, instruction_count: u64 },
     /// Fetch the variables for a scope or expandable variable; the answer arrives
@@ -293,6 +306,13 @@ pub enum DebugCommand {
     ConfigureTrace(swvd::TraceConfig),
     /// Stop tracing and drop the accumulated trace data.
     StopTrace,
+    /// Start a background SWO stream reader on the probe's data port. The
+    /// decoded packets arrive as [`DebugMessage::TracePackets`]. `port` is the
+    /// probe's SWO TCP port; `itm_port` is the armed stimulus port.
+    StartTraceStream { port: u16, itm_port: u8 },
+    /// Stop the background SWO stream reader started by
+    /// [`DebugCommand::StartTraceStream`].
+    StopTraceStream,
     /// Fetch the variables of a scope by its name (`LocalScope`/`GlobalScope`).
     /// The answer arrives as [`DebugMessage::ScopeVariables`].
     ScopeVariables { scope: String },
@@ -325,6 +345,10 @@ enum PendingRequest {
     /// A `setVariable` request: the (reference, name) so the response can be
     /// attributed back to the caller.
     VariableSet { variables_reference: u64, name: String },
+
+    /// A `writeMemory` request: the target address so the response can be
+    /// attributed back to the caller (to re-read the region).
+    MemoryWrite { address: u64 },
     /// Configuration whose setup was completed by a `writeMemory` response.
     TraceConfigured(TraceConfig),
 }
@@ -466,6 +490,8 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
         .name("ns-debug-commands".into())
         .spawn(move || {
             let mut sequence = configuration_seq + 1;
+            // Background SWO stream reader, started/stopped by the trace window.
+            let mut trace_stream: Option<swvd::TraceStream> = None;
             while let Ok(command) = command_rx.recv() {
                 match command {
                     DebugCommand::Continue { thread_id } => {
@@ -578,6 +604,26 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                         );
                         sequence += 1;
                     }
+                    DebugCommand::WriteMemory { reference, data } => {
+                        // DAP `writeMemory` takes hex-encoded bytes in `data`.
+                        let encoded: String = data.iter().map(|byte| format!("{byte:02x}")).collect();
+                        let address = parse_hex_address(&reference).unwrap_or(0);
+                        let seq = sequence;
+                        sequence += 1;
+                        command_pending
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(seq, PendingRequest::MemoryWrite { address });
+                        request(
+                            &mut stdin,
+                            seq,
+                            "writeMemory",
+                            json!({
+                                "memoryReference": reference,
+                                "data": encoded,
+                            }),
+                        );
+                    }
                     DebugCommand::Disassemble {
                         reference,
                         instruction_count,
@@ -670,6 +716,50 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                         for (command, arguments) in swvd::stop_requests() {
                             request(&mut stdin, sequence, &command, arguments);
                             sequence += 1;
+                        }
+                    }
+                    DebugCommand::StartTraceStream { port, itm_port } => {
+                        // Stop any previous reader before starting a new one.
+                        if let Some(mut previous) = trace_stream.take() {
+                            previous.stop();
+                        }
+                        let (packet_tx, packet_rx) = mpsc::channel::<Vec<swvd::Packet>>();
+                        let forward = command_messages.clone();
+                        // Forward decoded packets to the UI as trace messages.
+                        let forwarder = std::thread::spawn(move || {
+                            while let Ok(packets) = packet_rx.recv() {
+                                if forward.send(DebugMessage::TracePackets(packets)).is_err() {
+                                    break; // UI went away.
+                                }
+                            }
+                        });
+                        match swvd::TraceStream::spawn(
+                            std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+                            itm_port,
+                            packet_tx,
+                        ) {
+                            Ok(stream) => {
+                                let _ = forwarder;
+                                let _ = command_messages.send(DebugMessage::Output {
+                                    category: "console".into(),
+                                    text: format!("SWO 流已连接(端口 {port})。"),
+                                });
+                                trace_stream = Some(stream);
+                            }
+                            Err(error) => {
+                                let _ = command_messages.send(DebugMessage::Error(format!(
+                                    "无法连接 SWO 数据流(端口 {port}): {error}"
+                                )));
+                            }
+                        }
+                    }
+                    DebugCommand::StopTraceStream => {
+                        if let Some(mut stream) = trace_stream.take() {
+                            stream.stop();
+                            let _ = command_messages.send(DebugMessage::Output {
+                                category: "console".into(),
+                                text: "SWO 数据流已停止。".into(),
+                            });
                         }
                     }
                     DebugCommand::ScopeVariables { scope } => {
@@ -828,6 +918,7 @@ fn perform_handshake(
             json!({
                 "program": config.program.display().to_string(),
                 "args": config.args,
+                "env": config.env,
                 "cwd": config.cwd.display().to_string(),
                 "stopOnEntry": false,
             }),
@@ -1138,7 +1229,18 @@ fn translate_event(event: &Value, messages: &Sender<DebugMessage>, terminated: &
                     description: description.to_string(),
                 });
             }
-            let _ = messages.send(DebugMessage::Stopped { reason, thread_id });
+            // Capture the adapter's descriptive text (e.g. "EXC_BAD_ACCESS",
+            // "SIGSEGV", "hardware exception") so the UI can classify the stop.
+            let description = body
+                .get("description")
+                .and_then(Value::as_str)
+                .or_else(|| body.get("text").and_then(Value::as_str))
+                .map(str::to_string);
+            let _ = messages.send(DebugMessage::Stopped {
+                reason,
+                thread_id,
+                description,
+            });
         }
         "continued" => {
             let _ = messages.send(DebugMessage::Continued);
@@ -1498,21 +1600,38 @@ fn translate_response(
             });
         }
         "writeMemory" => {
-            let configured = match pending_take(pending, request_seq) {
-                Some(PendingRequest::TraceConfigured(trace)) => Some(trace),
-                _ => None,
-            };
-            if let Some(trace) = configured {
-                if !success {
-                    let _ = messages.send(DebugMessage::Error(format!(
-                        "trace 寄存器写入失败: {}",
-                        error()
-                    )));
-                } else {
-                    let _ = messages.send(DebugMessage::TraceConfigured {
-                        config: trace,
-                    });
+            match pending_take(pending, request_seq) {
+                Some(PendingRequest::TraceConfigured(trace)) => {
+                    if !success {
+                        let _ = messages.send(DebugMessage::Error(format!(
+                            "trace 寄存器写入失败: {}",
+                            error()
+                        )));
+                    } else {
+                        let _ = messages.send(DebugMessage::TraceConfigured {
+                            config: trace,
+                        });
+                    }
                 }
+                Some(PendingRequest::MemoryWrite { address }) => {
+                    if success {
+                        let bytes = response
+                            .get("body")
+                            .and_then(|body| body.get("bytesWritten"))
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0);
+                        let _ = messages.send(DebugMessage::MemoryWritten {
+                            address,
+                            bytes: bytes as usize,
+                        });
+                    } else {
+                        let _ = messages.send(DebugMessage::Error(format!(
+                            "内存写入失败: {}",
+                            error()
+                        )));
+                    }
+                }
+                _ => {}
             }
         }
         "disconnect" => {
@@ -2051,9 +2170,29 @@ mod tests {
         );
         assert!(!terminated);
         match rx.try_recv().unwrap() {
-            DebugMessage::Stopped { reason, thread_id } => {
+            DebugMessage::Stopped { reason, thread_id, description } => {
                 assert_eq!(reason, "breakpoint");
                 assert_eq!(thread_id, 42);
+                assert!(description.is_none());
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stopped_event_captures_signal_description() {
+        let (tx, rx) = mpsc::channel();
+        let mut terminated = false;
+        translate_event(
+            &json!({ "type": "event", "event": "stopped", "body": {
+                "reason": "exception", "threadId": 1, "description": "EXC_BAD_ACCESS"
+            } }),
+            &tx,
+            &mut terminated,
+        );
+        match rx.try_recv().unwrap() {
+            DebugMessage::Stopped { description, .. } => {
+                assert_eq!(description.as_deref(), Some("EXC_BAD_ACCESS"));
             }
             other => panic!("unexpected message: {other:?}"),
         }
@@ -2185,6 +2324,68 @@ mod tests {
             }
             other => panic!("unexpected message: {other:?}"),
         }
+    }
+
+    #[test]
+    fn translates_write_memory_response() {
+        let (tx, rx) = mpsc::channel();
+        let pending = pending();
+        pending
+            .lock()
+            .unwrap()
+            .insert(9, PendingRequest::MemoryWrite { address: 0x2000_0010 });
+        translate_response(
+            &json!({
+                "type": "response",
+                "command": "writeMemory",
+                "request_seq": 9,
+                "success": true,
+                "body": { "bytesWritten": 4 }
+            }),
+            &tx,
+            &pending,
+        );
+        match rx.try_recv().unwrap() {
+            DebugMessage::MemoryWritten { address, bytes } => {
+                assert_eq!(address, 0x2000_0010);
+                assert_eq!(bytes, 4);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_memory_reports_failure() {
+        let (tx, rx) = mpsc::channel();
+        let pending = pending();
+        pending
+            .lock()
+            .unwrap()
+            .insert(9, PendingRequest::MemoryWrite { address: 0x2000_0010 });
+        translate_response(
+            &json!({
+                "type": "response",
+                "command": "writeMemory",
+                "request_seq": 9,
+                "success": false,
+                "message": "permission denied"
+            }),
+            &tx,
+            &pending,
+        );
+        match rx.try_recv().unwrap() {
+            DebugMessage::Error(text) => assert!(text.contains("内存写入失败")),
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_hex_address_with_prefix_and_without() {
+        assert_eq!(parse_hex_address("0x20000010"), Some(0x2000_0010));
+        assert_eq!(parse_hex_address("0X20000010"), Some(0x2000_0010));
+        assert_eq!(parse_hex_address("20000010"), Some(0x2000_0010));
+        assert_eq!(parse_hex_address("  0x10 "), Some(16));
+        assert_eq!(parse_hex_address("zz"), None);
     }
 
     #[test]

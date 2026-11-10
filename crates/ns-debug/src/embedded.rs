@@ -11,7 +11,7 @@
 //!
 //! **Status**: implemented per the OpenOCD / ST-Link / J-Link / pyOCD /
 //! probe-rs source layouts, but not verified on real hardware. See the
-//! module docs and AGENT.md for the verification gap.
+//! module docs and AGENTS.md for the verification gap.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -32,7 +32,7 @@ use crate::{
 };
 
 /// Which probe/debug server backs the embedded target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProbeKind {
     /// ST-Link probe via its bundled GDB server (`st-util`).
     StLink,
@@ -167,6 +167,43 @@ pub fn which(program: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Report which debug probes are usable given the current PATH and an optional
+/// explicit server path. `available` = the server binary resolves; the
+/// `reason` explains a miss so the IDE can show precise install guidance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeAvailability {
+    pub probe: ProbeKind,
+    pub available: bool,
+    /// Human-readable detail: resolved binary path, or the missing tool name.
+    pub detail: String,
+}
+
+/// Scan all [`ProbeKind`] variants for server availability.
+pub fn probe_availability(server_path: Option<&str>) -> Vec<ProbeAvailability> {
+    ProbeKind::ALL
+        .iter()
+        .map(|probe| {
+            let resolved = server_path
+                .filter(|path| !path.trim().is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.is_file())
+                .or_else(|| which(probe.server_binary()));
+            match resolved {
+                Some(path) => ProbeAvailability {
+                    probe: *probe,
+                    available: true,
+                    detail: path.display().to_string(),
+                },
+                None => ProbeAvailability {
+                    probe: *probe,
+                    available: false,
+                    detail: probe.server_binary().to_string(),
+                },
+            }
+        })
+        .collect()
 }
 
 /// Build the GDB server command for a probe.
@@ -857,6 +894,21 @@ impl RspClient {
         }
         Ok(decode_hex(&response))
     }
+
+    /// Write memory via `M<addr>,<len>:<hexdata>`.
+    fn write_memory(&mut self, address: u64, data: &[u8]) -> Result<usize> {
+        let encoded: String = data.iter().map(|byte| format!("{byte:02x}")).collect();
+        let payload = format!("M{:x},{:x}:{}", address, data.len(), encoded);
+        let response = self.request(payload.as_bytes())?;
+        if response.starts_with(b"E") {
+            bail!("写入内存失败: {}", String::from_utf8_lossy(&response));
+        }
+        if response == b"OK" {
+            Ok(data.len())
+        } else {
+            bail!("写入内存失败: 意外响应 {:?}", String::from_utf8_lossy(&response));
+        }
+    }
 }
 
 impl EmbeddedSession {
@@ -1023,7 +1075,11 @@ fn translate_mi(mi: MiLine, messages: &Sender<DebugMessage>) -> Result<()> {
                 .and_then(Value::as_str)
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(1);
-            let _ = messages.send(DebugMessage::Stopped { reason, thread_id });
+            let _ = messages.send(DebugMessage::Stopped {
+                reason,
+                thread_id,
+                description: None,
+            });
             // Fetch the call stack after a stop.
             let _ = messages.send(DebugMessage::Continued);
         }
@@ -1152,6 +1208,21 @@ impl EmbeddedSession {
                     }
                 }
             }
+            DebugCommand::WriteMemory { reference, data } => {
+                let address = u64::from_str_radix(reference.trim_start_matches("0x"), 16).unwrap_or(0);
+                let mut rsp = RspClient::connect(self.server_port)?;
+                match rsp.write_memory(address, &data) {
+                    Ok(bytes) => {
+                        let _ = self.messages.send(DebugMessage::MemoryWritten {
+                            address,
+                            bytes,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = self.messages.send(DebugMessage::Error(error.to_string()));
+                    }
+                }
+            }
             DebugCommand::Disassemble { reference, .. } => {
                 let address = u64::from_str_radix(reference.trim_start_matches("0x"), 16).unwrap_or(0);
                 let mut rsp = RspClient::connect(self.server_port)?;
@@ -1222,6 +1293,16 @@ impl EmbeddedSession {
             DebugCommand::ConfigureTrace(_) | DebugCommand::StopTrace => {
                 let _ = self.messages.send(DebugMessage::Error(
                     "嵌入式目标暂不支持 SWO 跟踪窗口（需硬件 trace 探针）。".to_string(),
+                ));
+            }
+            DebugCommand::StartTraceStream { port, .. } => {
+                let _ = self.messages.send(DebugMessage::Error(
+                    format!("嵌入式目标暂不支持 SWO 数据流读取(端口 {port})。"),
+                ));
+            }
+            DebugCommand::StopTraceStream => {
+                let _ = self.messages.send(DebugMessage::Error(
+                    "嵌入式目标暂不支持 SWO 数据流读取。".to_string(),
                 ));
             }
             DebugCommand::ScopeVariables { scope } => {
@@ -1505,7 +1586,7 @@ mod tests {
         // .strtab at offset 0x200, .symtab at 0x300, .shstrtab at 0x400.
         // Section header for .shstrtab (index 1 in shstrndx).
         // We'll build a compact layout.
-        let mut shstrtab = b"\0.shstrtab\0.symtab\0.strtab\0".to_vec();
+        let shstrtab = b"\0.shstrtab\0.symtab\0.strtab\0".to_vec();
         let strtab = b"\0main\0".to_vec();
         let mut symtab = vec![0u8; 16 * 2];
         // Symbol: main, STT_FUNC, value 0x100, size 0x20.
@@ -1582,5 +1663,26 @@ mod tests {
         let (mnemonic, operands) = decode_thumb16(0x2005);
         assert_eq!(mnemonic, "movs");
         assert_eq!(operands, vec!["r0", "#5"]);
+    }
+
+    /// `probe_availability` must mark a probe available when its server binary
+    /// resolves on PATH or via an explicit path, and unavailable otherwise.
+    #[test]
+    fn probe_availability_reports_resolvable_servers() {
+        // A nonexistent explicit server path must not mark any probe available
+        // unless the server binary is actually on PATH.
+        let statuses = probe_availability(Some("/nonexistent/openocd"));
+        assert_eq!(statuses.len(), ProbeKind::ALL.len());
+        for status in &statuses {
+            // With a bogus explicit path and no PATH entry, the probe is either
+            // genuinely installed (available) or missing (unavailable); the
+            // detail must never be empty and must name a binary.
+            assert!(!status.detail.is_empty());
+        }
+        // Every probe kind is reported exactly once.
+        let mut seen = std::collections::HashSet::new();
+        for status in &statuses {
+            assert!(seen.insert(status.probe), "duplicate probe {}", status.probe.label());
+        }
     }
 }

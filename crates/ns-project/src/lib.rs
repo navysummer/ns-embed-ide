@@ -9,17 +9,22 @@ pub mod config_keys;
 pub mod language;
 pub mod project;
 pub mod recents;
+pub mod recent_files;
 pub mod session;
+pub mod snippets;
+pub mod terminal_settings;
+pub mod theme_settings;
+pub mod keybindings_settings;
 pub mod toolchain;
 pub mod toolchain_config;
-pub mod terminal_settings;
-
 pub use config_keys::{BuiltinVars, ConfigKeys, expand, expand_field, referenced_keys};
+pub use recent_files::RecentFiles;
 pub use toolchain_config::{ToolchainConfig, registry, resolve_tool};
 pub use terminal_settings::{TerminalSettings, default_terminal_shell, terminal_label};
-
-pub use session::{SESSION_FILE, Session, session_path};
-
+pub use keybindings_settings::{KeybindingOverrides, KEYBINDINGS_FILE};
+pub use theme_settings::{ThemeMode, ThemeSettings};
+pub use session::{FileView, FoldedFile, SESSION_FILE, Session, session_path};
+pub use snippets::{Snippet, SnippetStore};
 pub use breakpoints::{
     Breakpoint, BreakpointKind, BreakpointStore, WatchAccess, Watchpoint, breakpoints_path,
 };

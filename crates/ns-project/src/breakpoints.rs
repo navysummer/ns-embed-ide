@@ -65,6 +65,11 @@ pub struct Breakpoint {
     /// the debuggee continues; runtime-only and not persisted.
     #[serde(skip)]
     pub hit: bool,
+    /// Total number of times this breakpoint has been hit in this session /
+    /// project lifetime. Persisted so the count survives restarts and is shown
+    /// in the breakpoint panel.
+    #[serde(default)]
+    pub hits: u64,
 }
 
 impl Default for Breakpoint {
@@ -81,6 +86,7 @@ impl Default for Breakpoint {
             reason: String::new(),
             stale: false,
             hit: false,
+            hits: 0,
         }
     }
 }
@@ -558,7 +564,19 @@ impl BreakpointStore {
             breakpoint.verified = Some(true);
             breakpoint.stale = false;
             breakpoint.hit = true;
+            breakpoint.hits = breakpoint.hits.saturating_add(1);
             breakpoint.reason.clear();
+        }
+    }
+
+    /// Reset the persisted hit count for a breakpoint (user action).
+    pub fn reset_hits(&mut self, path: &str, line: usize) {
+        if let Some(breakpoint) = self
+            .breakpoints
+            .iter_mut()
+            .find(|breakpoint| breakpoint.path == path && breakpoint.line == line)
+        {
+            breakpoint.hits = 0;
         }
     }
 
@@ -1024,5 +1042,36 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// `mark_hit` increments the persisted hit count, `reset_hits` clears it,
+    /// and the count survives a save/load round-trip.
+    #[test]
+    fn hit_count_increments_persists_and_resets() {
+        let dir = std::env::temp_dir().join(format!("ns-bp-hits-{}", std::process::id()));
+        let root = dir.join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let mut store = BreakpointStore::default();
+        store.toggle("src/main.c", 3);
+        store.mark_hit("src/main.c", 3);
+        store.mark_hit("src/main.c", 3);
+        let bp = store.find("src/main.c", 3).unwrap();
+        assert_eq!(bp.hits, 2, "two hits accumulate");
+        assert!(bp.hit, "transient hit marker set");
+
+        // Persist and reload: the count survives.
+        store.save(&root).unwrap();
+        let reloaded = BreakpointStore::load(&root);
+        let bp = reloaded.find("src/main.c", 3).unwrap();
+        assert_eq!(bp.hits, 2, "hit count survives restart");
+
+        // reset_hits clears the count but keeps the breakpoint.
+        let mut store = reloaded;
+        store.reset_hits("src/main.c", 3);
+        let bp = store.find("src/main.c", 3).unwrap();
+        assert_eq!(bp.hits, 0);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

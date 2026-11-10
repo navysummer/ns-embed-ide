@@ -95,6 +95,7 @@ fn dap_launch_hit_continue_terminate() {
     let config = DebugConfig {
         program,
         args: Vec::new(),
+        env: Vec::new(),
         cwd: root.clone(),
         breakpoints: vec![DebugBreakpoint {
             path: source_display.clone(),
@@ -172,6 +173,7 @@ fn dap_conditional_breakpoint_fires_only_when_true() {
     let config = DebugConfig {
         program,
         args: Vec::new(),
+        env: Vec::new(),
         cwd: root.clone(),
         breakpoints: vec![DebugBreakpoint {
             path: source_display,
@@ -230,6 +232,7 @@ fn dap_registers_memory_disassembly() {
     let config = DebugConfig {
         program,
         args: Vec::new(),
+        env: Vec::new(),
         cwd: root.clone(),
         breakpoints: vec![DebugBreakpoint {
             path: source,
@@ -413,6 +416,7 @@ fn dap_breakpoint_results_reported_and_hit_condition_pauses() {
     let config = DebugConfig {
         program,
         args: Vec::new(),
+        env: Vec::new(),
         cwd: root.clone(),
         breakpoints: vec![DebugBreakpoint {
             path: source_display.clone(),
@@ -449,7 +453,7 @@ fn dap_breakpoint_results_reported_and_hit_condition_pauses() {
     let (reason, thread_id) = take(
         stop,
         |msg| match msg {
-            DebugMessage::Stopped { reason, thread_id } => Ok((reason, thread_id)),
+            DebugMessage::Stopped { reason, thread_id, .. } => Ok((reason, thread_id)),
             other => Err(other),
         },
         "breakpoint stop",
@@ -503,6 +507,7 @@ fn dap_watchpoint_resolves_and_stops_on_write() {
     let config = DebugConfig {
         program,
         args: Vec::new(),
+        env: Vec::new(),
         cwd: root.clone(),
         breakpoints: vec![DebugBreakpoint {
             path: source.display().to_string(),
@@ -703,6 +708,7 @@ fn dap_hardware_breakpoint_binds_and_stops() {
     let config = DebugConfig {
         program,
         args: Vec::new(),
+        env: Vec::new(),
         cwd: root.clone(),
         breakpoints: vec![DebugBreakpoint {
             path: source_display.clone(),

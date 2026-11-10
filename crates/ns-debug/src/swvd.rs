@@ -14,10 +14,11 @@
 //! The probe connection itself (`probe-rs`) is not wired up yet: [`TraceConfig::requests`]
 //! emits the target-side setup, and [`package_support`] reports honestly when a
 //! session cannot trace (e.g. a hosted x86 debuggee) instead of pretending.
-//! See AGENT.md §5.1 — full SWO streaming is an open item.
+//! See AGENTS.md §5.1 — full SWO streaming is an open item.
 
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -78,6 +79,10 @@ pub struct TraceConfig {
     /// SWO/core clock ratio expressed as the TPIU prescaler.
     pub swo_prescaler: u32,
     pub mode: TraceMode,
+    /// Host-side SWO data port to read decoded packets from. `0` means the
+    /// reader auto-derives it from the probe's GDB server port (OpenOCD
+    /// default: `itm_port = gdb_port + 1`).
+    pub swo_port: u16,
 }
 
 impl Default for TraceConfig {
@@ -89,6 +94,7 @@ impl Default for TraceConfig {
             itm_port: 0,
             swo_prescaler: 1,
             mode: TraceMode::Running,
+            swo_port: 0,
         }
     }
 }
@@ -379,6 +385,147 @@ pub fn decode(bytes: &[u8]) -> (Vec<Packet>, usize) {
     (packets, offset)
 }
 
+/// A stateful, incremental decoder for an SWO byte stream.
+///
+/// [`decode`] is stateless and stops at the first incomplete packet, so a
+/// reader that feeds it fixed-size TCP chunks would lose the tail. This
+/// wrapper keeps that tail across [`TraceReader::push`] calls so packets that
+/// straddle two reads are still decoded, and exposes
+/// [`TraceReader::read_from`] for a streaming source.
+#[derive(Debug, Default)]
+pub struct TraceReader {
+    buffer: Vec<u8>,
+}
+
+impl TraceReader {
+    /// Feed new bytes and return the packets decoded so far, plus how many of
+    /// the *newly supplied* bytes were consumed. The caller can keep the
+    /// returned `consumed` to trim its own chunk if it wants to reuse it.
+    pub fn push(&mut self, bytes: &[u8]) -> (Vec<Packet>, usize) {
+        let before = self.buffer.len();
+        self.buffer.extend_from_slice(bytes);
+        let (packets, consumed) = decode(&self.buffer);
+        if consumed > 0 {
+            self.buffer.drain(..consumed);
+        }
+        // `consumed` counts bytes from the *start of the buffer*, which may
+        // include leftovers from a previous push. Report how many of the
+        // fresh bytes were actually consumed, clamped to the chunk size.
+        let fresh_consumed = consumed.saturating_sub(before).min(bytes.len());
+        (packets, fresh_consumed)
+    }
+
+    /// Read as much as is currently available from `source`, decode it, and
+    /// return the packets. Returns `Ok(None)` when the source would block or
+    /// is at EOF without new data.
+    pub fn read_from<R: std::io::Read>(&mut self, source: &mut R) -> std::io::Result<Option<Vec<Packet>>> {
+        let mut chunk = [0u8; 4096];
+        let mut packets = Vec::new();
+        // Keep reading until the source would block (WouldBlock) or returns 0.
+        loop {
+            match source.read(&mut chunk) {
+                Ok(0) => break, // EOF: flush whatever is decodable.
+                Ok(n) => {
+                    let (mut decoded, _) = self.push(&chunk[..n]);
+                    packets.append(&mut decoded);
+                    // Keep reading to drain what's buffered in the stream.
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok((!packets.is_empty()).then_some(packets))
+    }
+}
+
+/// A background reader that connects to a probe's SWO data port, decodes ITM
+/// packets with a [`TraceReader`], and forwards them to `sink`.
+///
+/// The reader runs on its own thread so the debug session (and UI) never
+/// blocks on the probe. `stop()` signals it to exit; dropping the handle also
+/// stops it.
+pub struct TraceStream {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl TraceStream {
+    /// Connect to `addr` and start reading. The connection is attempted
+    /// immediately; an error is returned if the probe is not reachable.
+    pub fn spawn(
+        addr: SocketAddr,
+        itm_port: u8,
+        sink: std::sync::mpsc::Sender<Vec<Packet>>,
+    ) -> std::io::Result<Self> {
+        let mut stream = TcpStream::connect(addr)?;
+        // Non-blocking so the reader can poll `stop` without stalling.
+        stream.set_nonblocking(true)?;
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_reader = stop.clone();
+        let handle = std::thread::spawn(move || {
+            let mut reader = TraceReader::default();
+            while !stop_reader.load(std::sync::atomic::Ordering::SeqCst) {
+                match reader.read_from(&mut stream) {
+                    Ok(Some(packets)) => {
+                        // Filter stimulus packets to the armed port; DWT,
+                        // exception and timestamp packets are always kept so
+                        // the UI shows the full trace picture.
+                        let filtered: Vec<Packet> = packets
+                            .into_iter()
+                            .filter(|packet| match packet {
+                                Packet::Stimulus { port, .. } => *port == itm_port,
+                                _ => true,
+                            })
+                            .collect();
+                        if !filtered.is_empty() {
+                            let _ = sink.send(filtered);
+                        }
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(8)),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::TimedOut
+                                | std::io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        std::thread::sleep(Duration::from_millis(8));
+                    }
+                    Err(_) => break, // connection lost or reset.
+                }
+            }
+        });
+        Ok(Self {
+            stop,
+            handle: Some(handle),
+        })
+    }
+
+    /// Signal the reader to stop and join its thread.
+    pub fn stop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for TraceStream {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 /// Probe a GDB server by name; returns whether it accepts a connection.
 fn port_open(port: u16) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
@@ -428,12 +575,12 @@ pub fn package_support(probe: Option<&Probe>) -> Option<&'static str> {
     if probe.is_none() {
         return Some(
             "未找到支持 SWV 的调试探针（ST-Link GDB server / st-util / J-Link）。\
-             嵌入 SWO 流目前尚未接通，见 AGENT.md §5.1。",
+             嵌入 SWO 流目前尚未接通，见 AGENTS.md §5.1。",
         );
     }
     Some(
         "已检测到探针，但 SWO 流尚未接入 IDE 的 trace 面板（探针网络读取未实现）。\
-         见 AGENT.md §5.1。",
+         见 AGENTS.md §5.1。",
     )
 }
 
@@ -563,6 +710,7 @@ mod tests {
             itm_port: 3,
             swo_prescaler: 8,
             mode: TraceMode::Always,
+            swo_port: 4243,
         };
         config.save(&root).unwrap();
         let loaded = TraceConfig::load(&root);
@@ -584,10 +732,152 @@ mod tests {
     #[test]
     fn probe_support_explains_why_tracing_is_unavailable() {
         let reason = package_support(None).expect("hosted sessions cannot trace");
-        assert!(reason.contains("AGENT.md"));
+        assert!(reason.contains("AGENTS.md"));
         let tool = Probe::Tool {
             path: "/usr/bin/st-util".into(),
         };
         assert!(package_support(Some(&tool)).is_some());
+    }
+    #[test]
+    fn reader_keeps_partial_packet_tail_across_pushes() {
+        // A stimulus packet split across two pushes: `0x00 0x02 h` then `i`.
+        let mut reader = TraceReader::default();
+        let (packets, consumed) = reader.push(&[0x00, 0x02, b'h']);
+        assert!(packets.is_empty());
+        assert_eq!(consumed, 0, "incomplete packet leaves fresh bytes unconsumed");
+        let (packets, consumed) = reader.push(&[b'i']);
+        assert_eq!(consumed, 1);
+        assert_eq!(
+            packets,
+            vec![Packet::Stimulus {
+                port: 0,
+                payload: b"hi".to_vec()
+            }]
+        );
+    }
+
+    #[test]
+    fn reader_decodes_multiple_packets_in_one_chunk() {
+        let mut reader = TraceReader::default();
+        let bytes = [
+            0x00, 0x02, b'h', b'i', // stimulus port 0
+            0x02, 0x1E, // exception entry 15
+        ];
+        let (packets, consumed) = reader.push(&bytes);
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(packets.len(), 2);
+        assert!(matches!(&packets[0], Packet::Stimulus { port: 0, .. }));
+        assert_eq!(
+            packets[1],
+            Packet::Exception {
+                number: 15,
+                entered: true
+            }
+        );
+    }
+
+    #[test]
+    fn reader_reads_stream_in_chunks() {
+        use std::io::Cursor;
+        // Two packets plus a trailing incomplete one.
+        let bytes = vec![
+            0x00, 0x02, b'h', b'i', // complete stimulus
+            0x00, 0x03, b'x', b'y', // incomplete (missing last byte)
+        ];
+        let mut reader = TraceReader::default();
+        let mut cursor = Cursor::new(bytes);
+        let packets = reader
+            .read_from(&mut cursor)
+            .expect("read")
+            .expect("packets");
+        assert_eq!(
+            packets,
+            vec![Packet::Stimulus {
+                port: 0,
+                payload: b"hi".to_vec()
+            }]
+        );
+    }
+    #[test]
+    fn trace_stream_reads_and_decodes_from_socket() {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (sink, rx) = std::sync::mpsc::channel();
+        let mut stream = TraceStream::spawn(addr, 0, sink).expect("spawn");
+
+        // Accept the connection and write a stimulus packet plus a trailing
+        // incomplete one (split across two writes to exercise the tail).
+        let writer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let _ = socket.write_all(&[0x00, 0x02, b'h']);
+            std::thread::sleep(Duration::from_millis(20));
+            let _ = socket.write_all(&[b'i']);
+            std::thread::sleep(Duration::from_millis(50));
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut found = None;
+        while std::time::Instant::now() < deadline {
+            if let Ok(packets) = rx.try_recv() {
+                if packets
+                    .iter()
+                    .any(|p| matches!(p, Packet::Stimulus { port: 0, payload } if payload == b"hi"))
+                {
+                    found = Some(packets);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = writer.join();
+        stream.stop();
+        assert!(found.is_some(), "expected stimulus packet 'hi' over the socket");
+    }
+    #[test]
+    fn trace_stream_filters_stimulus_to_armed_port() {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (sink, rx) = std::sync::mpsc::channel();
+        // Armed port is 2; port 0 stimulus must be dropped.
+        let mut stream = TraceStream::spawn(addr, 2, sink).expect("spawn");
+
+        let writer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            // Port 0 stimulus "a" (should be filtered out) then port 2 "b".
+            let _ = socket.write_all(&[0x00, 0x01, b'a']);
+            let _ = socket.write_all(&[0x10, 0x01, b'b']);
+            std::thread::sleep(Duration::from_millis(50));
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut filtered_port0 = false;
+        let mut saw_port2 = false;
+        while std::time::Instant::now() < deadline {
+            if let Ok(packets) = rx.try_recv() {
+                for packet in packets {
+                    match packet {
+                        Packet::Stimulus { port: 2, payload } if payload == b"b" => {
+                            saw_port2 = true;
+                        }
+                        Packet::Stimulus { port: 0, .. } => filtered_port0 = true,
+                        _ => {}
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = writer.join();
+        stream.stop();
+        assert!(saw_port2, "armed port 2 stimulus should arrive");
+        assert!(
+            !filtered_port0,
+            "port 0 stimulus should be filtered out when armed on port 2"
+        );
     }
 }

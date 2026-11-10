@@ -17,6 +17,11 @@ pub enum Language {
     Zig,
     #[serde(rename = "ZR", alias = "zr")]
     ZR,
+    /// Assembly source (`startup.s`, `.S`, `.asm`). Never a project main
+    /// language (excluded from [`Language::ALL`]); used for editor highlighting
+    /// of startup files, interrupt handlers and linker scripts (`.ld`).
+    #[serde(rename = "Asm", alias = "asm", alias = "assembly")]
+    Asm,
 }
 
 impl Language {
@@ -35,6 +40,8 @@ impl Language {
             Language::Rust => "Rust",
             Language::Zig => "Zig",
             Language::ZR => "ZR",
+            // Not a project language; only reached through `from_path`.
+            Language::Asm => "Asm",
         }
     }
 
@@ -44,7 +51,8 @@ impl Language {
             Language::Cpp => &["arm-none-eabi-g++", "g++", "clang++", "zig"],
             Language::Rust => &["cargo", "rustc"],
             Language::Zig => &["zig"],
-            Language::ZR => &["zrc"],
+            Language::ZR => &["zr"],
+            Language::Asm => &["arm-none-eabi-gcc", "gcc"],
         }
     }
 
@@ -55,6 +63,7 @@ impl Language {
             Language::Rust => "2021",
             Language::Zig => "",
             Language::ZR => "",
+            Language::Asm => "",
         }
     }
 
@@ -66,6 +75,9 @@ impl Language {
             "rs" => Some(Language::Rust),
             "zig" => Some(Language::Zig),
             "zr" => Some(Language::ZR),
+            // Assembly / linker script: startup files, interrupt vectors,
+            // and the memory-map script produced by the device library.
+            "s" | "S" | "asm" | "inc" | "ld" => Some(Language::Asm),
             _ => None,
         }
     }
@@ -80,6 +92,10 @@ pub enum CTemplate {
     LedBlink,
     /// UART Loopback: echoes received bytes back over the UART.
     UartLoopback,
+    /// FreeRTOS-style: a small cooperative task scheduler with two tasks.
+    /// Uses a self-contained scheduler so the project builds without an
+    /// external kernel download (swap in the real FreeRTOS kernel to extend).
+    Freertos,
 }
 
 impl CTemplate {
@@ -87,6 +103,7 @@ impl CTemplate {
         CTemplate::Empty,
         CTemplate::LedBlink,
         CTemplate::UartLoopback,
+        CTemplate::Freertos,
     ];
 
     pub fn label(self) -> &'static str {
@@ -94,6 +111,7 @@ impl CTemplate {
             CTemplate::Empty => "空模板（while(1) 循环）",
             CTemplate::LedBlink => "LED Blink（GPIO 翻转）",
             CTemplate::UartLoopback => "UART 回环（收发回显）",
+            CTemplate::Freertos => "FreeRTOS（两任务协作调度）",
         }
     }
 
@@ -167,6 +185,58 @@ int main(void) {
             uint8_t byte = (uint8_t)(USART1_DR & 0xFFu);
             while (!(USART1_SR & SR_TXE)) { /* 等待发送就绪 */ }
             USART1_DR = byte;  // 回环发送
+        }
+    }
+}
+}"#,
+            CTemplate::Freertos => r#"#include <stdint.h>
+
+/*
+ * ns-embed-ide FreeRTOS 风格模板
+ * 一个自包含的协作式任务调度器 + 两个任务，无需外部内核下载即可构建。
+ * 要换成真正的 FreeRTOS 内核：把 Scheduler 换成 FreeRTOS 的 vTaskStartScheduler，
+ * 任务函数改为 xTaskCreate 注册的入口（每个任务一个 while(1) 循环）即可。
+ */
+
+#define MAX_TASKS     4
+
+typedef struct {
+    const char *name;
+} Task;
+
+static Task tasks[MAX_TASKS];
+static volatile int task_count = 0;
+static volatile int current_task = 0;
+static volatile uint32_t sys_ticks = 0;
+
+/* 每个任务跑一个时间片，返回后调度器轮转到下一个。 */
+static void task_led(void) {
+    volatile uint32_t *gpio_odr = (volatile uint32_t *)0x40010C0CUL; // STM32F1 GPIOB
+    *gpio_odr ^= (1u << 13);   /* 时间片内翻转一次 */
+}
+
+static void task_monitor(void) {
+    static volatile uint32_t counter = 0;
+    counter++;                 /* 模拟监控/统计任务 */
+}
+
+static void scheduler_add(const char *name) {
+    if (task_count >= MAX_TASKS) return;
+    tasks[task_count].name = name;
+    task_count++;
+}
+
+int main(void) {
+    scheduler_add("led");
+    scheduler_add("monitor");
+
+    for (;;) {
+        current_task = (current_task + 1) % task_count;
+        sys_ticks++;
+        if (current_task == 0) {
+            task_led();
+        } else {
+            task_monitor();
         }
     }
 }
@@ -259,15 +329,42 @@ pub fn main() void {
             Language::ZR => (
                 "src/main.zr",
                 r#"// ns-embed-ide ZR 项目模板
-// ZR 是面向嵌入式场景的自研语言，编译器为 zrc。
+// zr 语言（https://zrlang.github.io/）。编译器为 `zr`，
+// 裸机目标用 `--target <triple>` 直接产出可烧录 ELF。
 
-fn main() -> void {
-    let counter: u32 = 0;
+fn main() -> i32 {
+    let mut counter: u32 = 0;
 
-    loop {
-        counter = counter + 1;
+    while true {
+        counter += 1;
     }
+
+    return 0;
 }
+"#,
+            ),
+            // Assembly starter: a minimal ARM Cortex-M reset handler.
+            Language::Asm => (
+                "src/startup.s",
+                r#"/* ARM Cortex-M startup (Thumb). */
+.syntax unified
+.cpu cortex-m3
+.thumb
+
+.section .isr_vector,"a",%progbits
+.global g_pfnVectors
+g_pfnVectors:
+    .word _estack
+    .word Reset_Handler
+
+.section .text.Reset_Handler,"ax",%progbits
+.thumb_func
+.global Reset_Handler
+Reset_Handler:
+    ldr r0, =_estack
+    mov sp, r0
+    bl main
+    b .
 "#,
             ),
         }
@@ -304,6 +401,36 @@ pub fn build(b: *std.Build) void {
 }
 "#,
             )),
+            // C/C++ projects get a CMakeLists.txt so `[build] system = "auto"`
+            // resolves to a CMake build. `file(GLOB ...)` picks up every source
+            // in `src/`; the wizard's single-file template builds as-is, and
+            // added files are picked up on the next configure.
+            Language::C | Language::Cpp => Some((
+                "CMakeLists.txt",
+                r#"cmake_minimum_required(VERSION 3.16)
+project(ns-app C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+file(GLOB SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.c"
+     "${CMAKE_SOURCE_DIR}/src/*.S")
+
+add_executable(ns-app ${SOURCES})
+
+# Forward project.toml defines/includes from the IDE (cache variables set by
+# the CMake build plan).
+if(DEFINED NS_IDE_DEFINES)
+    target_compile_definitions(ns-app PRIVATE ${NS_IDE_DEFINES})
+endif()
+if(DEFINED NS_IDE_INCLUDES)
+    target_include_directories(ns-app PRIVATE ${NS_IDE_INCLUDES})
+endif()
+
+set_target_properties(ns-app PROPERTIES
+    SUFFIX ".elf")
+"#,
+            )),
             _ => None,
         }
     }
@@ -325,7 +452,32 @@ impl FromStr for Language {
             "rust" | "rs" => Ok(Language::Rust),
             "zig" => Ok(Language::Zig),
             "zr" => Ok(Language::ZR),
+            "asm" | "s" | "assembly" => Ok(Language::Asm),
             other => Err(format!("未知语言: {other}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_path_recognizes_assembly_and_linker_scripts() {
+        assert_eq!(Language::from_path(Path::new("src/startup.s")), Some(Language::Asm));
+        assert_eq!(Language::from_path(Path::new("src/startup.S")), Some(Language::Asm));
+        assert_eq!(Language::from_path(Path::new("boot.asm")), Some(Language::Asm));
+        assert_eq!(Language::from_path(Path::new("link.ld")), Some(Language::Asm));
+        assert_eq!(Language::from_path(Path::new("stm32.inc")), Some(Language::Asm));
+        assert_eq!(Language::from_path(Path::new("main.c")), Some(Language::C));
+        assert_eq!(Language::from_path(Path::new("main.rs")), Some(Language::Rust));
+        assert_eq!(Language::from_path(Path::new("notes.txt")), None);
+    }
+
+    #[test]
+    fn asm_is_not_a_project_language() {
+        // Assembly is for highlighting startup/linker files, not a selectable
+        // project main language (wizard/`Language::ALL`).
+        assert!(!Language::ALL.contains(&Language::Asm));
     }
 }

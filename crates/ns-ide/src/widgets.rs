@@ -1,5 +1,6 @@
 use gpui::{
-    Div, ElementId, FontWeight, Hsla, SharedString, Stateful, div, prelude::*, px, rgb,
+    App, ClickEvent, Div, ElementId, FontWeight, Hsla, SharedString, Stateful, Window, div,
+    prelude::*, px,
 };
 
 use crate::theme;
@@ -14,7 +15,7 @@ pub fn brand_mark(size: f32) -> Div {
         .bg(theme::gold_gradient())
         .border_1()
         .border_color(theme::alpha(0xffe6b8, 0.55))
-        .text_color(rgb(theme::DARK_TEXT))
+        .text_color(theme::color(theme::DARK_TEXT))
         .font_family(theme::SERIF_FONT)
         .font_weight(FontWeight::BOLD)
         .text_size(px(size * 0.42))
@@ -37,7 +38,7 @@ pub fn primary_button(
         .bg(theme::gold_gradient())
         .border_1()
         .border_color(theme::alpha(0xffe6b8, 0.35))
-        .text_color(rgb(theme::DARK_TEXT))
+        .text_color(theme::color(theme::DARK_TEXT))
         .font_weight(FontWeight::SEMIBOLD)
         .text_size(px(13.))
         .cursor_pointer()
@@ -63,12 +64,12 @@ pub fn ghost_button(
         .bg(theme::alpha(0x261d12, 0.55))
         .border_1()
         .border_color(theme::alpha(theme::STROKE, 0.14))
-        .text_color(rgb(theme::TEXT_DIM))
+        .text_color(theme::color(theme::TEXT_DIM))
         .text_size(px(12.5))
         .cursor_pointer()
         .hover(|style| {
             style
-                .text_color(rgb(theme::TEXT))
+                .text_color(theme::color(theme::TEXT))
                 .border_color(theme::alpha(theme::STROKE, 0.34))
                 .bg(theme::alpha(theme::STROKE, 0.08))
         })
@@ -91,18 +92,45 @@ pub fn icon_button(
         .bg(theme::alpha(0x261d12, 0.55))
         .border_1()
         .border_color(theme::alpha(theme::STROKE, 0.14))
-        .text_color(rgb(theme::TEXT_DIM))
+        .text_color(theme::color(theme::TEXT_DIM))
         .text_size(px(size * 0.38))
         .cursor_pointer()
         .hover(|style| {
             style
-                .text_color(rgb(theme::TEXT))
+                .text_color(theme::color(theme::TEXT))
                 .border_color(theme::alpha(theme::STROKE, 0.34))
                 .bg(theme::alpha(theme::STROKE, 0.08))
         })
         .child(glyph)
 }
 
+
+/// A small toggle chip for the in-editor find bar (case-sensitive / whole-word).
+pub fn find_toggle(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .px(px(7.))
+        .py(px(2.))
+        .rounded(px(5.))
+        .text_size(px(9.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .bg(if active {
+            theme::alpha(theme::ACCENT, 0.22)
+        } else {
+            theme::alpha(theme::STROKE, 0.06)
+        })
+        .text_color(theme::color(if active { theme::ACCENT } else { theme::TEXT_FAINT }))
+        .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.14)))
+        .on_click(on_click)
+        .child(label)
+}
 pub fn pill(label: impl Into<SharedString>, tone: Hsla) -> Div {
     let label: SharedString = label.into();
     div()
@@ -122,7 +150,7 @@ pub fn pill(label: impl Into<SharedString>, tone: Hsla) -> Div {
 pub fn section_label(label: impl Into<SharedString>) -> Div {
     let label: SharedString = label.into();
     div()
-        .text_color(rgb(theme::TEXT_FAINT))
+        .text_color(theme::color(theme::TEXT_FAINT))
         .text_size(px(10.5))
         .font_weight(FontWeight::SEMIBOLD)
         .child(label)

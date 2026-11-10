@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use gpui::{
     AnyElement, App, BoxShadow, Context, Entity, Focusable, MouseButton, SharedString, Stateful,
-    Window, div, prelude::*, px, rgb,
+    Window, div, prelude::*, px,
 };
 use ns_project::{Language, NewProjectSpec, toolchain};
 
@@ -38,6 +38,8 @@ pub struct Wizard {
     /// Memoized `tool --version` output per tool name, so the wizard does not
     /// spawn a subprocess on every frame while the toolchain step is visible.
     versions: std::cell::RefCell<std::collections::HashMap<String, Option<String>>>,
+    /// Whether the target-device dropdown is open.
+    pub target_menu_open: bool,
 }
 
 impl Wizard {
@@ -73,6 +75,7 @@ impl Wizard {
             debugger,
             flasher,
             target,
+            target_menu_open: false,
             c_template: ns_project::CTemplate::Empty,
             error: None,
             versions: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -251,7 +254,7 @@ impl Wizard {
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(theme::TEXT_FAINT))
+                            .text_color(theme::color(theme::TEXT_FAINT))
                             .child(format!("第 {} / {} 步", step + 1, STEPS.len())),
                     )
                     .child(
@@ -306,11 +309,11 @@ impl Wizard {
                         div()
                             .text_size(px(12.))
                             .text_color(if active {
-                                rgb(theme::TEXT)
+                                theme::color(theme::TEXT)
                             } else if done {
-                                rgb(theme::TEXT_DIM)
+                                theme::color(theme::TEXT_DIM)
                             } else {
-                                rgb(theme::TEXT_FAINT)
+                                theme::color(theme::TEXT_FAINT)
                             })
                             .child(format!("{}. {}", index + 1, label)),
                     )
@@ -363,13 +366,13 @@ impl Wizard {
                                             .text_size(px(19.))
                                             .font_family(theme::SERIF_FONT)
                                             .font_weight(gpui::FontWeight::BOLD)
-                                            .text_color(rgb(theme::TEXT))
+                                            .text_color(theme::color(theme::TEXT))
                                             .child("新建项目"),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(11.5))
-                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
                                             .child("按照 语言 → 工具链 → 目标 的顺序建立工程"),
                                     ),
                             )
@@ -441,7 +444,7 @@ impl Wizard {
                     .px(px(14.))
                     .py(px(11.))
                     .text_size(px(11.5))
-                    .text_color(rgb(theme::TEXT_DIM))
+                    .text_color(theme::color(theme::TEXT_DIM))
                     .child(format!(
                         "将创建：{}/{}",
                         self.location.read(cx).text().trim(),
@@ -507,9 +510,9 @@ impl Wizard {
                                     .items_center()
                                     .justify_center()
                                     .text_color(if selected {
-                                        rgb(theme::DARK_TEXT)
+                                        theme::color(theme::DARK_TEXT)
                                     } else {
-                                        rgb(theme::TEXT_DIM)
+                                        theme::color(theme::TEXT_DIM)
                                     })
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_size(px(12.))
@@ -523,13 +526,13 @@ impl Wizard {
                                     .child(
                                         div()
                                             .text_size(px(13.5))
-                                            .text_color(rgb(theme::TEXT))
+                                            .text_color(theme::color(theme::TEXT))
                                             .child(language.as_str()),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(10.5))
-                                            .text_color(rgb(theme::TEXT_FAINT))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
                                             .child(language_descriptor(language)),
                                     ),
                             )
@@ -653,6 +656,194 @@ impl Wizard {
     }
 
     fn render_targets(&self, cx: &mut Context<IdeApp>) -> AnyElement {
+        let selected_label = toolchain::TARGETS
+            .iter()
+            .find(|(id, _)| *id == self.target)
+            .map(|(_, description)| (*description).to_string())
+            .unwrap_or_else(|| {
+                if self.target.is_empty() {
+                    "稍后设置（保持 project.toml 中 target 为空）".to_string()
+                } else {
+                    self.target.clone()
+                }
+            });
+
+        let trigger = div()
+            .id("wizard-target-trigger")
+            .w_full()
+            .h(px(46.))
+            .px(px(13.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .rounded(px(10.))
+            .bg(theme::alpha(0xffffff, 0.02))
+            .border_1()
+            .border_color(if self.target_menu_open {
+                theme::alpha(theme::ACCENT, 0.55)
+            } else {
+                theme::alpha(theme::STROKE, 0.11)
+            })
+            .cursor_pointer()
+            .hover(|style| style.border_color(theme::alpha(theme::ACCENT, 0.35)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(wizard) = this.wizard.as_mut() {
+                    wizard.target_menu_open = !wizard.target_menu_open;
+                }
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .text_color(theme::color(theme::TEXT))
+                            .child(selected_label),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme::color(theme::TEXT_FAINT))
+                    .child(if self.target_menu_open { "▲" } else { "▼" }),
+            );
+
+        let list = if self.target_menu_open {
+            div()
+                .w_full()
+                .mt(px(4.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(theme::alpha(theme::STROKE, 0.11))
+                .bg(theme::alpha(0xffffff, 0.015))
+                .p(px(4.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .children(toolchain::TARGETS.iter().enumerate().map(
+                    |(index, (id, description))| {
+                        let value = (*id).to_string();
+                        let selected = self.target == value;
+                        div()
+                            .id(("wizard-target", index))
+                            .h(px(36.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .gap(px(9.))
+                            .rounded(px(7.))
+                            .bg(if selected {
+                                theme::alpha(theme::ACCENT, 0.09)
+                            } else {
+                                theme::alpha(0xffffff, 0.0)
+                            })
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.05)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(wizard) = this.wizard.as_mut() {
+                                    wizard.target = value.clone();
+                                    wizard.target_menu_open = false;
+                                }
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .size(px(14.))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(if selected {
+                                        theme::color(theme::ACCENT)
+                                    } else {
+                                        theme::alpha(theme::STROKE, 0.3)
+                                    })
+                                    .when(selected, |style| {
+                                        style
+                                            .bg(theme::color(theme::ACCENT))
+                                            .child(
+                                                div()
+                                                    .size_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        div()
+                                                            .size(px(4.))
+                                                            .rounded_full()
+                                                            .bg(theme::color(theme::DARK_TEXT)),
+                                                    ),
+                                            )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(11.5))
+                                            .text_color(theme::color(theme::TEXT))
+                                            .child(*description),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.5))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child(*id),
+                                    ),
+                            )
+                    },
+                ))
+                .child(
+                    div()
+                        .h(px(1.))
+                        .mx(px(6.))
+                        .bg(theme::alpha(theme::STROKE, 0.08)),
+                )
+                .child(
+                    div()
+                        .id("wizard-target-skip")
+                        .h(px(36.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap(px(9.))
+                        .rounded(px(7.))
+                        .bg(if self.target.is_empty() {
+                            theme::alpha(theme::ACCENT, 0.09)
+                        } else {
+                            theme::alpha(0xffffff, 0.0)
+                        })
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.05)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(wizard) = this.wizard.as_mut() {
+                                wizard.target.clear();
+                                wizard.target_menu_open = false;
+                            }
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(theme::color(theme::TEXT))
+                                .child("稍后设置"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(9.5))
+                                .text_color(theme::color(theme::TEXT_FAINT))
+                                .child("保持 project.toml 中 target 为空"),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        }
+        ;
+
+
         div()
             .flex()
             .flex_col()
@@ -661,45 +852,8 @@ impl Wizard {
                 "选择目标设备",
                 "设备型号用于生成 SVD、启动文件与链接脚本；也可以稍后设置。",
             ))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(7.))
-                    .children(toolchain::TARGETS.iter().enumerate().map(
-                        |(index, (id, description))| {
-                            let value = (*id).to_string();
-                            option_row(
-                                ("wizard-target", index),
-                                (*description).to_string(),
-                                (*id).to_string(),
-                                self.target == value,
-                                true,
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(wizard) = this.wizard.as_mut() {
-                                    wizard.target = value.clone();
-                                }
-                                cx.notify();
-                            }))
-                        },
-                    ))
-                    .child(
-                        option_row(
-                            "wizard-target-skip",
-                            "稍后设置".to_string(),
-                            "保持 project.toml 中 target 为空".to_string(),
-                            self.target.is_empty(),
-                            true,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(wizard) = this.wizard.as_mut() {
-                                wizard.target.clear();
-                            }
-                            cx.notify();
-                        })),
-                    ),
-            )
+            .child(trigger)
+            .child(list)
             .when(ns_device::catalog_entry(&self.target).is_some(), |style| {
                 let entry = ns_device::catalog_entry(&self.target).unwrap();
                 style.child(
@@ -715,13 +869,13 @@ impl Wizard {
                         .child(
                             div()
                                 .text_size(px(10.))
-                                .text_color(rgb(theme::TEXT))
+                                .text_color(theme::color(theme::TEXT))
                                 .child(format!("{} 核 · Flash {}KB · RAM {}KB", entry.core, entry.flash_size / 1024, entry.ram_size / 1024)),
                         )
                         .child(
                             div()
                                 .text_size(px(9.5))
-                                .text_color(rgb(theme::TEXT_FAINT))
+                                .text_color(theme::color(theme::TEXT_FAINT))
                                 .child("生成项目时将自动写入链接脚本（link.ld）与启动文件（src/startup.s）；设备寄存器可在调试面板「设备」页查看。"),
                         ),
                 )
@@ -779,16 +933,16 @@ impl Wizard {
                             .child(
                                 div()
                                     .text_size(px(11.5))
-                                    .text_color(rgb(theme::TEXT_FAINT))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
                                     .child(label),
                             )
                             .child(
                                 div()
                                     .text_size(px(12.))
                                     .text_color(if is_error {
-                                        rgb(theme::DANGER)
+                                        theme::color(theme::DANGER)
                                     } else {
-                                        rgb(theme::TEXT)
+                                        theme::color(theme::TEXT)
                                     })
                                     .text_align(gpui::TextAlign::Right)
                                     .child(value),
@@ -808,13 +962,13 @@ impl Wizard {
                     .text_size(px(16.))
                     .font_family(theme::SERIF_FONT)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(theme::TEXT))
+                    .text_color(theme::color(theme::TEXT))
                     .child(title.to_string()),
             )
             .child(
                 div()
                     .text_size(px(11.5))
-                    .text_color(rgb(theme::TEXT_FAINT))
+                    .text_color(theme::color(theme::TEXT_FAINT))
                     .child(subtitle.to_string()),
             )
     }
@@ -912,13 +1066,13 @@ fn option_row(
                 .child(
                     div()
                         .text_size(px(12.5))
-                        .text_color(rgb(theme::TEXT))
+                        .text_color(theme::color(theme::TEXT))
                         .child(title),
                 )
                 .child(
                     div()
                         .text_size(px(10.5))
-                        .text_color(rgb(theme::TEXT_FAINT))
+                        .text_color(theme::color(theme::TEXT_FAINT))
                         .child(subtitle),
                 ),
         )
@@ -936,6 +1090,8 @@ fn language_short(language: Language) -> SharedString {
         Language::Rust => "RS".into(),
         Language::Zig => "ZIG".into(),
         Language::ZR => "ZR".into(),
+        // Not selectable in the wizard (excluded from `Language::ALL`).
+        Language::Asm => "ASM".into(),
     }
 }
 
@@ -945,7 +1101,8 @@ fn language_descriptor(language: Language) -> &'static str {
         Language::Cpp => "G++ / Clang++ · 现代 C++",
         Language::Rust => "Cargo · 内存安全",
         Language::Zig => "zig build · 简洁系统语言",
-        Language::ZR => "zrc · 自研嵌入式语言",
+        Language::ZR => "zr · 外部系统语言（zrlang.github.io）",
+        Language::Asm => "汇编 · 启动文件/中断向量",
     }
 }
 

@@ -160,3 +160,75 @@ fn snapshot_reports_state() {
     assert!(!state.halted);
     assert!(state.registers.contains_key("pc") || state.registers.contains_key("zero"));
 }
+
+#[test]
+fn executes_jal_jumps_and_links() {
+    let mut sim = Simulator::new();
+    // Entry: JAL ra, +8  (skips the next instruction, links PC+4 into x1).
+    //        (skipped: an addi that must not execute)
+    // target: addi x5, x0, 42
+    let prog = [
+        jal_imm(8, 1),                // jal ra, +8 -> target
+        i_type(99, 0, 0, 2, 0x13),    // addi x2, x0, 99  (skipped)
+        i_type(42, 0, 0, 5, 0x13),    // addi x5, x0, 42  (target)
+    ];
+    let bytes: Vec<u8> = prog.iter().flat_map(|i| i.to_le_bytes()).collect();
+    sim.load_image(ENTRY_POINT, &bytes);
+    sim.run(10);
+    // x1 = PC+4 of the JAL (return address), x5 = 42, x2 untouched.
+    assert_eq!(sim.read_reg(1), ENTRY_POINT + 4, "ra links to the next instruction");
+    assert_eq!(sim.read_reg(5), 42, "target executed");
+    assert_eq!(sim.read_reg(2), 0, "skipped instruction did not execute");
+}
+
+#[test]
+fn rl78_loads_and_executes() {
+    use ns_sim::Arch;
+    let mut sim = Simulator::for_arch(Arch::Rl78).unwrap();
+    // A tiny RL78 program at 0x1000: MOV A, #0x2A (0x51 0x2A); ADD A, #0x01
+    // (0x0C 0x01); then a second MOV to A. The core advances PC per byte.
+    let prog = [0x51, 0x2A, 0x0C, 0x01];
+    sim.load_image(0x1000, &prog);
+    sim.run(4);
+    // Register A (index 1) should be 0x2B.
+    assert_eq!(sim.read_reg(1), 0x2B, "rl78 A register after add");
+    // PC should have advanced past the 4 bytes.
+    assert!(sim.read_reg(10) >= 0x1004, "rl78 pc advanced");
+    // The architecture is recognized.
+    assert!(matches!(sim.arch, Arch::Rl78), "rl78 arch set");
+}
+
+/// `step_out` runs until a return instruction is executed, landing on the
+/// caller's next instruction. Uses a RISC-V call/ret pair.
+#[test]
+fn step_out_returns_to_caller() {
+    let mut sim = Simulator::new();
+    // ENTRY: jal ra, +16 -> sub (return address = ENTRY+4)
+    // +4:    addi x2, x0, 99   (caller's next instruction — landing target)
+    // +8:    addi x3, x0, 1    (unused padding)
+    // +12:   addi x3, x0, 2
+    // +16:   addi x3, x0, 7    (sub body)
+    // +20:   ret (jalr x0, 0(x1))
+    let ret = i_type(0, 1, 0, 0, 0x67);
+    let prog = [
+        jal_imm(16, 1),               // jal ra, +16 -> sub
+        i_type(99, 0, 0, 2, 0x13),    // addi x2, x0, 99
+        i_type(1, 0, 0, 3, 0x13),     // addi x3, x0, 1
+        i_type(2, 0, 0, 3, 0x13),     // addi x3, x0, 2
+        i_type(7, 0, 0, 3, 0x13),     // addi x3, x0, 7 (sub body)
+        ret,                          // ret
+    ];
+    let bytes: Vec<u8> = prog.iter().flat_map(|i| i.to_le_bytes()).collect();
+    sim.load_image(ENTRY_POINT, &bytes);
+    // Execute the call: PC now points at the sub body, ra holds the return addr.
+    assert_eq!(sim.step(), StepResult::Advanced);
+    assert_eq!(sim.read_reg(1), ENTRY_POINT + 4, "ra = return address");
+    assert_eq!(sim.pc, ENTRY_POINT + 16, "PC at sub body");
+    // Step out: runs through the sub body + ret, landing on the caller's next
+    // instruction without executing it.
+    let result = sim.step_out(100);
+    assert_eq!(result, StepResult::Advanced);
+    assert_eq!(sim.pc, ENTRY_POINT + 4, "landed on caller's next instruction");
+    assert_eq!(sim.read_reg(3), 7, "sub body executed");
+    assert_eq!(sim.read_reg(2), 0, "caller's instruction not executed yet");
+}

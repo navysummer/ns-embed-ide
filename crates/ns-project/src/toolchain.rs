@@ -62,6 +62,15 @@ pub fn missing_guide(name: &str) -> Option<&'static str> {
         ("pyocd", "pip install pyocd"),
         ("JLinkExe", "下载 SEGGER J-Link 安装包"),
         ("probe-rs", "cargo install probe-rs-tools"),
+        // Keil/IAR 交叉工具链（各架构裸机编译器）。
+        ("avr-gcc", "brew tap osx-cross/avr && brew install avr-gcc (或下载 Microchip AVR GCC)"),
+        ("avr-g++", "brew tap osx-cross/avr && brew install avr-gcc (或下载 Microchip AVR GCC)"),
+        ("msp430-elf-gcc", "下载 TI MSP430 GCC 工具链 (ti.com/msp430-gcc)"),
+        ("msp430-elf-gdb", "下载 TI MSP430 GCC 工具链 (ti.com/msp430-gcc)"),
+        ("v850-elf-gcc", "下载 Renesas V850 GCC 工具链 (renesas.com)"),
+        ("rx-elf-gcc", "下载 Renesas RX GCC 工具链 (renesas.com)"),
+        ("rl78-elf-gcc", "下载 Renesas RL78 GCC 工具链 (renesas.com)"),
+        ("sdcc", "brew install sdcc (SDCC 支持 8051/80251/STM8 目标)"),
         ("qemu-system-arm", "brew install qemu"),
         ("qemu-system-riscv32", "brew install qemu"),
     ];
@@ -123,6 +132,7 @@ pub fn simulators(language: Language) -> Vec<Tool> {
         Language::Rust => &["ns-sim", "qemu-system-arm"],
         Language::Zig => &["ns-sim", "qemu-system-arm"],
         Language::ZR => &["ns-sim"],
+        Language::Asm => &["ns-sim", "qemu-system-arm"],
     };
     tools(names)
 }
@@ -132,7 +142,8 @@ pub fn debuggers(language: Language) -> Vec<Tool> {
         Language::C | Language::Cpp => &["arm-none-eabi-gdb", "gdb", "lldb"],
         Language::Rust => &["rust-gdb", "arm-none-eabi-gdb", "gdb", "lldb"],
         Language::Zig => &["gdb", "lldb"],
-        Language::ZR => &["zr-dbg", "gdb"],
+        Language::ZR => &["gdb"],
+        Language::Asm => &["arm-none-eabi-gdb", "gdb", "lldb"],
     };
     tools(names)
 }
@@ -142,10 +153,12 @@ pub fn flashers(language: Language) -> Vec<Tool> {
         Language::C | Language::Cpp | Language::Rust | Language::Zig => {
             &["openocd", "pyocd", "JLinkExe", "probe-rs"]
         }
-        Language::ZR => &["zr-flash", "openocd"],
+        Language::ZR => &["openocd"],
+        Language::Asm => &["openocd", "pyocd", "JLinkExe"],
     };
     tools(names)
 }
+
 
 pub fn first_available(tools: &[Tool]) -> Option<&Tool> {
     tools.iter().find(|tool| tool.available())
@@ -206,6 +219,13 @@ mod tests {
         assert!(missing_guide("openocd").is_some());
         assert!(missing_guide("arm-none-eabi-gcc").is_some());
         assert!(missing_guide("rustc").is_some());
+        // Keil/IAR cross toolchains for the simulated architectures.
+        assert!(missing_guide("avr-gcc").is_some());
+        assert!(missing_guide("msp430-elf-gcc").is_some());
+        assert!(missing_guide("v850-elf-gcc").is_some());
+        assert!(missing_guide("rx-elf-gcc").is_some());
+        assert!(missing_guide("rl78-elf-gcc").is_some());
+        assert!(missing_guide("sdcc").is_some());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ns-project", "crates/ns-build", "crates/ns-debug", "crates/ns-flash", "crates/ns-lsp", "crates/ns-device", "crates/ns-sim", "crates/ns-zr", "crates/ns-ide"]
+members = ["crates/ns-project", "crates/ns-build", "crates/ns-debug", "crates/ns-flash", "crates/ns-lsp", "crates/ns-device", "crates/ns-sim", "crates/ns-ide"]
 
 [workspace.package]
 version = "0.1.0"

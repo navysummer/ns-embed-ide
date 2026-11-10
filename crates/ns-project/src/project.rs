@@ -19,6 +19,34 @@ pub struct ProjectConfig {
     pub flasher: FlasherSection,
     pub build: BuildSection,
     pub sim: SimSection,
+    /// Debug launch configuration: arguments, environment and working
+    /// directory for the debuggee (the executable being debugged).
+    #[serde(default)]
+    pub launch: LaunchSection,
+    /// Per-target build configurations (optional). Each entry ties a target
+    /// MCU name to its build `config`; when the project's active `target`
+    /// matches an entry, that config is used for builds. Empty = single-target
+    /// project using `build.config`.
+    #[serde(default)]
+    pub targets: Vec<TargetSection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TargetSection {
+    /// Target MCU name (matches `ProjectSection::target`).
+    pub target: String,
+    /// Build config for this target: debug | release.
+    pub config: String,
+}
+
+impl Default for TargetSection {
+    fn default() -> Self {
+        Self {
+            target: String::new(),
+            config: "debug".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +139,11 @@ pub struct FlasherSection {
     pub path: String,
     /// Debug interface, e.g. `swd` or `jtag`.
     pub interface: String,
+    /// Optional external flash-algorithm file (`.FLM`). When set, the flash
+    /// geometry (device size / page size / base) is parsed from it and used
+    /// for the flash programming configuration.
+    #[serde(default)]
+    pub algorithm: String,
 }
 
 impl Default for FlasherSection {
@@ -119,6 +152,7 @@ impl Default for FlasherSection {
             kind: "openocd".to_string(),
             path: String::new(),
             interface: "swd".to_string(),
+            algorithm: String::new(),
         }
     }
 }
@@ -129,6 +163,14 @@ pub struct BuildSection {
     /// debug | release
     pub config: String,
     pub out_dir: String,
+    /// Build-system strategy for C/C++ projects: `auto` (detect a
+    /// CMakeLists.txt or Makefile, falling back to direct compilation),
+    /// `direct` (compile all sources in one command), `make`, or `cmake`.
+    pub system: String,
+    /// Number of parallel build jobs. 0 = auto-detect (available CPUs, capped
+    /// at a sane maximum). Drives `-j` for CMake/Make and `cargo build -j`.
+    #[serde(default)]
+    pub jobs: u32,
 }
 
 impl Default for BuildSection {
@@ -136,6 +178,8 @@ impl Default for BuildSection {
         Self {
             config: "debug".to_string(),
             out_dir: "build".to_string(),
+            system: "auto".to_string(),
+            jobs: 0,
         }
     }
 }
@@ -145,6 +189,31 @@ impl Default for BuildSection {
 pub struct SimSection {
     pub cpu: String,
     pub period: u64,
+}
+
+/// Debug launch configuration (`[launch]` in `project.toml`): the arguments,
+/// environment variables and working directory passed to the debuggee when a
+/// debug session starts. An empty working directory means the project root.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LaunchSection {
+    /// Command-line arguments passed to the debuggee, one per entry.
+    pub args: Vec<String>,
+    /// Environment variables as `KEY=value` entries applied on top of the
+    /// inherited environment when the debuggee starts.
+    pub env: Vec<String>,
+    /// Working directory for the debuggee. Empty = the project root.
+    pub cwd: String,
+}
+
+impl Default for LaunchSection {
+    fn default() -> Self {
+        Self {
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +327,10 @@ impl Project {
         if let Some((path, contents)) = spec.language.starter_build_file() {
             let contents = if spec.language == Language::Rust {
                 cargo_toml(name)
+            } else if spec.language == Language::C || spec.language == Language::Cpp {
+                // Substitute the project name so CMake emits the expected
+                // artifact name (`artifact_name` uses the project name).
+                contents.replace("ns-app", &artifact_name(name))
             } else {
                 contents.to_string()
             };
@@ -342,12 +415,62 @@ impl Project {
         self.root.join(&self.config.build.out_dir)
     }
 
+    /// The effective build config for the project's active target.
+    ///
+    /// When a per-target entry in `targets` matches the active `target`, that
+    /// entry's config wins; otherwise the shared `build.config` applies.
+    pub fn build_config(&self) -> &str {
+        let target = self.config.project.target.trim();
+        if !target.is_empty() {
+            if let Some(entry) = self
+                .config
+                .targets
+                .iter()
+                .find(|entry| entry.target.trim() == target)
+            {
+                if !entry.config.trim().is_empty() {
+                    return entry.config.trim();
+                }
+            }
+        }
+        &self.config.build.config
+    }
+
+    /// Number of parallel build jobs: the configured `[build] jobs` value, or
+    /// an auto-detected default (available CPUs, capped at 32) when 0.
+    pub fn build_jobs(&self) -> u32 {
+        let jobs = self.config.build.jobs;
+        if jobs > 0 {
+            return jobs;
+        }
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        (cpus as u32).clamp(1, 32)
+    }
+
     pub fn artifact_path(&self) -> PathBuf {
         let name = artifact_name(&self.config.project.name);
-        let config = &self.config.build.config;
+        let config = self.build_config();
+        let target = self.config.project.target.trim().to_lowercase();
+        // SDCC / vendor-HEX targets (MCS-51, 80251, STM8, C166) produce Intel
+        // HEX; the ELF targets produce `.elf`. C166 needs a vendor toolchain
+        // (build is gated), but its artifact is still HEX for consistency.
+        let is_hex_target = target.contains("mcs51")
+            || target.contains("8051")
+            || target.contains("c51")
+            || target.contains("80251")
+            || target.contains("mcs251")
+            || target.contains("c251")
+            || target.contains("stm8")
+            || target.contains("c166")
+            || target.contains("xc166")
+            || target.contains("xc2000")
+            || target.contains("st10");
         match self.config.project.language {
-            Language::C | Language::Cpp | Language::Zig | Language::ZR => {
-                self.build_dir().join(config).join(format!("{name}.elf"))
+            Language::C | Language::Cpp | Language::Zig | Language::ZR | Language::Asm => {
+                let ext = if is_hex_target { "ihx" } else { "elf" };
+                self.build_dir().join(config).join(format!("{name}.{ext}"))
             }
             Language::Rust => self.build_dir().join(config).join(name),
         }
@@ -464,6 +587,7 @@ fn collect_sources(
             Language::Rust => ext == "rs",
             Language::Zig => ext == "zig",
             Language::ZR => ext == "zr",
+            Language::Asm => matches!(ext.as_str(), "s" | "asm" | "inc"),
         };
         if matches {
             result.push(path);
@@ -554,7 +678,13 @@ mod tests {
 
         assert!(project.root.join("project.toml").is_file());
         assert!(project.root.join("src/main.c").is_file());
+        // C/C++ wizard projects get a CMakeLists.txt so `[build] system = "auto"`
+        // resolves to a CMake build instead of one-shot direct compilation.
+        assert!(project.root.join("CMakeLists.txt").is_file());
+        let cmake = fs::read_to_string(project.root.join("CMakeLists.txt")).unwrap();
+        assert!(cmake.contains("blinky"), "CMake project name: {cmake}");
         assert_eq!(project.config.project.language, Language::C);
+        assert_eq!(project.config.build.system, "auto");
 
         let reopened = Project::open(&project.root).unwrap();
         assert_eq!(reopened.config.project.name, "blinky");
@@ -563,7 +693,6 @@ mod tests {
             reopened.config.project.simulator.as_str(),
             "ns-sim"
         );
-
         let _ = fs::remove_dir_all(base);
     }
 
@@ -685,6 +814,11 @@ mod tests {
         project.config.build.config = "release".to_string();
         project.config.build.out_dir = "out".to_string();
         project.save_config().unwrap();
+        // Debug launch configuration round-trips through project.toml.
+        project.config.launch.args = vec!["--port".to_string(), "8080".to_string()];
+        project.config.launch.env = vec!["DEBUG=1".to_string()];
+        project.config.launch.cwd = "run".to_string();
+        project.save_config().unwrap();
 
         let reopened = Project::open(base.join("cfgproj").join(CONFIG_FILE)).unwrap();
         assert_eq!(reopened.config.project.name, "renamed");
@@ -692,13 +826,22 @@ mod tests {
         assert_eq!(reopened.config.compiler.path, "/opt/toolchain/bin/gcc");
         assert_eq!(reopened.config.build.config, "release");
         assert_eq!(reopened.config.build.out_dir, "out");
+        assert_eq!(reopened.config.launch.args, vec!["--port", "8080"]);
+        assert_eq!(reopened.config.launch.env, vec!["DEBUG=1"]);
+        assert_eq!(reopened.config.launch.cwd, "run");
+
 
         let _ = fs::remove_dir_all(base);
     }
 
     #[test]
     fn c_template_generates_matching_source() {
-        for template in [CTemplate::Empty, CTemplate::LedBlink, CTemplate::UartLoopback] {
+        for template in [
+            CTemplate::Empty,
+            CTemplate::LedBlink,
+            CTemplate::UartLoopback,
+            CTemplate::Freertos,
+        ] {
             let base = temp_dir("ctemplate");
             let project = Project::create(NewProjectSpec {
                 name: "ctpl".into(),
@@ -718,8 +861,89 @@ mod tests {
                 CTemplate::Empty => assert!(source.contains("counter++")),
                 CTemplate::LedBlink => assert!(source.contains("GPIOB_ODR")),
                 CTemplate::UartLoopback => assert!(source.contains("USART1_DR")),
+                CTemplate::Freertos => {
+                    assert!(source.contains("scheduler_add"));
+                    assert!(source.contains("task_led"));
+                    assert!(source.contains("task_monitor"));
+                }
             }
             let _ = fs::remove_dir_all(base);
         }
+    }
+
+    /// SDCC-based targets (MCS-51/80251/STM8) build Intel HEX; ELF targets
+    /// build `.elf`. The artifact path must match so the IDE finds the build
+    /// output for each simulated architecture.
+    #[test]
+    fn artifact_path_matches_build_output_format() {
+        let base = temp_dir("artifact-path");
+        for (target, expect_ext) in [
+            ("mcs51", "ihx"),
+            ("80251", "ihx"),
+            ("stm8s003f3", "ihx"),
+            ("c166", "ihx"),
+            ("xc2000", "ihx"),
+            ("st10", "ihx"),
+            ("stm32f103c8", "elf"),
+            ("atmega328p", "elf"),
+        ] {
+            // Use the target as the project name so each iteration creates its
+            // own directory (a non-empty `location/t` would fail on create).
+            let project = Project::create(NewProjectSpec {
+                name: target.replace(|c: char| !c.is_ascii_alphanumeric(), "-"),
+                location: base.clone(),
+                language: Language::C,
+                compiler: "gcc".into(),
+                simulator: "ns-sim".into(),
+                debugger: "gdb".into(),
+                flasher: "openocd".into(),
+                target: target.into(),
+                svd: target.into(),
+                c_template: None,
+            })
+            .unwrap();
+            let path = project.artifact_path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            assert_eq!(ext, expect_ext, "target {target}: artifact ext must be {expect_ext}");
+        }
+        let _ = fs::remove_dir_all(base);
+    }
+
+    /// Per-target build config resolution: a matching `targets` entry wins,
+    /// otherwise the shared `build.config` applies.
+    #[test]
+    fn build_config_resolves_per_target_override() {
+        let base = temp_dir("build_config");
+        let mut project = Project::create(NewProjectSpec {
+            name: "cfgproj".into(),
+            location: base.clone(),
+            language: Language::C,
+            compiler: String::new(),
+            simulator: String::new(),
+            debugger: String::new(),
+            flasher: String::new(),
+            target: "stm32f103c8".into(),
+            svd: String::new(),
+            c_template: None,
+        })
+        .unwrap();
+        // Shared default: debug.
+        assert_eq!(project.build_config(), "debug");
+        // Add a per-target override for the active target.
+        project.config.targets.push(TargetSection {
+            target: "stm32f103c8".into(),
+            config: "release".into(),
+        });
+        assert_eq!(project.build_config(), "release");
+        // A different target falls back to the shared config.
+        project.config.project.target = "nrf52840".into();
+        assert_eq!(project.build_config(), "debug");
+        // Round-trip through save/open preserves the targets array.
+        project.save_config().unwrap();
+        let reopened = Project::open(base.join("cfgproj")).unwrap();
+        assert_eq!(reopened.config.targets.len(), 1);
+        assert_eq!(reopened.config.targets[0].target, "stm32f103c8");
+        assert_eq!(reopened.build_config(), "debug");
+        let _ = fs::remove_dir_all(base);
     }
 }

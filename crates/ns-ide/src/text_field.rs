@@ -5,7 +5,7 @@ use gpui::{
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InspectorElementId, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     Render, ShapedLine, SharedString, Style, TextRun, UTF16Selection, Window, actions, div, fill,
-    font, prelude::*, px, relative, rgb, size,
+    font, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -653,7 +653,7 @@ impl Render for TextField {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .text_color(rgb(theme::TEXT))
+            .text_color(theme::color(theme::TEXT))
             .font_family(theme::UI_FONT)
             .text_size(px(13.5))
             .child(TextElement { input: cx.entity() })

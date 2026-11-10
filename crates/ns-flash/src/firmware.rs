@@ -83,6 +83,112 @@ pub fn load_firmware(path: &Path) -> Result<FirmwareImage> {
     })
 }
 
+/// Memory-usage breakdown of a firmware image, split by memory region.
+///
+/// ELF PT_LOAD segments are attributed to `flash` or `ram` based on whether
+/// their virtual address falls inside the target's flash or RAM window (from
+/// `ns_device::memory_map`). Intel HEX / BIN payloads have a single contiguous
+/// base and are attributed to whichever region contains `base`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FirmwareSize {
+    /// Bytes occupying the target's flash region (code + rodata).
+    pub flash: u64,
+    /// Bytes occupying the target's RAM region (data + bss initializers).
+    pub ram: u64,
+    /// Total payload bytes loaded (flash + ram).
+    pub total: u64,
+    /// The lowest load address observed.
+    pub base: u64,
+}
+
+/// Compute the memory-usage breakdown of the firmware at `path`, given the
+/// target's flash and RAM windows. Returns `Ok(None)` when the file is not a
+/// firmware artifact, so callers can degrade gracefully.
+///
+/// `flash_windows`/`ram_windows` are `(start, size)` spans from the target
+/// memory map; segments whose address falls in neither window are attributed
+/// to RAM (they still count toward `total`).
+pub fn analyze_firmware_size(
+    path: &Path,
+    flash_windows: &[(u64, u64)],
+    _ram_windows: &[(u64, u64)],
+) -> Result<Option<FirmwareSize>> {
+    let format = detect_format(path);
+    // Only firmware artifacts (ELF / Intel HEX / raw firmware BIN) are
+    // analyzed. A `.txt`/`.s`/source file that sniffed as BIN is not firmware;
+    // require the extension to be a known artifact to avoid misattribution.
+    let is_artifact = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "elf" | "hex" | "ihex" | "bin" | "ihx"
+            )
+        })
+        .unwrap_or(false);
+    if !is_artifact {
+        return Ok(None);
+    }
+    let bytes = fs::read(path).with_context(|| format!("读取固件 {} 失败", path.display()))?;
+    let mut size = FirmwareSize::default();
+    let mut first_addr: Option<u64> = None;
+    match format {
+        FirmwareFormat::Elf => {
+            let segments = elf_load_segments(&bytes)?;
+            if segments.is_empty() {
+                return Ok(None);
+            }
+            for (addr, data) in &segments {
+                first_addr = Some(first_addr.map_or(*addr, |cur| cur.min(*addr)));
+                let len = data.len() as u64;
+                size.total += len;
+                if in_window(*addr, flash_windows) {
+                    size.flash += len;
+                } else {
+                    // RAM (or neither window): data + bss initializers.
+                    size.ram += len;
+                }
+            }
+        }
+        FirmwareFormat::IntelHex | FirmwareFormat::Bin => {
+            let (payload, base) = match format {
+                FirmwareFormat::IntelHex => {
+                    let text = String::from_utf8(bytes.clone()).map_err(|_| {
+                        anyhow::anyhow!("Intel HEX 文件不是有效 UTF-8: {}", path.display())
+                    })?;
+                    let decoded = decode_intel_hex(&text)?;
+                    (decoded.bytes, decoded.base)
+                }
+                _ => (bytes, 0),
+            };
+            if payload.is_empty() {
+                return Ok(None);
+            }
+            first_addr = Some(base);
+            size.total = payload.len() as u64;
+            if in_window(base, flash_windows) {
+                size.flash = size.total;
+            } else {
+                size.ram = size.total;
+            }
+        }
+    }
+    size.base = first_addr.unwrap_or(0);
+    if size.total == 0 {
+        return Ok(None);
+    }
+    Ok(Some(size))
+}
+
+/// Whether an address falls in any `(start, size)` window.
+fn in_window(addr: u64, windows: &[(u64, u64)]) -> bool {
+    windows.iter().any(|(start, size)| {
+        let end = start.saturating_add(*size);
+        addr >= *start && addr < end
+    })
+}
+
 /// Decoded Intel HEX payload.
 pub struct DecodedHex {
     pub bytes: Vec<u8>,
@@ -478,4 +584,87 @@ mod tests {
     fn rejects_non_elf() {
         assert!(convert_firmware(b"not an elf", FirmwareFormat::Bin).is_err());
     }
+#[test]
+fn analyzes_elf_split_flash_and_ram() {
+    let dir = std::env::temp_dir().join("ns_flash_size_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let elf_path = dir.join("fw.elf");
+    // Build a 2-segment ELF32: flash @0x0800_0000 (3 bytes) + RAM @0x2000_0000 (2 bytes).
+    // Layout: ELF header(52) + phdr1(32) + phdr2(32) = 116; flash payload @116, RAM @119.
+    let mut out = vec![0u8; 52];
+    out[0..4].copy_from_slice(b"\x7fELF");
+    out[4] = 1; // ELFCLASS32
+    out[5] = 1; // little-endian
+    out[6] = 1;
+    out[16] = 2; // ET_EXEC
+    out[18] = 40; // e_machine = ARM
+    out[20..24].copy_from_slice(&1u32.to_le_bytes());
+    out[28..32].copy_from_slice(&52u32.to_le_bytes()); // e_phoff
+    out[42..44].copy_from_slice(&32u16.to_le_bytes()); // e_phentsize
+    out[44..46].copy_from_slice(&2u16.to_le_bytes()); // e_phnum = 2
+    // Program header #1: flash @ 0x0800_0000, payload at 116, 3 bytes.
+    out.extend_from_slice(&{
+        let mut h = vec![0u8; 32];
+        h[0..4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+        h[4..8].copy_from_slice(&116u32.to_le_bytes());
+        h[8..12].copy_from_slice(&0x0800_0000u32.to_le_bytes());
+        h[12..16].copy_from_slice(&0x0800_0000u32.to_le_bytes());
+        h[16..20].copy_from_slice(&3u32.to_le_bytes()); // filesz
+        h[20..24].copy_from_slice(&3u32.to_le_bytes()); // memsz
+        h
+    });
+    // Program header #2: RAM @ 0x2000_0000, payload at 119, 2 bytes.
+    out.extend_from_slice(&{
+        let mut h = vec![0u8; 32];
+        h[0..4].copy_from_slice(&1u32.to_le_bytes());
+        h[4..8].copy_from_slice(&119u32.to_le_bytes());
+        h[8..12].copy_from_slice(&0x2000_0000u32.to_le_bytes());
+        h[12..16].copy_from_slice(&0x2000_0000u32.to_le_bytes());
+        h[16..20].copy_from_slice(&2u32.to_le_bytes());
+        h[20..24].copy_from_slice(&2u32.to_le_bytes());
+        h
+    });
+    // Payloads: flash at 116 (3), RAM at 119 (2) — contiguous, no padding.
+    out.extend_from_slice(&[0x01, 0x02, 0x03]);
+    out.extend_from_slice(&[0xAA, 0xBB]);
+    std::fs::write(&elf_path, &out).unwrap();
+    let flash = vec![(0x0800_0000u64, 0x1000u64)];
+    let ram = vec![(0x2000_0000u64, 0x2000u64)];
+    let size = analyze_firmware_size(&elf_path, &flash, &ram).unwrap().unwrap();
+    assert_eq!(size.flash, 3, "flash bytes");
+    assert_eq!(size.ram, 2, "ram bytes");
+    assert_eq!(size.total, 5, "total bytes");
+    assert_eq!(size.base, 0x0800_0000, "lowest load address");
+    std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn analyzes_hex_by_base_region() {
+    let hex = ":020000040800F2\n\
+              :0400000001020304F2\n\
+              :00000001FF";
+    let dir = std::env::temp_dir().join("ns_flash_size_test_hex");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("fw.hex");
+    std::fs::write(&path, hex).unwrap();
+    let flash = vec![(0x0800_0000u64, 0x1000u64)];
+    let ram = vec![(0x2000_0000u64, 0x2000u64)];
+    let size = analyze_firmware_size(&path, &flash, &ram).unwrap().unwrap();
+    assert_eq!(size.flash, 4);
+    assert_eq!(size.ram, 0);
+    assert_eq!(size.total, 4);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn unknown_format_returns_none() {
+    let dir = std::env::temp_dir().join("ns_flash_size_test_none");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("fw.txt");
+    std::fs::write(&path, b"hello").unwrap();
+    let size = analyze_firmware_size(&path, &[], &[]).unwrap();
+    assert!(size.is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
+}
+

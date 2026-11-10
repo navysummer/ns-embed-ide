@@ -20,8 +20,13 @@ ns-flash.workspace = true
 ns-device.workspace = true
 ns-lsp.workspace = true
 ns-sim.workspace = true
-portable-pty = "0.9"
+rio-vt = "0.5"
+rustc-hash = "2.1"
 serde = { workspace = true }
 serde_json.workspace = true
 serialport = "4"
 unicode-segmentation.workspace = true
+
+[dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }
+
