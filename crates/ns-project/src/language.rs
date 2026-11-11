@@ -80,9 +80,20 @@ impl Language {
             "s" | "S" | "asm" | "inc" | "ld" => Some(Language::Asm),
             _ => None,
         }
-    }
-}
+     }
 
+    /// The line-comment prefix for this language (`//` for C/C++/Rust/ZR,
+    /// `///`-style is not needed; Zig uses `//` too). Assembly and unknown
+    /// languages return `None` so callers can fall back to a no-op.
+    pub fn line_comment(self) -> Option<&'static str> {
+        match self {
+            Language::C | Language::Cpp | Language::Rust | Language::Zig | Language::ZR => {
+                Some("//")
+            }
+            Language::Asm => None,
+        }
+    }
+ }
 /// A selectable C starter template for a new project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CTemplate {

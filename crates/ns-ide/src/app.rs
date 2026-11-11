@@ -427,8 +427,9 @@ struct SettingsDialog {
     flasher_kind: Entity<TextField>,
     flasher_interface: Entity<TextField>,
     sim_cpu: Entity<TextField>,
-    sim_period: Entity<TextField>,
-    /// Debug launch: arguments (space-separated), environment (one KEY=value
+     sim_period: Entity<TextField>,
+    sim_clock: Entity<TextField>,
+     /// Debug launch: arguments (space-separated), environment (one KEY=value
     /// per line) and working directory for the debuggee.
     launch_args: Entity<TextField>,
     launch_env: Entity<TextField>,
@@ -618,9 +619,13 @@ struct DebugView {
     device_reg_values: HashMap<u64, u32>,
     /// Whether live watch refreshes device registers while the target runs.
     live_watch: bool,
-    /// Device-register value edit in progress: (absolute address, input field).
-    device_reg_edit: Option<(u64, Entity<TextField>)>,
-}
+     /// Device-register value edit in progress: (absolute address, input field).
+     device_reg_edit: Option<(u64, Entity<TextField>)>,
+     /// Loaded register snapshot for comparison: group → register → value.
+     reg_snapshot: Option<HashMap<String, HashMap<String, String>>>,
+    /// Input for a disassembly address (jump to arbitrary address).
+    disasm_input: Option<Entity<TextField>>,
+ }
 
 impl Default for DebugView {
     fn default() -> Self {
@@ -655,10 +660,12 @@ impl Default for DebugView {
             console_input: None,
             watches: Vec::new(),
             watch_input: None,
-            device_reg_values: HashMap::new(),
-            live_watch: false,
-            device_reg_edit: None,
-        }
+             device_reg_values: HashMap::new(),
+             live_watch: false,
+             device_reg_edit: None,
+             reg_snapshot: None,
+            disasm_input: None,
+         }
     }
 }
 impl DebugView {
@@ -729,11 +736,12 @@ impl DebugView {
 
 
 #[derive(Debug, Clone, Copy)]
-enum DebugStep {
-    Over,
-    In,
-    Out,
-}
+ enum DebugStep {
+     Over,
+     In,
+     Out,
+    Instruction,
+ }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DebugViewTab {
     Variables,
@@ -759,8 +767,14 @@ struct MemoryView {
     /// Index into `regions` of the region currently shown.
     active_region: usize,
     /// Input for the name of a new memory region (added via 「＋区域」).
-    region_name_input: Option<Entity<TextField>>,
-}
+     region_name_input: Option<Entity<TextField>>,
+    /// Input for a byte pattern to search for in the dumped region.
+     search_input: Option<Entity<TextField>>,
+     /// Input for the byte pattern to fill the current region with.
+     fill_input: Option<Entity<TextField>>,
+    /// Byte offset (into `bytes`) and pattern length of the last search match.
+    search_hit: Option<(usize, usize)>,
+ }
 
 impl Default for MemoryView {
     fn default() -> Self {
@@ -775,10 +789,13 @@ impl Default for MemoryView {
                 name: "自定义".to_string(),
                 address: 0,
                 size: 64,
-            }],
-            active_region: 0,
-            region_name_input: None,
-        }
+             }],
+             active_region: 0,
+             region_name_input: None,
+            search_input: None,
+            fill_input: None,
+            search_hit: None,
+         }
     }
 }
 
@@ -806,11 +823,14 @@ struct TraceView {
     support: Option<&'static str>,
     /// Input for the ITM stimulus port.
     port_input: Option<Entity<TextField>>,
-    /// Decoded SWO packets received since the window was armed, newest-last.
+     /// Decoded SWO packets received since the window was armed, newest-last.
     packets: Vec<swvd::Packet>,
     /// Whether the background SWO stream reader is running.
     streaming: bool,
-}
+    profile: ns_debug::profile::ProfileAggregator,
+    /// Whether to show the profiler hotspot view.
+    show_profile: bool,
+ }
 
 impl Default for TraceView {
     fn default() -> Self {
@@ -822,9 +842,11 @@ impl Default for TraceView {
             error: None,
             support: None,
             port_input: None,
-            packets: Vec::new(),
-            streaming: false,
-        }
+             packets: Vec::new(),
+             streaming: false,
+            profile: ns_debug::profile::ProfileAggregator::new(&[]),
+            show_profile: false,
+         }
     }
 }
 
@@ -833,14 +855,14 @@ struct DebugSession {
 }
 
 
-/// What to do after a successful flash during run orchestration (F9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FlashMode {
-    /// Reset-and-run the artifact directly (no debugger attached).
-    Run,
-    /// Attach the debugger after flashing.
-    Debug,
-}
+ enum FlashMode {
+     /// Reset-and-run the artifact directly (no debugger attached).
+     Run,
+     /// Attach the debugger after flashing.
+     Debug,
+    /// After a successful flash, immediately verify the written bytes.
+    Verify,
+ }
 /// Direct-run (F9 直接运行) state: the spawned artifact, its streaming output
 /// and exit status.
 struct RunState {
@@ -1248,14 +1270,26 @@ pub struct IdeApp {
     diagnostics: Vec<Diagnostic>,
     output: String,
     build_command: String,
-    /// Firmware memory-usage breakdown of the last successful build, when the
-    /// project targets an MCU and the artifact is a recognized firmware file.
-    firmware_size: Option<ns_flash::FirmwareSize>,
-    /// Per-function stack usage from the last `-fstack-usage` analysis run
+     /// Firmware memory-usage breakdown of the last successful build, when the
+     /// project targets an MCU and the artifact is a recognized firmware file.
+     firmware_size: Option<ns_flash::FirmwareSize>,
+    /// Estimated per-source-file compile times from the last build (parsed
+    /// from CMake/Make progress lines). Empty for non-instrumented builds.
+    build_file_timings: Vec<ns_build::FileTiming>,
+     /// Per-function stack usage from the last `-fstack-usage` analysis run
     /// (C/C++ only; `None` until a run completes or for non-C projects).
-    stack_usage: Vec<ns_build::StackUsageEntry>,
-    /// Per-file line coverage from the last gcov run (C/C++ only).
-    coverage: Vec<ns_build::CoverageFile>,
+     stack_usage: Vec<ns_build::StackUsageEntry>,
+    /// Memory-layout model from the linker script + firmware sections, for the
+    /// region-occupancy view. `None` until the command runs or on failure.
+     memory_layout: Option<ns_build::layout::MemoryLayout>,
+     /// Project include dependency graph (from the last「include 依赖图」run).
+     include_graph: Option<ns_project::depgraph::IncludeGraph>,
+     /// Whether the include graph is shown as a graphical DAG (else a list).
+     include_graph_dag: bool,
+     /// TODO/FIXME/XXX markers from the last「任务面板」scan.
+    task_markers: Vec<ns_project::tasks::TaskMarker>,
+     /// Per-file line coverage from the last gcov run (C/C++ only).
+     coverage: Vec<ns_build::CoverageFile>,
     show_output: bool,
     /// Height of the output panel in pixels (draggable via the divider).
     output_px: f32,
@@ -1353,10 +1387,16 @@ pub struct IdeApp {
     semantic_tokens: Vec<SemanticToken>,
     /// Document outline symbols (LSP `documentSymbol`), for the outline/breadcrumb.
     outline: Vec<ns_lsp::SymbolInfo>,
-    /// Whether the outline (symbol list) sidebar is shown.
-    outline_open: bool,
-    /// Whether the device picker dropdown (debug「设备」页) is open.
-    device_picker_open: bool,
+     /// Whether the outline (symbol list) sidebar is shown.
+     outline_open: bool,
+    /// Outline symbol-name filter (case-insensitive substring).
+    outline_filter: String,
+    /// Input for the outline filter.
+    outline_filter_input: Option<Entity<TextField>>,
+      /// Whether the device picker dropdown (debug「设备」页) is open.
+     device_picker_open: bool,
+    /// Peripheral/register name filter field for the「设备」页.
+    device_filter: Entity<TextField>,
 
 
     /// Built-in instruction-level simulator session.
@@ -1556,10 +1596,15 @@ impl IdeApp {
             build_cancel: None,
             diagnostics: Vec::new(),
             output: String::new(),
-            build_command: String::new(),
-            firmware_size: None,
-            stack_usage: Vec::new(),
-            coverage: Vec::new(),
+             build_command: String::new(),
+             firmware_size: None,
+            build_file_timings: Vec::new(),
+             stack_usage: Vec::new(),
+             memory_layout: None,
+             include_graph: None,
+            include_graph_dag: false,
+             task_markers: Vec::new(),
+             coverage: Vec::new(),
             show_output: false,
             output_px: 260.0,
             output_tab: OutputTab::Output,
@@ -1623,10 +1668,13 @@ impl IdeApp {
             hover_tooltip: None,
             hover_anchor: None,
             semantic_tokens: Vec::new(),
-            outline: Vec::new(),
-            outline_open: false,
-            device_picker_open: false,
-            sim: SimulatorState::default(),
+             outline: Vec::new(),
+             outline_open: false,
+            outline_filter: String::new(),
+            outline_filter_input: None,
+              device_picker_open: false,
+            device_filter: cx.new(|cx| TextField::new("过滤外设 / 寄存器…", cx)),
+             sim: SimulatorState::default(),
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
         };
@@ -2699,6 +2747,155 @@ impl IdeApp {
         .detach();
     }
 
+    /// Import a vendor embedded project (.ewp / .uvprojx / .ioc) into a new
+    /// ns-embed-ide project: parse the vendor file, write `project.toml`, copy
+    /// the referenced sources into `src/`, then open the new project.
+    fn import_project_dialog(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择要导入的工程文件（.ewp/.uvprojx/.ioc）".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            match receiver.await {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(vendor) = paths.into_iter().next() {
+                        this.update(cx, |this, cx| {
+                            this.do_import_project(vendor, cx);
+                        })
+                        .ok();
+                    }
+                }
+                Ok(Ok(None)) | Err(_) => {}
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = format!("导入工程对话框失败: {error}");
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn do_import_project(&mut self, vendor: PathBuf, cx: &mut Context<Self>) {
+        use ns_project::parse_import;
+        let imported = match parse_import(&vendor) {
+            Ok(imported) => imported,
+            Err(error) => {
+                self.status = format!("导入失败: {error}");
+                cx.notify();
+                return;
+            }
+        };
+
+        // Project name = vendor file stem.
+        let name = vendor
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "imported".to_string());
+        // New project lives next to the vendor project file.
+        let location = vendor
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let root = location.join(&name);
+        if root.exists() {
+            let non_empty = std::fs::read_dir(&root)
+                .map(|mut e| e.next().is_some())
+                .unwrap_or(false);
+            if non_empty {
+                self.status = format!("导入失败: 目录已存在且不为空: {}", root.display());
+                cx.notify();
+                return;
+            }
+        }
+
+        let mut config = imported.config;
+        config.project.name = name.clone();
+        if let Err(error) = std::fs::create_dir_all(root.join("src"))
+            .and_then(|_| std::fs::create_dir_all(root.join("include")))
+            .and_then(|_| std::fs::create_dir_all(root.join("build")))
+        {
+            self.status = format!("导入失败: 创建项目目录出错: {error}");
+            cx.notify();
+            return;
+        }
+
+        // Copy referenced sources into src/ (flattened to avoid colliding
+        // directory names; relative subpaths keep their parent dirs).
+        let mut copied = 0usize;
+        for source in &imported.sources {
+            if !source.is_file() {
+                continue;
+            }
+            let rel = source
+                .strip_prefix(&vendor.parent().unwrap_or(Path::new(".")))
+                .unwrap_or(source);
+            // Use the file name only; if it collides, keep the relative path.
+            let target_rel = if rel.components().count() > 1 {
+                rel.to_path_buf()
+            } else {
+                PathBuf::from(rel.file_name().unwrap_or_default())
+            };
+            let target = root.join("src").join(&target_rel);
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::copy(source, &target).is_ok() {
+                copied += 1;
+            }
+        }
+
+        // Preserve the vendor file itself under the project root for reference.
+        if vendor.is_file() {
+            let _ = std::fs::copy(&vendor, root.join(vendor.file_name().unwrap_or_default()));
+        }
+
+        let toml_text = match toml::to_string_pretty(&config) {
+            Ok(text) => text,
+            Err(error) => {
+                self.status = format!("导入失败: 序列化 project.toml 失败: {error}");
+                cx.notify();
+                return;
+            }
+        };
+        if let Err(error) = std::fs::write(root.join("project.toml"), &toml_text) {
+            self.status = format!("导入失败: 写 project.toml 失败: {error}");
+            cx.notify();
+            return;
+        }
+        let _ = std::fs::write(
+            root.join("README.md"),
+            format!(
+                "# {name}\n\n由 {} 导入（{}）。\n\n工具链：`arm-none-eabi-gcc` + `openocd`（可在项目设置中修改）。\n",
+                vendor.display(),
+                imported.notes.join("；")
+            ),
+        );
+        let _ = std::fs::write(root.join(".gitignore"), "build/\ntarget/\n.ns-ide/\n.DS_Store\n");
+
+        match Project::open(&root) {
+            Ok(project) => {
+                self.load_project(project, cx);
+                let mut message = format!(
+                    "导入完成：{name}（复制 {} 个源文件）",
+                    copied
+                );
+                if !imported.notes.is_empty() {
+                    message.push_str(&format!("。{}", imported.notes.join("；")));
+                }
+                self.status = message;
+            }
+            Err(error) => {
+                self.status = format!("导入后打开项目失败: {error}");
+            }
+        }
+        cx.notify();
+    }
+
     fn start_build(&mut self, run_after: bool, cx: &mut Context<Self>) {
         let Some(project) = self.project.as_ref() else {
             self.status = "请先打开项目".to_string();
@@ -2956,6 +3153,91 @@ impl IdeApp {
         }
         cx.notify();
     }
+
+    /// Generate `src/peripheral_init.c` from the project target's SVD for the
+    /// peripherals that look application-relevant (GPIO first, then UART/USART).
+    fn generate_peripheral_init_code(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let target = project.config.project.target.trim().to_string();
+        if target.is_empty() {
+            self.status = "项目未设置目标设备；请先在「设备」页或「项目设置」中选择 MCU。".to_string();
+            cx.notify();
+            return;
+        }
+        let names = ns_device::peripheral_names(&target);
+        if names.is_empty() {
+            self.status = format!("目标设备「{target}」没有可用的 SVD 外设列表。");
+            cx.notify();
+            return;
+        }
+        // Pick the peripherals most relevant to a starter app: GPIO ports and
+        // the first UART/USART (used for printf/debug).
+        let mut configs: Vec<ns_device::PeripheralConfig> = Vec::new();
+        for name in &names {
+            let upper = name.to_ascii_uppercase();
+            let is_gpio = upper.starts_with("GPIO");
+            let is_uart = upper.contains("USART") || upper.contains("UART");
+            if is_gpio {
+                configs.push(ns_device::PeripheralConfig {
+                    name: name.clone(),
+                    purpose: "GPIO 端口配置".to_string(),
+                    options: Vec::new(),
+                });
+            } else if is_uart && !configs.iter().any(|c| c.name.to_ascii_uppercase().contains("UART")) {
+                configs.push(ns_device::PeripheralConfig {
+                    name: name.clone(),
+                    purpose: "调试串口".to_string(),
+                    options: Vec::new(),
+                });
+            }
+        }
+        if configs.is_empty() {
+            // Fall back to the first three peripherals so the output is useful.
+            for name in names.iter().take(3) {
+                configs.push(ns_device::PeripheralConfig {
+                    name: name.clone(),
+                    purpose: String::new(),
+                    options: Vec::new(),
+                });
+            }
+        }
+        let Some(code) = ns_device::generate_peripheral_init(&target, &configs) else {
+            self.status = format!("生成外设初始化代码失败（{target}）。");
+            cx.notify();
+            return;
+        };
+        let root = project.root.clone();
+        let path = root.join("src").join("peripheral_init.c");
+        let _ = std::fs::create_dir_all(root.join("src"));
+        if let Err(error) = std::fs::write(&path, &code) {
+            self.status = format!("写入 {} 失败: {error}", path.display());
+            cx.notify();
+            return;
+        }
+        self.open_file(path.clone(), cx);
+        self.status = format!(
+            "已生成外设初始化代码：{}（{} 个外设）",
+            path.display(),
+            configs.len()
+        );
+        self.show_output = true;
+        self.output_tab = OutputTab::Output;
+        self.output.push_str(&format!(
+            "已生成外设初始化代码：{}（{} 个外设：{}）\n",
+            path.display(),
+            configs.len(),
+            configs
+                .iter()
+                .map(|c| c.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        cx.notify();
+    }
     /// Clean the output directory and immediately rebuild.
     fn rebuild_build(&mut self, cx: &mut Context<Self>) {
         let Some(project) = self.project.as_ref() else {
@@ -3170,17 +3452,22 @@ impl IdeApp {
                             ),
                         };
                         this.status = done;
-                        match mode {
-                            Some(FlashMode::Run) => this.spawn_run(cx),
-                            Some(FlashMode::Debug) => {
-                                if this.is_embedded_target() {
-                                    this.launch_embedded_debug(cx);
-                                } else {
-                                    this.launch_debug(cx);
-                                }
+                         match mode {
+                             Some(FlashMode::Run) => this.spawn_run(cx),
+                             Some(FlashMode::Debug) => {
+                                 if this.is_embedded_target() {
+                                     this.launch_embedded_debug(cx);
+                                 } else {
+                                     this.launch_debug(cx);
+                                 }
+                             }
+                            Some(FlashMode::Verify) => {
+                                // Chain: after a successful flash, verify the
+                                // written bytes against the artifact.
+                                this.flash_action(FlashAction::Verify, cx);
                             }
-                            None => {}
-                        }
+                             None => {}
+                         }
                     } else {
                         this.status = format!(
                             "{}失败 ({}: {})",
@@ -3211,8 +3498,16 @@ impl IdeApp {
     }
 
     /// F9 直接运行: build → flash → reset-and-run without a debugger.
-    fn flash_and_run(&mut self, cx: &mut Context<Self>) {
-        self.pending_flash = Some(FlashMode::Run);
+     fn flash_and_run(&mut self, cx: &mut Context<Self>) {
+         self.pending_flash = Some(FlashMode::Run);
+         self.start_build(false, cx);
+     }
+
+    /// 烧写并校验: build → flash → verify the written bytes against the
+    /// artifact. The verify only runs when the flash succeeds (the
+    /// `FlashMode::Verify` chain in `flash_artifact`).
+    fn flash_and_verify(&mut self, cx: &mut Context<Self>) {
+        self.pending_flash = Some(FlashMode::Verify);
         self.start_build(false, cx);
     }
 
@@ -3457,8 +3752,67 @@ impl IdeApp {
         self.refresh_diagnostics(cx);
         cx.notify();
     }
+    /// Run the C/C++ preprocessor (`-E`) and stream the macro-expanded output
+    /// into the output panel. Non-C/C++ projects or missing compilers report a
+    /// clear message instead of silently doing nothing.
+    fn start_preprocess(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(plan) = ns_build::plan_preprocess(project) else {
+            self.show_output = true;
+            self.output_tab = OutputTab::Output;
+            self.build_state = BuildState::Failed(Duration::ZERO);
+            self.output = format!(
+                "宏展开需要 C/C++ 项目与可用编译器（gcc / clang / 交叉工具链），\n\
+                 当前项目为 {}。\n",
+                project.config.project.language
+            );
+            self.build_command.clear();
+            self.status = "宏展开: 不可用".to_string();
+            cx.notify();
+            return;
+        };
+        self.show_output = true;
+        self.output_tab = OutputTab::Output;
+        self.build_state = BuildState::Running;
+        self.build_command = plan.command_line();
+        self.output = format!("$ {}\n\n正在预处理…\n", self.build_command);
+        self.status = "正在预处理…".to_string();
+        cx.notify();
 
-    /// Run gcov line-coverage analysis (C/C++): build with `--coverage`, run
+        cx.spawn(async move |this, cx| {
+            let task = cx
+                .background_executor()
+                .spawn(async move { ns_build::execute(&plan) });
+            let outcome = task.await;
+            this.update(cx, |this, cx| this.finish_preprocess(outcome, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn finish_preprocess(&mut self, outcome: ns_build::BuildOutcome, cx: &mut Context<Self>) {
+        let mut output = format!("$ {}\n\n", self.build_command);
+        output.push_str(&outcome.combined_output());
+         if outcome.success {
+             self.status = "宏展开完成".to_string();
+         } else {
+            self.status = format!("宏展开失败（退出码 {}）", outcome.code.unwrap_or(-1));
+         }
+         self.output = output;
+         self.build_state = if outcome.success {
+            BuildState::Success(outcome.duration)
+         } else {
+             BuildState::Failed(outcome.duration)
+         };
+        self.refresh_diagnostics(cx);
+        cx.notify();
+    }
+
+     /// Run gcov line-coverage analysis (C/C++): build with `--coverage`, run
     /// the instrumented binary, then summarize per-file coverage via gcov.
     fn start_coverage(&mut self, cx: &mut Context<Self>) {
         let Some(project) = self.project.as_ref() else {
@@ -3546,12 +3900,13 @@ impl IdeApp {
             OutputTab::Problems
         };
         self.show_output = true;
-        self.status = format!("覆盖率分析完成 · {} 个文件", self.coverage.len());
-        self.refresh_diagnostics(cx);
-        cx.notify();
-    }
-
-    /// Append the per-file coverage summary lines to `output`.
+         self.status = format!("覆盖率分析完成 · {} 个文件", self.coverage.len());
+         self.refresh_diagnostics(cx);
+         self.apply_coverage_to_editors(cx);
+         cx.notify();
+     }
+ 
+     /// Append the per-file coverage summary lines to `output`.
     fn format_coverage_output(&self, output: &mut String, seconds: f64) {
         let total_lines: u64 = self.coverage.iter().map(|f| f.executed + f.not_executed).sum();
         let executed: u64 = self.coverage.iter().map(|f| f.executed).sum();
@@ -3610,15 +3965,37 @@ impl IdeApp {
         self.firmware_size = if outcome.success {
             self.analyze_firmware_artifact()
         } else {
-            None
-        };
-        // Persist the firmware summary in the build output so it survives
+             None
+         };
+        self.build_file_timings = outcome.file_timings.clone();
+         // Persist the firmware summary in the build output so it survives
         // tab switches and re-renders (render appends it only as a computed
         // trailing line, but this keeps the record in the output text).
         if self.firmware_size.is_some() {
             let summary = self.render_firmware_size_summary();
             if !summary.is_empty() && !self.output.contains(&summary) {
                 self.output.push_str(&format!("\n{summary}\n"));
+             }
+         }
+        // Report per-file compile times when the toolchain exposed them.
+        if !self.build_file_timings.is_empty() {
+            let mut timing_lines: Vec<String> = self
+                .build_file_timings
+                .iter()
+                .map(|timing| {
+                    format!(
+                        "  {:>7.1} ms  {}",
+                        timing.elapsed_ms as f64 / 1000.0,
+                        timing.file
+                    )
+                })
+                .collect();
+            timing_lines.sort_by(|a, b| b.cmp(a));
+            let mut report = String::from("\n文件编译耗时（估计）:\n");
+            report.push_str(&timing_lines.join("\n"));
+            report.push('\n');
+            if !self.output.contains(&report) {
+                self.output.push_str(&report);
             }
         }
         self.build_state = if outcome.success {
@@ -4621,18 +4998,25 @@ impl IdeApp {
                 ));
                 cx.notify();
             }
-            DebugMessage::TracePackets(packets) => {
-                // Append decoded SWO packets to the live buffer (capped so a
-                // busy probe cannot grow it without bound).
-                let trace = &mut self.debug.trace;
-                trace.packets.extend(packets);
-                const TRACE_CAP: usize = 2000;
-                if trace.packets.len() > TRACE_CAP {
-                    let overflow = trace.packets.len() - TRACE_CAP;
-                    trace.packets.drain(..overflow);
+             DebugMessage::TracePackets(packets) => {
+                 // Append decoded SWO packets to the live buffer (capped so a
+                 // busy probe cannot grow it without bound).
+                 let trace = &mut self.debug.trace;
+                // Feed DWT PC samples into the profiler aggregator for the
+                // hotspot histogram (see the trace panel's profiler view).
+                for packet in &packets {
+                    if let swvd::Packet::Dwt { pc: Some(pc), .. } = packet {
+                        trace.profile.record(*pc);
+                    }
                 }
-                cx.notify();
-            }
+                 trace.packets.extend(packets);
+                 const TRACE_CAP: usize = 2000;
+                 if trace.packets.len() > TRACE_CAP {
+                     let overflow = trace.packets.len() - TRACE_CAP;
+                     trace.packets.drain(..overflow);
+                 }
+                 cx.notify();
+             }
             DebugMessage::Evaluated {
                 expression,
                 result,
@@ -5390,9 +5774,17 @@ impl IdeApp {
         self.sim.pc_edit_input = Some(field.clone());
         window.focus(&field.read(cx).focus_handle(cx));
         cx.notify();
-    }
+     }
 
-    /// Commit a PC jump: parse hex and set the program counter.
+    /// Nominal simulator clock in Hz from `[sim] clock_hz` (0 = unknown).
+    fn sim_clock_hz(&self) -> u64 {
+        self.project
+            .as_ref()
+            .map(|p| p.config.sim.clock_hz)
+            .unwrap_or(0)
+    }
+ 
+     /// Commit a PC jump: parse hex and set the program counter.
     fn sim_set_pc(&mut self, text: &str, cx: &mut Context<Self>) {
         let Some(value) = parse_hex_address(text) else {
             self.sim.status = format!("无效 PC 值 \"{text}\"");
@@ -5579,11 +5971,19 @@ impl IdeApp {
             let field = cx.new(|cx| TextField::new("de ad be ef", cx));
             self.debug.memory.edit_input = Some(field);
         }
-        if self.debug.memory.region_name_input.is_none() {
-            let field = cx.new(|cx| TextField::new("例如 RAM 区", cx));
-            self.debug.memory.region_name_input = Some(field);
+         if self.debug.memory.region_name_input.is_none() {
+             let field = cx.new(|cx| TextField::new("例如 RAM 区", cx));
+             self.debug.memory.region_name_input = Some(field);
+         }
+        if self.debug.memory.search_input.is_none() {
+            let field = cx.new(|cx| TextField::new("搜索字节模式（如 de ad be ef）", cx));
+            self.debug.memory.search_input = Some(field);
         }
-    }
+        if self.debug.memory.fill_input.is_none() {
+            let field = cx.new(|cx| TextField::new("填充模式（如 00 或 ff）", cx));
+            self.debug.memory.fill_input = Some(field);
+        }
+     }
 
     /// Create the trace panel's text fields, seeded from the loaded config.
     fn ensure_trace_fields(&mut self, cx: &mut Context<Self>) {
@@ -5657,11 +6057,39 @@ impl IdeApp {
         self.debug.trace.config.data_trace = !self.debug.trace.config.data_trace;
         self.debug.trace.error = None;
         self.trace_save(cx);
+         cx.notify();
+     }
+
+     fn trace_toggle_pc_sample(&mut self, cx: &mut Context<Self>) {
+         self.debug.trace.config.pc_sample = !self.debug.trace.config.pc_sample;
+         self.debug.trace.error = None;
+         self.trace_save(cx);
+         cx.notify();
+     }
+
+    /// Toggle the profiler hotspot view. When turning it on, load the firmware
+    /// symbol table (from `nm`) so sampled PCs can be attributed to functions.
+    fn trace_toggle_profile(&mut self, cx: &mut Context<Self>) {
+        let show = !self.debug.trace.show_profile;
+        self.debug.trace.show_profile = show;
+        if show {
+            // Rebuild the aggregator with the current firmware's symbols so
+            // already-recorded samples are re-attributed where possible.
+            if let Some(project) = self.project.as_ref() {
+                let artifact = project.artifact_path();
+                if artifact.is_file() {
+                    let symbols = ns_flash::firmware::analyze_symbols(&artifact);
+                    let tuples: Vec<(u64, u64, String)> = symbols
+                        .into_iter()
+                        .map(|symbol| (symbol.address, symbol.size, symbol.name))
+                        .collect();
+                    self.debug.trace.profile = ns_debug::profile::ProfileAggregator::new(&tuples);
+                }
+            }
+        }
         cx.notify();
     }
-
-    fn trace_cycle_mode(&mut self, cx: &mut Context<Self>) {
-        self.debug.trace.config.mode = self.debug.trace.config.mode.next();
+     fn trace_cycle_mode(&mut self, cx: &mut Context<Self>) {
         self.debug.trace.error = None;
         self.trace_save(cx);
         cx.notify();
@@ -5783,11 +6211,99 @@ impl IdeApp {
                 self.debug.memory.error = Some(message);
             }
         }
+         cx.notify();
+ 
+     }
+ 
+    /// Search the dumped memory region for a byte pattern. `text` is hex like
+    /// `de ad be ef` (whitespace-separated) or `deadbeef`; the first match
+    /// offset is stored in `search_hit` and scrolled into view.
+    fn search_memory(&mut self, cx: &mut Context<Self>) {
+        let text = self
+            .debug
+            .memory
+            .search_input
+            .clone()
+            .map(|field| field.read(cx).text().trim().to_string());
+        let Some(text) = text else {
+            return;
+        };
+        let pattern = match parse_hex_bytes(&text) {
+            Ok(data) if !data.is_empty() => data,
+            Ok(_) => {
+                self.debug.memory.search_hit = None;
+                self.debug.memory.error = Some("搜索模式为空。".to_string());
+                cx.notify();
+                return;
+            }
+            Err(message) => {
+                self.debug.memory.search_hit = None;
+                self.debug.memory.error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        let bytes = &self.debug.memory.bytes;
+        let hit = find_pattern(bytes, &pattern);
+         match hit {
+             Some(offset) => {
+                self.debug.memory.search_hit = Some((offset, pattern.len()));
+                 let address = self.debug.memory.address.wrapping_add(offset as u64);
+                 self.status = format!("内存搜索命中: {address:#x}（偏移 {offset} 字节）");
+             }
+             None => {
+                 self.debug.memory.search_hit = None;
+                 self.status = "内存搜索无匹配。".to_string();
+             }
+         }
+         cx.notify();
+     }
+     /// Fill the dumped region with a repeating byte pattern. `text` is hex
+     /// like `00` or `de ad be ef`; the pattern repeats across the region.
+    fn fill_memory(&mut self, cx: &mut Context<Self>) {
+        let text = self
+            .debug
+            .memory
+            .fill_input
+            .clone()
+            .map(|field| field.read(cx).text().trim().to_string());
+        let Some(text) = text else {
+            return;
+        };
+        let pattern = match parse_hex_bytes(&text) {
+            Ok(data) if !data.is_empty() => data,
+            Ok(_) => {
+                self.debug.memory.error = Some("填充模式为空。".to_string());
+                cx.notify();
+                return;
+            }
+            Err(message) => {
+                self.debug.memory.error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        let address = self.debug.memory.address;
+        let count = self.debug.memory.read_size as usize;
+        let mut data = Vec::with_capacity(count);
+        for index in 0..count {
+            data.push(pattern[index % pattern.len()]);
+        }
+        if let Some(session) = &self.debug_session {
+            let reference = format!("{address:#x}");
+            let _ = session
+                .commands
+                .send(DebugCommand::WriteMemory { reference, data });
+            self.status = format!(
+                "内存填充: 区域 {count} 字节 @ {address:#x}（模式 {pattern:02x?}）"
+            );
+        } else {
+            self.debug.memory.error = Some("调试会话未运行".to_string());
+        }
         cx.notify();
-
     }
 
-    /// Re-read the memory view's current region after a stop so the dump stays
+     /// Re-read the memory view's current region after a stop so the dump stays
     /// current. Only re-reads if the user has actually viewed memory (bytes are
     /// non-empty); otherwise there is nothing to refresh.
     fn refresh_memory_on_stop(&mut self, cx: &mut Context<Self>) {
@@ -6011,25 +6527,74 @@ impl IdeApp {
         cx.notify();
     }
 
-    fn disassemble_at_pc(&mut self, cx: &mut Context<Self>) {
-        let Some(pc) = self.debug.pc else {
-            self.status = "没有 PC 信息（程序未暂停）".to_string();
+     fn disassemble_at_pc(&mut self, cx: &mut Context<Self>) {
+         self.ensure_disasm_input(cx);
+         let Some(pc) = self.debug.pc else {
+             self.status = "没有 PC 信息（程序未暂停）".to_string();
+             cx.notify();
+             return;
+         };
+         if let Some(session) = &self.debug_session {
+             let _ = session.commands.send(DebugCommand::Disassemble {
+                 reference: format!("0x{pc:x}"),
+                 instruction_count: 24,
+             });
+         } else {
+             self.status = "调试会话未运行".to_string();
+         }
+         cx.notify();
+     }
+ 
+    /// Disassemble at an arbitrary address typed into the disassembly field.
+    fn disassemble_at(&mut self, cx: &mut Context<Self>) {
+        self.ensure_disasm_input(cx);
+        let text = self
+            .debug
+            .disasm_input
+            .clone()
+            .and_then(|field| {
+                let text = field.read(cx).text().trim().to_string();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            });
+        let Some(text) = text else {
+            self.status = "请输入十六进制地址（如 0x08000100）。".to_string();
             cx.notify();
             return;
         };
-        if let Some(session) = &self.debug_session {
-            let _ = session.commands.send(DebugCommand::Disassemble {
-                reference: format!("0x{pc:x}"),
-                instruction_count: 24,
-            });
-        } else {
-            self.status = "调试会话未运行".to_string();
+        let address = parse_address(&text);
+        match address {
+            Some(address) => {
+                if let Some(session) = &self.debug_session {
+                    let _ = session.commands.send(DebugCommand::Disassemble {
+                        reference: format!("0x{address:x}"),
+                        instruction_count: 24,
+                    });
+                    self.status = format!("反汇编 @ {address:#x}");
+                } else {
+                    self.status = "调试会话未运行".to_string();
+                }
+            }
+            None => {
+                self.status = format!("无效地址: {text}");
+            }
         }
         cx.notify();
     }
 
-    fn variable_rows(
-        &self,
+    /// Lazily create the disassembly address input field.
+    fn ensure_disasm_input(&mut self, cx: &mut Context<Self>) {
+        if self.debug.disasm_input.is_none() {
+            let field = cx.new(|cx| TextField::new("地址，如 0x08000100", cx));
+            self.debug.disasm_input = Some(field);
+        }
+    }
+
+     fn variable_rows(
+         &self,
         variables: &[Variable],
         parent_reference: u64,
         depth: usize,
@@ -6207,8 +6772,11 @@ impl IdeApp {
         let command = match step {
             DebugStep::Over => DebugCommand::StepOver { thread_id: self.debug.thread_id },
             DebugStep::In => DebugCommand::StepIn { thread_id: self.debug.thread_id },
-            DebugStep::Out => DebugCommand::StepOut { thread_id: self.debug.thread_id },
-        };
+             DebugStep::Out => DebugCommand::StepOut { thread_id: self.debug.thread_id },
+            DebugStep::Instruction => {
+                DebugCommand::StepInstruction { thread_id: self.debug.thread_id }
+            }
+         };
         if let Some(session) = &self.debug_session {
             let _ = session.commands.send(command);
         }
@@ -6790,7 +7358,12 @@ impl IdeApp {
             ),
             flasher_interface: settings_field("烧写接口（swd | jtag）", config.flasher.interface, cx),
             sim_cpu: settings_field("仿真 CPU（可选）", config.sim.cpu, cx),
-            sim_period: settings_field("仿真周期（周期数，0=默认）", config.sim.period.to_string(), cx),
+             sim_period: settings_field("仿真周期（周期数，0=默认）", config.sim.period.to_string(), cx),
+            sim_clock: settings_field(
+                "仿真时钟频率（Hz，0=未知）",
+                config.sim.clock_hz.to_string(),
+                cx,
+            ),
             launch_args: settings_field(
                 "调试参数（空格分隔，如 `--port 8080`）",
                 config.launch.args.join(" "),
@@ -6856,8 +7429,9 @@ impl IdeApp {
         let flasher_kind = dialog.flasher_kind.read(cx).text();
         let flasher_interface = dialog.flasher_interface.read(cx).text();
         let sim_cpu = dialog.sim_cpu.read(cx).text();
-        let sim_period = dialog.sim_period.read(cx).text();
-        let launch_args = dialog.launch_args.read(cx).text();
+         let sim_period = dialog.sim_period.read(cx).text();
+        let sim_clock = dialog.sim_clock.read(cx).text();
+         let launch_args = dialog.launch_args.read(cx).text();
         let launch_env = dialog.launch_env.read(cx).text();
         let launch_cwd = dialog.launch_cwd.read(cx).text();
         // ---- Validation ----
@@ -6895,8 +7469,8 @@ impl IdeApp {
             cx.notify();
             return;
         };
-        let period = sim_period.trim().parse::<u64>().unwrap_or(0);
-
+         let period = sim_period.trim().parse::<u64>().unwrap_or(0);
+        let clock_hz = sim_clock.trim().parse::<u64>().unwrap_or(0);
         // ---- Write the whole config (project + compiler + debugger + flasher + build + sim) ----
         project.config.project.name = name;
         project.config.project.version = version;
@@ -6939,8 +7513,9 @@ impl IdeApp {
         project.config.flasher.kind = kind;
         project.config.flasher.interface = flasher_interface;
         project.config.sim.cpu = sim_cpu;
-        project.config.sim.period = period;
-        project.config.launch.args = split_csv(&launch_args);
+         project.config.sim.period = period;
+        project.config.sim.clock_hz = clock_hz;
+         project.config.launch.args = split_csv(&launch_args);
         project.config.launch.env = launch_env
             .lines()
             .map(|line| line.trim().to_string())
@@ -7494,8 +8069,9 @@ impl IdeApp {
     fn execute_palette_command(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         match id {
             "new-project" => self.open_wizard(window, cx),
-            "open-project" => self.open_project_dialog(cx),
-            "save" => self.save_active(cx),
+             "open-project" => self.open_project_dialog(cx),
+            "import-project" => self.import_project_dialog(cx),
+             "save" => self.save_active(cx),
             "build" => self.start_build(false, cx),
             "rebuild" => self.rebuild_build(cx),
             "clean" => self.clean_build(cx),
@@ -7523,11 +8099,16 @@ impl IdeApp {
             "flash-erase" => self.flash_action(FlashAction::Erase, cx),
             "flash-verify" => self.flash_action(FlashAction::Verify, cx),
             "flash-read" => self.flash_action(FlashAction::Read, cx),
-            "flash-and-run" => self.flash_and_run(cx),
-            "flash-and-debug" => self.flash_and_debug(cx),
-            "toolchain" => self.open_toolchain(cx),
-            "generate-device-files" => self.generate_device_files_for_project(cx),
-            "simulation" => self.start_simulation(cx),
+             "flash-and-run" => self.flash_and_run(cx),
+             "flash-and-debug" => self.flash_and_debug(cx),
+            "flash-and-verify" => self.flash_and_verify(cx),
+             "toolchain" => self.open_toolchain(cx),
+             "generate-device-files" => self.generate_device_files_for_project(cx),
+             "include-graph" => self.show_include_graph(cx),
+            "tasks" => self.show_tasks(cx),
+             "memory-layout" => self.show_memory_layout(cx),
+             "generate-peripheral-init" => self.generate_peripheral_init_code(cx),
+             "simulation" => self.start_simulation(cx),
             "clear-breakpoints" => self.clear_all_breakpoints(cx),
             "add-watchpoint" => {
                 let initial = self
@@ -7557,22 +8138,36 @@ impl IdeApp {
             "document-symbols" => self.lsp_document_symbols(cx),
             "format-document" => self.lsp_format_document(cx),
             "code-action" => self.lsp_code_action(cx),
-            "toggle-outline" => {
-                self.outline_open = !self.outline_open;
-                if self.outline_open {
-                    self.lsp_document_symbols(cx);
-                }
-                cx.notify();
-            }
-            "show-completion" => self.lsp_completion(cx),
+             "toggle-outline" => {
+                 self.outline_open = !self.outline_open;
+                 if self.outline_open {
+                    if self.outline_filter_input.is_none() {
+                        let input = cx.new(|cx| TextField::new("过滤符号…", cx));
+                        let app = cx.entity();
+                         input.update(cx, |field, _cx| {
+                            field.set_on_change(move |text, _window, cx| {
+                                app.update(cx, |this, cx| {
+                                    this.outline_filter = text.to_string();
+                                    cx.notify();
+                                });
+                            });
+                        });
+                        self.outline_filter_input = Some(input);
+                    }
+                     self.lsp_document_symbols(cx);
+                 }
+                 cx.notify();
+             }
+             "show-completion" => self.lsp_completion(cx),
             "toggle-theme" => self.toggle_theme(cx),
             "new-window" => self.open_new_window(cx),
             "keybindings" => self.open_keybindings(cx),
             "split-right" => self.split_editor_right(cx),
             "close-split" => self.close_split(cx),
             "run-tests" => self.start_tests(cx),
-            "stack-usage" => self.start_stack_usage(cx),
-            "coverage" => self.start_coverage(cx),
+             "stack-usage" => self.start_stack_usage(cx),
+             "coverage" => self.start_coverage(cx),
+            "preprocess" => self.start_preprocess(cx),
             "workspace-symbols" => self.open_workspace_symbols(window, cx),
             "quick-open" => self.open_quick_open(window, cx),
             "recent-files" => self.open_recent_files(window, cx),
@@ -8764,9 +9359,26 @@ impl IdeApp {
         if let Some(tab) = self.tabs.get(index) {
             tab.editor.update(cx, |editor, cx| editor.set_diagnostics(marks, cx));
         }
-    }
+     }
 
-    /// Move the cursor to a navigation-history entry, opening the file if needed.
+    /// Push per-line coverage hits onto every open editor whose file was
+    /// covered by the last gcov run. Uncovered files (no line data) are left
+    /// untouched; a cleared run removes the overlay.
+    fn apply_coverage_to_editors(&mut self, cx: &mut Context<Self>) {
+        for tab in &mut self.tabs {
+            let mut hits = Vec::new();
+            for file in &self.coverage {
+                let file_path = PathBuf::from(&file.file);
+                if paths_equal(&file_path, &tab.path) {
+                    hits = file.line_hits.clone().unwrap_or_default();
+                    break;
+                }
+            }
+            tab.editor.update(cx, |editor, cx| editor.set_coverage(hits.clone(), cx));
+        }
+    }
+ 
+     /// Move the cursor to a navigation-history entry, opening the file if needed.
     fn jump_to_nav_entry(&mut self, entry: &NavEntry, cx: &mut Context<Self>) {        if entry.path.exists() {
             self.open_file(entry.path.clone(), cx);
         }
@@ -9111,10 +9723,74 @@ impl IdeApp {
         if let Some(editor) = self.active_editor() {
             editor.update(cx, |editor, cx| editor.set_cursor_line(line, cx));
         }
-        cx.notify();
-    }
+         cx.notify();
+     }
 
-    fn tree_entries(&self) -> Vec<TreeEntry> {
+ 
+     /// Apply a quick fix to the build diagnostic at `index`. For
+     /// `AddInclude`, the `#include <...>` line is inserted at the top of the
+     /// source file (after any existing `#include` lines, so the leading block
+     /// stays grouped); for `Hint`, the hint is shown in the status bar.
+     fn apply_quick_fix(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(diagnostic) = self.diagnostics.get(index) else {
+            return;
+        };
+        let Some(path) = diagnostic.path.clone() else {
+            self.status = "该诊断没有关联文件，无法应用修复。".to_string();
+            cx.notify();
+            return;
+        };
+         let source = std::fs::read_to_string(&path).ok();
+         match ns_build::suggest_quick_fix(diagnostic, source.as_deref()) {
+             Some(ns_build::QuickFix::AddInclude { header }) => {
+                 // Insert after the last existing `#include` line, else at the top.
+                 let text = source.clone().unwrap_or_default();
+                 let include = format!("#include <{header}>");
+                 if text.lines().any(|line| line.trim() == include) {
+                     self.status = format!("`#include <{header}>` 已存在于 {}", path.display());
+                     cx.notify();
+                     return;
+                 }
+                 // Rebuild the file on disk, then reload the open editor tab.
+                 let new_text = insert_include_line(&text, &include, include_insert_at(&text));
+                 match std::fs::write(&path, &new_text) {
+                     Ok(()) => {
+                         self.status =
+                             format!("已添加 `#include <{header}>` 到 {}", path.display());
+                         self.reload_diagnostic_file(&path, cx);
+                     }
+                     Err(err) => {
+                         self.status = format!("写入 {} 失败: {err}", path.display());
+                     }
+                 }
+             }
+             Some(ns_build::QuickFix::Hint(hint)) => {
+                 self.status = hint;
+             }
+             Some(ns_build::QuickFix::AddLinkFlag { .. }) => {
+                 self.status = "链接标志修复尚未接入设置页。".to_string();
+             }
+             None => {
+                 self.status = "没有可用的快速修复。".to_string();
+             }
+         }
+         cx.notify();
+     }
+ 
+     /// Reload a source file that a quick fix edited, refreshing the open
+     /// editor tab and clearing stale diagnostics for that file.
+     fn reload_diagnostic_file(&mut self, path: &Path, cx: &mut Context<Self>) {
+         if let Some(editor) = self.active_editor() {
+             editor.update(cx, |editor, cx| {
+                 if let Ok(text) = std::fs::read_to_string(path) {
+                    editor.reload_text(&text, cx);
+                 }
+             });
+         }
+         cx.notify();
+     }
+ 
+     fn tree_entries(&self) -> Vec<TreeEntry> {
         let Some(project) = &self.project else {
             return Vec::new();
         };
@@ -9483,22 +10159,30 @@ impl IdeApp {
                         }))
                         .into_any_element(),
                 );
-                items.push(
-                    item("topm-flash-read", "读回固件", false)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.top_menu_open = None;
-                            this.flash_action(FlashAction::Read, cx);
-                        }))
-                        .into_any_element(),
-                );
-                items.push(
-                    item("topm-flash-run", "烧写并运行", false)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.top_menu_open = None;
-                            this.flash_and_run(cx);
-                        }))
-                        .into_any_element(),
-                );
+                 items.push(
+                     item("topm-flash-read", "读回固件", false)
+                         .on_click(cx.listener(|this, _, _, cx| {
+                             this.top_menu_open = None;
+                             this.flash_action(FlashAction::Read, cx);
+                         }))
+                         .into_any_element(),
+                 );
+                 items.push(
+                     item("topm-flash-verify", "烧写并校验", false)
+                         .on_click(cx.listener(|this, _, _, cx| {
+                             this.top_menu_open = None;
+                             this.flash_and_verify(cx);
+                         }))
+                         .into_any_element(),
+                 );
+                 items.push(
+                     item("topm-flash-run", "烧写并运行", false)
+                         .on_click(cx.listener(|this, _, _, cx| {
+                             this.top_menu_open = None;
+                             this.flash_and_run(cx);
+                         }))
+                         .into_any_element(),
+                 );
                 items.push(
                     item("topm-flash-debug", "烧写并调试", false)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -10031,9 +10715,20 @@ impl IdeApp {
                     .text_size(px(10.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::color(theme::TEXT_FAINT))
-                    .child("大纲"),
-            )
+                     .child("大纲"),
+             )
             .child(
+                div()
+                    .px(px(8.))
+                    .pb(px(6.))
+                    .child(
+                        self.outline_filter_input
+                            .clone()
+                            .map(|field| div().child(field).into_any_element())
+                            .unwrap_or_else(|| div().into_any_element()),
+                    ),
+            )
+             .child(
                 div()
                     .id("outline-scroll")
                     .flex_1()
@@ -10042,33 +10737,40 @@ impl IdeApp {
                     .pb(px(8.))
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
-                    .children(outline.iter().map(|symbol| {
-                        let is_current = cursor_line >= symbol.line;
-                        let line = symbol.line;
-                        let name = symbol.name.clone();
-                        div()
-                            .id(("outline-item", line))
-                            .px(px(6.))
-                            .py(px(3.))
-                            .rounded(px(5.))
-                            .text_size(px(10.))
-                            .cursor_pointer()
-                            .text_color(theme::color(if is_current {
-                                theme::ACCENT
-                            } else {
-                                theme::TEXT_DIM
-                            }))
-                            .hover(|style| {
-                                style.bg(theme::alpha(theme::ACCENT, 0.08))
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.jump_to_line(line, cx);
-                            }))
-                            .child(name)
-                    })),
-            )
-    }
+                     .gap(px(1.))
+                    .children(
+                        outline
+                            .iter()
+                             .filter(|symbol| {
+                                symbol_matches_filter(symbol, &self.outline_filter)
+                             })
+                            .map(|symbol| {
+                                let is_current = cursor_line >= symbol.line;
+                                let line = symbol.line;
+                                let name = symbol.name.clone();
+                                div()
+                                    .id(("outline-item", line))
+                                    .px(px(6.))
+                                    .py(px(3.))
+                                    .rounded(px(5.))
+                                    .text_size(px(10.))
+                                    .cursor_pointer()
+                                    .text_color(theme::color(if is_current {
+                                        theme::ACCENT
+                                    } else {
+                                        theme::TEXT_DIM
+                                    }))
+                                    .hover(|style| {
+                                        style.bg(theme::alpha(theme::ACCENT, 0.08))
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.jump_to_line(line, cx);
+                                    }))
+                                    .child(name)
+                             }),
+                     ),
+             )
+     }
 
     /// The chain of enclosing symbols at `cursor_line`, outermost first, for
     /// the breadcrumb. Descends only through container kinds (namespace, class,
@@ -10962,8 +11664,11 @@ impl IdeApp {
                             } else {
                                 line
                             })
-                    }))
-                    .into_any_element(),
+                     }))
+                     .child(self.render_memory_layout_view())
+                     .child(self.render_include_graph_view(cx))
+                     .child(self.render_tasks_view(cx))
+                     .into_any_element(),
                 OutputTab::Problems => {
                 let mut lsp_rows: Vec<gpui::AnyElement> = Vec::new();
                 for (path, diagnostics) in &self.lsp_diagnostics {
@@ -11116,14 +11821,28 @@ impl IdeApp {
                                     .text_color(theme::color(theme::TEXT))
                                     .child(diagnostic.message.clone()),
                             )
-                            .child(
-                                div()
-                                    .text_size(px(9.5))
-                                    .text_color(tone)
-                                    .child(diagnostic.severity.label()),
-                            )
-                    }))
-                    .children(lsp_rows)
+                             .child(
+                                 div()
+                                     .text_size(px(9.5))
+                                     .text_color(tone)
+                                     .child(diagnostic.severity.label()),
+                             )
+                            .when(
+                                ns_build::suggest_quick_fix(diagnostic, None).is_some(),
+                                |row| {
+                                     row.child(
+                                         widgets::ghost_button(
+                                            gpui::SharedString::from(format!("quick-fix-{index}")),
+                                             "快速修复",
+                                         )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.apply_quick_fix(index, cx);
+                                        })),
+                                    )
+                                },
+                             )
+                     }))
+                     .children(lsp_rows)
                     .into_any_element()
                 }
                 OutputTab::Breakpoints => {
@@ -12507,17 +13226,32 @@ impl IdeApp {
             .flex_col()
             .border_r_1()
             .border_color(theme::alpha(theme::STROKE, 0.08))
-            .child(
-                div()
-                    .px(px(10.))
-                    .pt(px(7.))
-                    .pb(px(3.))
+             .child(
+                 div()
+                     .px(px(10.))
+                     .pt(px(7.))
+                     .pb(px(3.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
                     .child(widgets::section_label(if self.debug.registers_scope == 0 {
                         "CPU 寄存器".to_string()
                     } else {
                         format!("CPU 寄存器 · {group_count}")
-                    })),
-            )
+                    }))
+                     .when(group_count > 0, |style| {
+                         style.child(
+                            div().flex().gap(px(4.)).children([
+                                widgets::ghost_button("dbg-regs-export", "导出快照").on_click(
+                                    cx.listener(|this, _, _, cx| this.export_register_snapshot(cx)),
+                                ),
+                                widgets::ghost_button("dbg-regs-compare", "对比快照").on_click(
+                                    cx.listener(|this, _, _, cx| this.compare_register_snapshot(cx)),
+                                ),
+                            ]),
+                         )
+                     }),
+             )
             .child(
                 div()
                     .id("debug-registers-list")
@@ -12564,10 +13298,104 @@ impl IdeApp {
                             )
                     })),
             )
-            .into_any_element()
+             .into_any_element()
+     }
+
+    /// Export the current CPU register groups as a JSON snapshot in the
+    /// project's `.ns-ide` directory. Writes one JSON document with each
+    /// register group and its name/value pairs; the status bar reports the
+    /// path or the failure honestly.
+    fn export_register_snapshot(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.project.as_ref().map(|p| p.root.clone()) else {
+            self.status = "没有已加载的项目".to_string();
+            cx.notify();
+            return;
+        };
+        if self.debug.register_groups.is_empty() {
+            self.status = "没有寄存器可导出（目标未暴露寄存器作用域）".to_string();
+            cx.notify();
+            return;
+        }
+        let mut groups: Vec<(String, Vec<ns_debug::Variable>)> = self
+            .debug
+            .register_groups
+            .iter()
+            .map(|(name, variables)| (name.clone(), variables.clone()))
+            .collect();
+        groups.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut body = String::from("{\n");
+        for (i, (name, registers)) in groups.iter().enumerate() {
+            body.push_str(&format!("  {:?}: {{\n", name));
+            for (j, variable) in registers.iter().enumerate() {
+                let comma = if j + 1 < registers.len() { "," } else { "" };
+                body.push_str(&format!(
+                    "    {:?}: {:?}{}\n",
+                    variable.name, variable.value, comma
+                ));
+            }
+            let comma = if i + 1 < groups.len() { "," } else { "" };
+            body.push_str(&format!("  }}{comma}\n"));
+        }
+        body.push_str("}\n");
+        let dir = root.join(".ns-ide");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("register-snapshot.json");
+        match std::fs::write(&path, &body) {
+            Ok(()) => {
+                self.status = format!("寄存器快照已导出: {}", path.display());
+            }
+            Err(err) => {
+                self.status = format!("导出寄存器快照失败: {err}");
+            }
+         }
+         cx.notify();
+     }
+     /// Load the saved register snapshot and compare it against the current
+     /// register groups; changed registers are highlighted in the register tab.
+    fn compare_register_snapshot(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.project.as_ref().map(|p| p.root.clone()) else {
+            self.status = "没有已加载的项目".to_string();
+            cx.notify();
+            return;
+        };
+        let path = root.join(".ns-ide/register-snapshot.json");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(_) => {
+                self.status = format!("未找到寄存器快照: {}", path.display());
+                cx.notify();
+                return;
+            }
+        };
+        let snapshot: HashMap<String, HashMap<String, String>> = match serde_json::from_str(&text) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.status = format!("寄存器快照解析失败: {error}");
+                cx.notify();
+                return;
+            }
+        };
+        let mut changed = 0usize;
+        let mut total = 0usize;
+        for (group_name, registers) in &self.debug.register_groups {
+            let Some(saved_group) = snapshot.get(group_name) else {
+                continue;
+            };
+            for variable in registers {
+                total += 1;
+                if let Some(saved) = saved_group.get(&variable.name) {
+                    if saved != &variable.value {
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        self.debug.reg_snapshot = Some(snapshot);
+        self.status = format!("寄存器快照对比: {total} 个寄存器，{changed} 个已变更");
+        cx.notify();
     }
 
-    /// Render one CPU register row: name + value + edit affordance. The group
+      /// Render one CPU register row: name + value + edit affordance. The group
     /// name is used only for a stable element id (the DAP reference is what
     /// `setVariable` needs).
     fn render_register_row(
@@ -12577,10 +13405,17 @@ impl IdeApp {
         index: usize,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let _group = group;
-        let name = variable.name.clone();
-        let value = variable.value.clone();
-        let reference = variable.variables_reference;
+         let _group = group;
+         let name = variable.name.clone();
+         let value = variable.value.clone();
+         let reference = variable.variables_reference;
+        let changed = self
+            .debug
+            .reg_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.get(group))
+            .and_then(|saved| saved.get(&name))
+            .is_some_and(|saved| saved != &value);
         div()
             .id(("dbg-register", index))
             .px(px(6.))
@@ -12602,9 +13437,13 @@ impl IdeApp {
                 div()
                     .flex_1()
                     .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .text_color(theme::color(theme::TEXT_DIM))
+                     .text_ellipsis()
+                     .whitespace_nowrap()
+                    .text_color(theme::color(if changed {
+                        theme::CINNABAR
+                    } else {
+                        theme::TEXT_DIM
+                    }))
                     .child(variable.value.clone()),
             )
             .child(
@@ -12636,35 +13475,59 @@ impl IdeApp {
         let address_text = self.debug.memory.error.clone().unwrap_or_default();
         let has_error = !address_text.is_empty();
 
-        let mut hex_rows: Vec<gpui::AnyElement> = Vec::new();
-        for (row_index, chunk) in bytes.chunks(16).enumerate() {
-            let line_address = address + (row_index as u64) * 16;
-            let hex = chunk
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let ascii: String = chunk
-                .iter()
-                .map(|byte| {
-                    if (32..127).contains(byte) {
-                        char::from(*byte)
-                    } else {
-                        '.'
-                    }
-                })
-                .collect();
-            hex_rows.push(
-                div()
-                    .id(("dbg-mem-row", row_index))
-                    .whitespace_nowrap()
-                    .font_family(theme::MONO_FONT)
-                    .text_size(px(9.5))
-                    .text_color(theme::color(theme::TEXT_DIM))
-                    .child(format!("{line_address:#010x}  {hex:<47} │ {ascii}"))
-                    .into_any_element(),
-            );
-        }
+         let mut hex_rows: Vec<gpui::AnyElement> = Vec::new();
+         let search_hit = self.debug.memory.search_hit;
+         for (row_index, chunk) in bytes.chunks(16).enumerate() {
+             let line_address = address + (row_index as u64) * 16;
+             let mut hex_children: Vec<gpui::AnyElement> = Vec::new();
+             for (byte_index, byte) in chunk.iter().enumerate() {
+                 let global = row_index * 16 + byte_index;
+                 let is_hit = search_hit.is_some_and(|(hit, len)| {
+                     hit <= global && global < hit.saturating_add(len)
+                 });
+                 let text = format!("{byte:02x}");
+                 hex_children.push(
+                     div()
+                         .text_color(theme::color(if is_hit {
+                             theme::ACCENT_3
+                         } else {
+                             theme::TEXT_DIM
+                         }))
+                         .child(text)
+                         .into_any_element(),
+                 );
+                 if byte_index != chunk.len() - 1 {
+                     hex_children.push(
+                         div()
+                             .text_color(theme::color(theme::TEXT_DIM))
+                             .child(" ")
+                             .into_any_element(),
+                     );
+                 }
+             }
+             let ascii: String = chunk
+                 .iter()
+                 .map(|byte| {
+                     if (32..127).contains(byte) {
+                         char::from(*byte)
+                     } else {
+                         '.'
+                     }
+                 })
+                 .collect();
+             hex_rows.push(
+                 div()
+                     .id(("dbg-mem-row", row_index))
+                     .whitespace_nowrap()
+                     .font_family(theme::MONO_FONT)
+                     .text_size(px(9.5))
+                     .text_color(theme::color(theme::TEXT_DIM))
+                     .child(format!("{line_address:#010x}  "))
+                     .children(hex_children)
+                     .child(format!(" │ {ascii}"))
+                     .into_any_element(),
+             );
+         }
 
         div()
             .id("debug-memory")
@@ -12755,28 +13618,74 @@ impl IdeApp {
                                 ),
                             ),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
-                                self.debug
-                                    .memory
-                                    .address_input
-                                    .clone()
-                                    .map(|field| div().flex_1().child(field).into_any_element())
-                                    .unwrap_or_else(|| {
-                                        div().flex_1().into_any_element()
-                                    }),
-                            )
-                            .child(
-                                widgets::primary_button("dbg-mem-read", "读取").on_click(
-                                    cx.listener(|this, _, _, cx| this.read_memory(cx)),
-                                ),
-                            ),
-                    ),
-            )
+                     .child(
+                         div()
+                             .flex()
+                             .items_center()
+                             .gap(px(6.))
+                             .child(
+                                 self.debug
+                                     .memory
+                                     .address_input
+                                     .clone()
+                                     .map(|field| div().flex_1().child(field).into_any_element())
+                                     .unwrap_or_else(|| {
+                                         div().flex_1().into_any_element()
+                                     }),
+                             )
+                             .child(
+                                 widgets::primary_button("dbg-mem-read", "读取").on_click(
+                                     cx.listener(|this, _, _, cx| this.read_memory(cx)),
+                                 ),
+                             ),
+                     )
+                     .child(
+                         div()
+                             .flex()
+                             .items_center()
+                             .gap(px(6.))
+                             .child(
+                                 div()
+                                     .flex_1()
+                                     .child(
+                                         self.debug
+                                             .memory
+                                             .search_input
+                                             .clone()
+                                             .map(|field| div().child(field).into_any_element())
+                                             .unwrap_or_else(|| div().into_any_element()),
+                                     ),
+                             )
+                             .child(
+                                 widgets::ghost_button("dbg-mem-search", "搜索").on_click(
+                                     cx.listener(|this, _, _, cx| this.search_memory(cx)),
+                                 ),
+                             ),
+                     )
+                     .child(
+                         div()
+                             .flex()
+                             .items_center()
+                             .gap(px(6.))
+                             .child(
+                                 div()
+                                     .flex_1()
+                                     .child(
+                                         self.debug
+                                             .memory
+                                             .fill_input
+                                             .clone()
+                                             .map(|field| div().child(field).into_any_element())
+                                             .unwrap_or_else(|| div().into_any_element()),
+                                     ),
+                             )
+                             .child(
+                                 widgets::ghost_button("dbg-mem-fill", "填充").on_click(
+                                     cx.listener(|this, _, _, cx| this.fill_memory(cx)),
+                                 ),
+                             ),
+                     ),
+             )
             .child(
                 div()
                     .px(px(10.))
@@ -12857,14 +13766,49 @@ impl IdeApp {
                     .items_center()
                     .justify_between()
                     .child(widgets::section_label("反汇编"))
+                     .child(
+                        div()
+                            .flex()
+                            .gap(px(6.))
+                            .children([
+                                widgets::ghost_button("dbg-disasm-step", "单指令步进").on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.debug_step(DebugStep::Instruction, cx)
+                                    }),
+                                ),
+                                widgets::ghost_button("dbg-disasm-btn", "从 PC 反汇编").on_click(
+                                    cx.listener(|this, _, _, cx| this.disassemble_at_pc(cx)),
+                                ),
+                            ]),
+                     ),
+             )
+            .child(
+                div()
+                    .px(px(10.))
+                    .pb(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
                     .child(
-                        widgets::ghost_button("dbg-disasm-btn", "从 PC 反汇编").on_click(
-                            cx.listener(|this, _, _, cx| this.disassemble_at_pc(cx)),
+                        div()
+                            .flex_1()
+                            .child(
+                                self.debug
+                                    .disasm_input
+                                    .clone()
+                                    .map(|field| div().child(field).into_any_element())
+                                    .unwrap_or_else(|| div().into_any_element()),
+                            ),
+                    )
+                    .child(
+                        widgets::ghost_button("dbg-disasm-go", "跳转").on_click(
+                            cx.listener(|this, _, _, cx| this.disassemble_at(cx)),
                         ),
                     ),
             )
-            .child(
-                div()
+             .child(
+                 div()
+                     .px(px(10.))
                     .px(px(10.))
                     .pb(px(6.))
                     .text_size(px(9.5))
@@ -13264,14 +14208,93 @@ impl IdeApp {
                                     }),
                             ),
                     )
-                    .when(config.data_trace, |style| {
-                        style.child(row_field("dbg-trace-address", "监视地址", &trace.address_input))
-                    })
+                     .when(config.data_trace, |style| {
+                         style.child(row_field("dbg-trace-address", "监视地址", &trace.address_input))
+                     })
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(8.))
+                            .child(
+                                div()
+                                    .w(px(110.))
+                                    .flex_none()
+                                    .text_size(px(10.))
+                                    .text_color(theme::color(theme::TEXT_DIM))
+                                    .child("PC 采样"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        widgets::pill(
+                                            if config.pc_sample { "开" } else { "关" },
+                                            if config.pc_sample {
+                                                theme::color(theme::JADE)
+                                            } else {
+                                                theme::color(theme::TEXT_FAINT)
+                                            },
+                                        )
+                                        .id("dbg-trace-pc-sample-pill")
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.trace_toggle_pc_sample(cx);
+                                        })),
+                                    )
+                                    .when(config.pc_sample, |style| {
+                                        style.child(
+                                            div()
+                                                .text_size(px(9.5))
+                                                .text_color(theme::color(theme::TEXT_FAINT))
+                                                .child("DWT 周期计数器"),
+                                        )
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .w(px(110.))
+                                    .flex_none()
+                                    .text_size(px(10.))
+                                    .text_color(theme::color(theme::TEXT_DIM))
+                                    .child("热点"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        widgets::pill(
+                                            if trace.show_profile { "开" } else { "关" },
+                                            if trace.show_profile {
+                                                theme::color(theme::ACCENT)
+                                            } else {
+                                                theme::color(theme::TEXT_FAINT)
+                                            },
+                                        )
+                                        .id("dbg-trace-profile-pill")
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.trace_toggle_profile(cx);
+                                        })),
+                                    ),
+                            ),
+                    )
+                     .child(
+                         div()
+                             .flex()
+                             .items_center()
                             .child(
                                 div()
                                     .w(px(110.))
@@ -13302,11 +14325,23 @@ impl IdeApp {
                             .flex()
                             .flex_col()
                             .gap(px(4.))
-                            .child(widgets::section_label(format!(
-                                "实时包 ({} 条)",
-                                trace.packets.len()
-                            )))
+                             .child(widgets::section_label(format!(
+                                 "实时包 ({} 条)",
+                                 trace.packets.len()
+                             )))
                             .when(!trace.packets.is_empty(), |style| {
+                                let stats = swvd::trace_stats(&trace.packets);
+                                style.child(
+                                    div()
+                                        .text_size(px(9.5))
+                                        .text_color(theme::color(theme::TEXT_FAINT))
+                                        .child(format!(
+                                            "ITM {} · DWT {} · 异常 {} · PC 采样 {}",
+                                            stats.stimulus, stats.dwt, stats.exceptions, stats.pc_samples
+                                        )),
+                                )
+                            })
+                             .when(!trace.packets.is_empty(), |style| {
                                 style.child(
                                     div()
                                         .id("dbg-trace-packets")
@@ -13367,19 +14402,112 @@ impl IdeApp {
                                         )),
                                 )
                             }),
-                    ),
-            )
-            .into_any_element()
-    }
+                     )
+                     .child(div().when(trace.show_profile, |style| {
+                         let hotspots = trace.profile.hotspots();
+                         let total = trace.profile.total();
+                         let mut col = div()
+                             .pt(px(6.))
+                             .border_t_1()
+                             .border_color(theme::alpha(theme::STROKE, 0.08))
+                             .flex()
+                             .flex_col()
+                             .gap(px(4.))
+                             .child(widgets::section_label(format!(
+                                 "热点 (PC 采样 · {} 条)",
+                                 total
+                             )));
+                         if total == 0 {
+                             col = col.child(
+                                 div()
+                                     .text_size(px(9.5))
+                                     .text_color(theme::color(theme::TEXT_FAINT))
+                                     .child("启用「PC 采样」并运行目标以收集样本。"),
+                             );
+                         } else {
+                             let max_hits = hotspots.first().map(|h| h.hits).unwrap_or(1).max(1);
+                             for hotspot in hotspots.iter().take(20) {
+                                 let pct = hotspot.hits * 100 / total.max(1);
+                                 let bar_w = (hotspot.hits * 100) / max_hits;
+                                 col = col.child(
+                                     div()
+                                         .flex()
+                                         .items_center()
+                                         .gap(px(6.))
+                                         .child(
+                                             div()
+                                                 .w(px(160.))
+                                                 .flex_none()
+                                                 .overflow_hidden()
+                                                 .text_size(px(9.5))
+                                                 .text_color(theme::color(theme::TEXT))
+                                                 .child(hotspot.name.clone()),
+                                         )
+                                         .child(
+                                             div()
+                                                 .h(px(8.))
+                                                 .flex_1()
+                                                 .rounded(px(4.))
+                                                 .bg(theme::alpha(theme::STROKE, 0.08))
+                                                 .child(
+                                                     div()
+                                                         .h_full()
+                                                         .w(px((bar_w as f32) * 1.2))
+                                                         .rounded(px(4.))
+                                                         .bg(theme::color(theme::ACCENT)),
+                                                 ),
+                                         )
+                                         .child(
+                                             div()
+                                                 .w(px(52.))
+                                                 .flex_none()
+                                                 .text_size(px(9.))
+                                                 .text_color(theme::color(theme::TEXT_DIM))
+                                                 .child(format!("{}% · {}", pct, hotspot.hits)),
+                                         ),
+                                 );
+                             }
+                         }
+                         style.child(col)
+                     }))
+             )
+             .into_any_element()
+     }
+
+    /// Filter a device peripheral and its registers by a case-insensitive
+    /// substring. Returns `(peripheral_matches, matching_registers)`: the
+    /// peripheral header is shown when its own name matches OR any of its
+    /// registers match (so a register-only hit keeps its group context).
+     fn filter_device_peripheral<'a>(
+         peripheral: &'a ns_device::Peripheral,
+         filter: &str,
+    ) -> (bool, Vec<&'a ns_device::Register>) {
+         if filter.is_empty() {
+             return (true, peripheral.registers.iter().collect());
+         }
+         let needle = filter.to_lowercase();
+        // A peripheral-name match shows the whole group; a register-only match
+        // keeps the header as context and lists just the matching registers.
+        if peripheral.name.to_lowercase().contains(&needle) {
+            return (true, peripheral.registers.iter().collect());
+        }
+        let regs: Vec<&'a ns_device::Register> = peripheral
+            .registers
+            .iter()
+            .filter(|register| register.name.to_lowercase().contains(&needle))
+            .collect();
+        let periph_match = !regs.is_empty();
+        (periph_match, regs)
+     }
 
     /// Device register view: peripheral registers from the target's SVD.
-    fn render_debug_device_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let device = self.device_for_project();
-        let current_target = self
-            .project
-            .as_ref()
-            .map(|p| p.config.project.target.clone())
-            .unwrap_or_default();
+     fn render_debug_device_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+         let device = self.device_for_project();
+         let current_target = self
+             .project
+             .as_ref()
+             .map(|p| p.config.project.target.clone())
+             .unwrap_or_default();
 
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         // Device picker: list the built-in catalog so the target can be
@@ -13501,11 +14629,40 @@ impl IdeApp {
                 } else {
                     "○ 实时监视：关（仅暂停时刷新）"
                 })
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_live_watch(cx)))
-                .into_any_element(),
-        );
-
-        match device {
+                 .on_click(cx.listener(|this, _, _, cx| this.toggle_live_watch(cx)))
+                 .into_any_element(),
+         );
+         // Peripheral/register name filter (case-insensitive substring match).
+         let filter_text = self.device_filter.read(cx).text().to_string();
+         let filter_field = self.device_filter.clone();
+         rows.push(
+             div()
+                 .px(px(4.))
+                 .pb(px(4.))
+                 .child(
+                     div()
+                         .flex()
+                         .items_center()
+                         .gap(px(4.))
+                         .child(filter_field)
+                         .child(
+                             div()
+                                 .id("device-filter-clear")
+                                 .cursor_pointer()
+                                 .text_size(px(10.))
+                                 .text_color(theme::color(theme::TEXT_FAINT))
+                                 .child("✕")
+                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                     this.device_filter
+                                         .update(cx, |f, fcx| f.set_text("", fcx));
+                                     cx.notify();
+                                 })),
+                         ),
+                 )
+                 .into_any_element(),
+         );
+ 
+         match device {
             Some(device) => {
                 let peripherals = device.sorted_peripherals();
                 if peripherals.is_empty() {
@@ -13518,27 +14675,31 @@ impl IdeApp {
                             .into_any_element(),
                     );
                 }
-                for peripheral in peripherals {
-                    rows.push(
-                        div()
-                            .id(gpui::SharedString::from(format!(
-                                "dev-periph-{}",
-                                peripheral.name
-                            )))
-                            .pt(px(8.))
-                            .pb(px(3.))
-                            .px(px(4.))
-                            .text_size(px(9.5))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme::color(theme::ACCENT))
-                            .child(format!(
-                                "{}  @ 0x{:08X}",
-                                peripheral.name,
-                                peripheral.base_address
-                            ))
-                            .into_any_element(),
-                    );
-                    for register in &peripheral.registers {
+                  for peripheral in peripherals {
+                     let (periph_match, regs) = Self::filter_device_peripheral(peripheral, &filter_text);
+                    if !periph_match && regs.is_empty() {
+                        continue;
+                    }
+                     rows.push(
+                         div()
+                             .id(gpui::SharedString::from(format!(
+                                 "dev-periph-{}",
+                                 peripheral.name
+                             )))
+                             .pt(px(8.))
+                             .pb(px(3.))
+                             .px(px(4.))
+                             .text_size(px(9.5))
+                             .font_weight(FontWeight::BOLD)
+                             .text_color(theme::color(theme::ACCENT))
+                             .child(format!(
+                                 "{}  @ 0x{:08X}",
+                                 peripheral.name,
+                                 peripheral.base_address
+                             ))
+                             .into_any_element(),
+                     );
+                    for register in regs {
                         let reg_address = register.address;
                         let field_summary: String = register
                             .fields
@@ -13751,30 +14912,558 @@ impl IdeApp {
             .iter()
             .find(|region| !region.access.contains('x'))
             .map(|region| region.size);
-        let mut line = format!(
-            "固件大小: Flash {}{} · RAM {}{} · 共 {} 字节",
-            size.flash,
-            flash_cap.map_or(String::new(), |cap| {
-                let pct = if cap > 0 { size.flash as f64 / cap as f64 * 100.0 } else { 0.0 };
-                format!(" / {} ({pct:.1}%)", cap)
-            }),
-            size.ram,
-            ram_cap.map_or(String::new(), |cap| {
-                let pct = if cap > 0 { size.ram as f64 / cap as f64 * 100.0 } else { 0.0 };
-                format!(" / {} ({pct:.1}%)", cap)
-            }),
-            size.total,
-        );
+         let mut line = format!(
+             "固件大小: Flash {}{} · RAM {}{} · 共 {} 字节",
+             size.flash,
+             flash_cap.map_or(String::new(), |cap| {
+                 let pct = if cap > 0 { size.flash as f64 / cap as f64 * 100.0 } else { 0.0 };
+                 format!(" / {} ({pct:.1}%)", cap)
+             }),
+             size.ram,
+             ram_cap.map_or(String::new(), |cap| {
+                 let pct = if cap > 0 { size.ram as f64 / cap as f64 * 100.0 } else { 0.0 };
+                 format!(" / {} ({pct:.1}%)", cap)
+             }),
+             size.total,
+         );
+        if size.text > 0 || size.data > 0 || size.bss > 0 {
+            line.push_str(&format!(
+                "\n分区: text {} B · data {} B · bss {} B",
+                size.text, size.data, size.bss
+            ));
+        }
         if size.flash > 0 {
             if let Some(cap) = flash_cap {
                 if cap > 0 && size.flash > cap {
                     line.push_str("  ⚠ Flash 超出");
                 }
             }
+         }
+        if !size.symbols.is_empty() {
+            let top: Vec<String> = size
+                .symbols
+                .iter()
+                .take(6)
+                .map(|symbol| format!("{} {}", symbol.name, symbol.size))
+                .collect();
+            line.push_str(&format!("\n最大符号: {}", top.join(" · ")));
         }
-        line
+          line
+      }
+
+    /// Build the memory-layout model: parse `link.ld`'s `MEMORY` regions and
+    /// attribute the firmware's sections (from `nm`) to those regions. Sets
+    /// `self.memory_layout` and reports the outcome in the status line.
+    fn show_memory_layout(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let linker = project.root.join("link.ld");
+        if !linker.is_file() {
+            self.status = "项目没有 link.ld（内存布局视图需要链接脚本的 MEMORY 区域）。".to_string();
+            cx.notify();
+            return;
+        }
+        let text = match std::fs::read_to_string(&linker) {
+            Ok(text) => text,
+            Err(error) => {
+                self.status = format!("读取 link.ld 失败: {error}");
+                cx.notify();
+                return;
+            }
+        };
+        let mut regions = ns_build::layout::parse_linker_memory(&text);
+        if regions.is_empty() {
+            self.status = "link.ld 中没有可解析的 MEMORY 区域。".to_string();
+            cx.notify();
+            return;
+        }
+        // Attribute the firmware's sections to the regions.
+        let artifact = project.artifact_path();
+        let mut sections = Vec::new();
+        if artifact.is_file() {
+            let symbols = ns_flash::firmware::analyze_symbols(&artifact);
+            sections = symbols
+                .into_iter()
+                .map(|symbol| ns_build::layout::SectionUsage {
+                    name: symbol.name,
+                    address: symbol.address,
+                    size: symbol.size,
+                })
+                .collect();
+        }
+        ns_build::layout::assign_sections(&mut regions, &sections);
+        let layout = ns_build::layout::MemoryLayout { regions, sections };
+        let used_total: u64 = layout.regions.iter().map(|region| region.used).sum();
+        self.memory_layout = Some(layout);
+        self.show_output = true;
+        self.output_tab = OutputTab::Output;
+        self.output.push_str(&format!(
+            "内存布局: {} 个区域，已用 {} 字节\n",
+            self.memory_layout.as_ref().map(|l| l.regions.len()).unwrap_or(0),
+            used_total
+        ));
+        self.status = format!(
+            "内存布局已刷新（{} 个区域，已用 {} 字节）",
+            self.memory_layout.as_ref().map(|l| l.regions.len()).unwrap_or(0),
+            used_total
+        );
+         cx.notify();
+     }
+ 
+    /// Build the project include dependency graph and report the outcome.
+    fn show_include_graph(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let sources = match project.source_files() {
+            Ok(sources) if !sources.is_empty() => sources,
+            Ok(_) => {
+                self.status = "项目没有可扫描的源文件。".to_string();
+                cx.notify();
+                return;
+            }
+            Err(error) => {
+                self.status = format!("扫描源文件失败: {error}");
+                cx.notify();
+                return;
+            }
+        };
+        let include_dirs = project.config.compiler.includes.clone();
+        let graph = ns_project::depgraph::build_include_graph(&project.root, &sources, &include_dirs);
+        let edges: usize = graph.nodes.values().map(|node| node.deps.len()).sum();
+        self.include_graph = Some(graph);
+        self.show_output = true;
+        self.output_tab = OutputTab::Output;
+        self.output.push_str(&format!(
+            "include 依赖图: {} 个文件，{} 条边\n",
+            self.include_graph.as_ref().map(|g| g.nodes.len()).unwrap_or(0),
+            edges
+        ));
+        self.status = format!(
+            "include 依赖图已生成（{} 个文件，{} 条边）",
+            self.include_graph.as_ref().map(|g| g.nodes.len()).unwrap_or(0),
+            edges
+        );
+         cx.notify();
+     }
+ 
+    /// Scan the project for TODO/FIXME/XXX markers and show them in the
+    /// output panel; clicking a marker opens the file at its line.
+    fn show_tasks(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let files = ns_project::tasks::collect_source_files(&project.root);
+        let markers = ns_project::tasks::scan_tasks(&files);
+        let by_keyword = |kw: &str| markers.iter().filter(|m| m.keyword == kw).count();
+        self.task_markers = markers.clone();
+        self.show_output = true;
+        self.output_tab = OutputTab::Output;
+        self.output.push_str(&format!(
+            "任务面板: 共 {} 个标记（TODO {}, FIXME {}, XXX {}, 其他 {}）\n",
+            markers.len(),
+            by_keyword("TODO"),
+            by_keyword("FIXME"),
+            by_keyword("XXX"),
+            markers.len() - by_keyword("TODO") - by_keyword("FIXME") - by_keyword("XXX"),
+        ));
+        self.status = format!("任务面板: {} 个 TODO/FIXME 标记", markers.len());
+        cx.notify();
     }
-    /// Resolve the target device for the loaded project.
+
+      /// Render the memory-layout region map (used in the build output panel).
+     /// Each region is a bar whose filled width is the used fraction; sections
+    /// within a region are listed with their sizes.
+    fn render_memory_layout_view(&self) -> gpui::AnyElement {
+        let Some(layout) = &self.memory_layout else {
+            return div().into_any_element();
+        };
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        rows.push(
+            div()
+                .pt(px(8.))
+                .pb(px(2.))
+                .child(widgets::section_label("内存布局".to_string()))
+                .into_any_element(),
+        );
+        for region in &layout.regions {
+            let used_pct = if region.length > 0 {
+                region.used.saturating_mul(100) / region.length
+            } else {
+                0
+            };
+            let bar_w = used_pct.min(100) as f32;
+            rows.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .w(px(80.))
+                            .flex_none()
+                            .text_size(px(10.))
+                            .text_color(theme::color(theme::TEXT_DIM))
+                            .child(region.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(10.))
+                            .rounded(px(4.))
+                            .bg(theme::alpha(theme::STROKE, 0.08))
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(px((bar_w * 4.0).max(1.0)))
+                                    .rounded(px(4.))
+                                    .bg(theme::color(theme::ACCENT)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(170.))
+                            .flex_none()
+                            .text_size(px(9.5))
+                            .text_color(theme::color(theme::TEXT_FAINT))
+                            .child(format!(
+                                "{} / {} ({}%)",
+                                region.used, region.length, used_pct
+                            )),
+                    )
+                    .into_any_element(),
+            );
+        }
+        // List the largest sections attributed to regions.
+        let mut sections: Vec<&ns_build::layout::SectionUsage> = layout.sections.iter().collect();
+        sections.sort_by(|a, b| b.size.cmp(&a.size));
+        if !sections.is_empty() {
+            rows.push(
+                div()
+                    .pt(px(4.))
+                    .pb(px(2.))
+                    .text_size(px(9.))
+                    .text_color(theme::color(theme::TEXT_FAINT))
+                    .child(format!(
+                        "段/符号（前 8）: {}",
+                        sections
+                            .iter()
+                            .take(8)
+                            .map(|s| format!("{} {}B", s.name, s.size))
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    ))
+                    .into_any_element(),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+             .gap(px(4.))
+             .children(rows)
+             .into_any_element()
+     }
+ 
+    /// Render the include dependency graph: each source lists its direct
+    /// includes, and headers show how many files include them (transitively).
+     fn render_include_graph_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let Some(graph) = &self.include_graph else {
+            return div().into_any_element();
+        };
+         let mut rows: Vec<gpui::AnyElement> = Vec::new();
+         rows.push(
+             div()
+                 .pt(px(8.))
+                 .pb(px(2.))
+                .flex()
+                .items_center()
+                .justify_between()
+                 .child(widgets::section_label(format!(
+                     "include 依赖图（{} 个文件）",
+                     graph.nodes.len()
+                 )))
+                .child(
+                    widgets::ghost_button(
+                        "include-graph-mode",
+                        if self.include_graph_dag {
+                            "列表视图"
+                        } else {
+                            "图形视图"
+                        },
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.include_graph_dag = !this.include_graph_dag;
+                        cx.notify();
+                    })),
+                )
+                 .into_any_element(),
+         );
+        if self.include_graph_dag {
+            rows.push(
+                div()
+                    .pt(px(4.))
+                    .child(self.render_include_graph_dag())
+                    .into_any_element(),
+            );
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .children(rows)
+                .into_any_element();
+        }
+        // Sort nodes: sources with the most dependents first, then by path.
+        let mut nodes: Vec<&ns_project::depgraph::DepNode> = graph.nodes.values().collect();
+        nodes.sort_by(|a, b| {
+            b.dependents
+                .len()
+                .cmp(&a.dependents.len())
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        for node in nodes.iter().take(60) {
+            let is_header = node.path.ends_with(".h") || node.path.ends_with(".hpp");
+            let tone = if is_header {
+                theme::color(theme::ACCENT)
+            } else {
+                theme::color(theme::TEXT)
+            };
+            rows.push(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .w(px(230.))
+                            .flex_none()
+                            .overflow_hidden()
+                            .text_size(px(9.5))
+                            .text_color(tone)
+                            .child(node.path.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(9.))
+                            .text_color(theme::color(theme::TEXT_FAINT))
+                            .child(if node.deps.is_empty() {
+                                "（无直接依赖）".to_string()
+                            } else {
+                                format!("→ {}", node.deps.join(", "))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(9.))
+                            .text_color(theme::color(theme::JADE))
+                            .child(format!("×{}", node.dependents.len())),
+                    )
+                    .into_any_element(),
+            );
+        }
+        div()
+            .flex()
+             .gap(px(2.))
+             .children(rows)
+             .into_any_element()
+     }
+    /// Render the include graph as a layered DAG: files grouped into columns
+    /// by dependency depth, connected by horizontal edges. Uses absolutely
+    /// positioned boxes so the layout is stable and scrollable.
+    fn render_include_graph_dag(&self) -> gpui::AnyElement {
+        let Some(graph) = &self.include_graph else {
+            return div().into_any_element();
+        };
+        let (nodes, edges, _columns) = ns_project::depgraph::dag_layout(graph);
+        if nodes.is_empty() {
+            return div().into_any_element();
+        }
+        // Geometry: column width, row height, node box size.
+        let column_width = 190.0f32;
+        let row_height = 30.0f32;
+        let node_width = 170.0f32;
+        let node_height = 22.0f32;
+        let padding = 8.0f32;
+
+        let max_column = nodes.iter().map(|node| node.column).max().unwrap_or(0);
+        let max_row = nodes.iter().map(|node| node.row).max().unwrap_or(0);
+        let canvas_width = padding * 2.0 + (max_column as f32 + 1.0) * column_width;
+        let canvas_height = padding * 2.0 + (max_row as f32 + 1.0) * row_height;
+
+        let mut elements: Vec<gpui::AnyElement> = Vec::new();
+        // Edges first (under the boxes): horizontal line + arrow head.
+        for edge in &edges {
+            let from = nodes.iter().find(|node| node.path == edge.from);
+            let to = nodes.iter().find(|node| node.path == edge.to);
+            let (Some(from), Some(to)) = (from, to) else {
+                continue;
+            };
+            let x1 = padding + from.column as f32 * column_width + node_width;
+            let y1 = padding + from.row as f32 * row_height + node_height / 2.0;
+            let x2 = padding + to.column as f32 * column_width;
+            let y2 = padding + to.row as f32 * row_height + node_height / 2.0;
+            let mid_x = (x1 + x2) / 2.0;
+            elements.push(
+                div()
+                    .absolute()
+                    .left(px(x1))
+                    .top(px(y1))
+                    .w(px(mid_x - x1))
+                     .h(px(1.))
+                    .bg(theme::alpha(theme::STROKE, 0.5))
+                     .into_any_element(),
+             );
+             elements.push(
+                 div()
+                     .absolute()
+                     .left(px(mid_x))
+                     .top(px(y2))
+                     .w(px(x2 - mid_x))
+                     .h(px(1.))
+                     .bg(theme::alpha(theme::STROKE, 0.5))
+                     .into_any_element(),
+             );
+         }
+        // Node boxes.
+        for node in &nodes {
+            let x = padding + node.column as f32 * column_width;
+            let y = padding + node.row as f32 * row_height;
+            let is_header = node.path.ends_with(".h") || node.path.ends_with(".hpp");
+            let tone = if is_header {
+                theme::color(theme::ACCENT)
+            } else {
+                theme::color(theme::TEXT)
+            };
+            elements.push(
+                 div()
+                    .id(("dag-node", node.column * 1000 + node.row))
+                    .absolute()
+                    .left(px(x))
+                    .top(px(y))
+                    .w(px(node_width))
+                    .h(px(node_height))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(theme::alpha(theme::ACCENT, 0.3))
+                    .bg(theme::color(theme::BG_2).opacity(0.8))
+                    .px(px(6.))
+                    .py(px(3.))
+                    .overflow_hidden()
+                    .text_size(px(9.))
+                     .text_color(tone)
+                     .child(node.path.clone())
+                     .into_any_element(),
+             );
+         }
+        div()
+            .relative()
+            .w(px(canvas_width))
+            .h(px(canvas_height))
+            .overflow_hidden()
+            .children(elements)
+            .into_any_element()
+    }
+
+ 
+    /// Render the TODO/FIXME task markers as clickable rows; clicking a row
+    /// opens the file at the marker's line.
+     fn render_tasks_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.task_markers.is_empty() {
+            return div().into_any_element();
+        }
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        rows.push(
+            div()
+                .pt(px(8.))
+                .pb(px(2.))
+                .child(widgets::section_label(format!(
+                    "任务标记（{}）",
+                    self.task_markers.len()
+                )))
+                .into_any_element(),
+        );
+         let markers = self.task_markers.clone();
+        for (row_index, marker) in markers.iter().take(80).enumerate() {
+             let path = marker.path.clone();
+            let path_label = self
+                .project
+                .as_ref()
+                .and_then(|project| marker.path.strip_prefix(&project.root).ok())
+                .unwrap_or(&marker.path)
+                .display()
+                .to_string();
+             let line = marker.line;
+             let keyword = marker.keyword.clone();
+             let text = marker.text.clone();
+             let color = match keyword.as_str() {
+                 "FIXME" | "BUG" => theme::color(theme::DANGER),
+                 "HACK" => theme::color(theme::ACCENT_3),
+                 _ => theme::color(theme::ACCENT),
+             };
+             rows.push(
+                 div()
+                    .id(("task-row", row_index))
+                    .flex()
+                    .items_start()
+                    .gap(px(8.))
+                    .rounded(px(4.))
+                    .px(px(6.))
+                    .py(px(2.))
+                    .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.06)))
+                    .cursor_pointer()
+                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_file(path.clone(), cx);
+                        if let Some(editor) = this.active_editor() {
+                            editor.update(cx, |editor, cx| editor.set_cursor_line(line, cx));
+                        }
+                     }))
+                    .child(
+                        div()
+                            .w(px(34.))
+                            .flex_none()
+                            .text_size(px(9.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(color)
+                            .child(keyword),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(9.5))
+                            .text_color(theme::color(theme::TEXT_DIM))
+                            .child(text),
+                    )
+                     .child(
+                         div()
+                             .flex_none()
+                             .text_size(px(8.5))
+                             .text_color(theme::color(theme::TEXT_FAINT))
+                             .child(format!(
+                                 "{}:{}",
+                                path_label,
+                                 line
+                             )),
+                     )
+                    .into_any_element()
+             );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(rows)
+            .into_any_element()
+    }
+
+      /// Resolve the target device for the loaded project.
     ///
     /// Prefers an explicit `svd` source (built-in catalog key or external file
     /// path); otherwise falls back to deriving the built-in device from the
@@ -13911,8 +15600,9 @@ impl IdeApp {
                             .text_color(theme::color(theme::TEXT_FAINT))
                             .child(core.arch.label()),
                     )
-                    .child(format!("周期: {}", core.cycle_count))
-                    .child(if core.halted { "状态: 已停止" } else { "状态: 运行中" })
+                     .child(format!("周期: {}", core.cycle_count))
+                    .child(sim_time_readout(core.cycle_count, self.sim_clock_hz()))
+                     .child(if core.halted { "状态: 已停止" } else { "状态: 运行中" })
                     .into_any_element(),
             );
             // Current instruction at PC, disassembled per architecture.
@@ -14815,6 +16505,29 @@ impl IdeApp {
                 },
             ))
     }
+}
+ /// Insert an `#include <...>` line at `insert_at` (a line index into
+ /// `source`). Returns the new file text with the include line inserted.
+ fn insert_include_line(source: &str, include: &str, insert_at: usize) -> String {
+     let mut lines: Vec<String> = source.lines().map(|line| line.to_string()).collect();
+     lines.insert(insert_at, include.to_string());
+     let mut text = lines.join("\n");
+     if !text.ends_with('\n') {
+         text.push('\n');
+     }
+     text
+ }
+
+/// Compute the line index at which to insert an `#include`: after the last
+/// existing `#include` line, or `0` when there are none.
+fn include_insert_at(source: &str) -> usize {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.trim_start().starts_with("#include"))
+        .map(|(i, _)| i + 1)
+        .last()
+        .unwrap_or(0)
 }
 
 
@@ -15832,9 +17545,10 @@ impl Render for IdeApp {
             let flasher_kind = dialog.flasher_kind.clone();
             let flasher_interface = dialog.flasher_interface.clone();
             let sim_cpu = dialog.sim_cpu.clone();
-            let sim_period = dialog.sim_period.clone();
+             let sim_period = dialog.sim_period.clone();
+             let sim_clock = dialog.sim_clock.clone();
             let launch_args = dialog.launch_args.clone();
-            let launch_env = dialog.launch_env.clone();
+             let launch_env = dialog.launch_env.clone();
             let launch_cwd = dialog.launch_cwd.clone();
             let terminal_shell = dialog.terminal_shell.clone();
             let config_keys = dialog.config_keys.clone();
@@ -15943,9 +17657,10 @@ impl Render for IdeApp {
                                     .child(row("接口", flasher_interface))
                                     .child(section("仿真 [sim]"))
                                     .child(row("CPU", sim_cpu))
-                                    .child(row("周期", sim_period))
+                                     .child(row("周期", sim_period))
+                                     .child(row("时钟频率(Hz)", sim_clock))
                                     .child(section("调试启动 [launch]"))
-                                    .child(row("参数", launch_args))
+                                     .child(row("参数", launch_args))
                                     .child(row("环境变量", launch_env))
                                     .child(row("工作目录", launch_cwd))
                                     .child(
@@ -16730,23 +18445,96 @@ fn parse_hex_address(text: &str) -> Option<u64> {
     u64::from_str_radix(hex, 16).ok()
 }
 
-/// Parse whitespace-separated hex bytes like `de ad be ef` into a byte vector.
-/// An empty string or any non-hex token is an error (the caller shows it).
-fn parse_hex_bytes(text: &str) -> Result<Vec<u8>, String> {
-    let tokens: Vec<&str> = text.split_whitespace().collect();
-    if tokens.is_empty() {
-        return Err("请输入要写入的十六进制字节".to_string());
+/// Format a simulator time readout from a cycle count and a nominal clock.
+/// With a configured clock (`clock_hz > 0`) the elapsed wall-clock time is
+/// shown alongside the cycle count; without one only cycles are shown.
+fn sim_time_readout(cycles: u64, clock_hz: u64) -> String {
+    if clock_hz == 0 {
+        return String::new();
     }
-    tokens
-        .into_iter()
-        .map(|part| {
-            u8::from_str_radix(part, 16)
-                .map_err(|_| format!("无效十六进制字节: {part}"))
-        })
-        .collect()
+    let seconds = cycles as f64 / clock_hz as f64;
+    let time = if seconds < 1e-3 {
+        format!("{:.1} µs", seconds * 1e6)
+    } else if seconds < 1.0 {
+        format!("{:.2} ms", seconds * 1e3)
+    } else {
+        format!("{:.2} s", seconds)
+    };
+    let freq = if clock_hz >= 1_000_000 {
+        format!("{:.1} MHz", clock_hz as f64 / 1e6)
+    } else if clock_hz >= 1_000 {
+        format!("{:.0} kHz", clock_hz as f64 / 1e3)
+    } else {
+        format!("{clock_hz} Hz")
+    };
+    format!("时间: {time} @ {freq}")
 }
 
-/// Heuristic: a file is binary when it contains a NUL byte in its first 8 KiB.
+/// Parse whitespace-separated hex bytes like `de ad be ef` into a byte vector.
+/// An empty string or any non-hex token is an error (the caller shows it).
+ fn parse_hex_bytes(text: &str) -> Result<Vec<u8>, String> {
+     let tokens: Vec<&str> = text.split_whitespace().collect();
+     if tokens.is_empty() {
+         return Err("请输入要写入的十六进制字节".to_string());
+     }
+    // A single token without spaces may be a contiguous hex string
+    // (`deadbeef`); split it into byte pairs so both forms work.
+    if tokens.len() == 1 && tokens[0].len() > 2 && tokens[0].bytes().all(|b| b.is_ascii_hexdigit()) {
+        let hex = tokens[0];
+        let pairs: Vec<&str> = hex.as_bytes().chunks(2).map(|c| std::str::from_utf8(c).unwrap()).collect();
+        pairs
+            .into_iter()
+            .map(|part| u8::from_str_radix(part, 16).map_err(|_| format!("无效十六进制字节: {part}")))
+            .collect()
+    } else {
+        tokens
+            .into_iter()
+            .map(|part| {
+                u8::from_str_radix(part, 16)
+                    .map_err(|_| format!("无效十六进制字节: {part}"))
+            })
+            .collect()
+    }
+ }
+
+/// Find the first occurrence of `pattern` in `haystack`, returning its byte
+/// offset. An empty pattern never matches.
+fn find_pattern(haystack: &[u8], pattern: &[u8]) -> Option<usize> {
+    if pattern.is_empty() || pattern.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .windows(pattern.len())
+        .position(|window| window == pattern)
+ }
+ 
+#[cfg(test)]
+mod memory_search_tests {
+    use super::*;
+
+    #[test]
+    fn find_pattern_locations_first_match() {
+        let haystack = [0xde, 0xad, 0xbe, 0xef, 0xde, 0xad];
+        assert_eq!(find_pattern(&haystack, &[0xbe, 0xef]), Some(2));
+        assert_eq!(find_pattern(&haystack, &[0xde]), Some(0));
+        assert_eq!(find_pattern(&haystack, &[0xad]), Some(1));
+        assert_eq!(find_pattern(&haystack, &[0xff]), None);
+        assert_eq!(find_pattern(&haystack, &[]), None);
+        assert_eq!(find_pattern(&[], &[0x00]), None);
+        assert_eq!(find_pattern(&[1, 2], &[1, 2, 3]), None);
+    }
+
+    #[test]
+    fn parse_hex_bytes_accepts_contiguous_and_spaced() {
+        assert_eq!(parse_hex_bytes("deadbeef").unwrap(), vec![0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(parse_hex_bytes("de ad be ef").unwrap(), vec![0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(parse_hex_bytes("0").unwrap(), vec![0x00]);
+        assert!(parse_hex_bytes("").is_err());
+        assert!(parse_hex_bytes("zz").is_err());
+    }
+}
+
+ /// Heuristic: a file is binary when it contains a NUL byte in its first 8 KiB.
 /// Firmware artifacts (`.bin`, `.elf`, `.ihx`) and object files are binary.
 fn is_binary_file(path: &Path, head: &[u8]) -> bool {
     let ext = path
@@ -17217,19 +19005,24 @@ fn language_name(language: &Language) -> &'static str {
         Language::Asm => "Asm",
     }
 }
+/// Whether a symbol's name matches the outline filter (case-insensitive
+/// substring). An empty filter matches everything.
+fn symbol_matches_filter(symbol: &ns_lsp::SymbolInfo, filter: &str) -> bool {
+    filter.is_empty() || symbol.name.to_lowercase().contains(&filter.to_lowercase())
+}
 
-/// The chain of enclosing symbols at `cursor_line`, outermost first, for the
-/// editor breadcrumb. Descends only through container kinds (namespace, class,
-/// struct, interface, enum, module) so a function's local variables do not
-/// clutter the breadcrumb.
-fn symbol_chain_at_line(symbols: &[ns_lsp::SymbolInfo], cursor_line: usize) -> Vec<(String, usize)> {
-    fn is_container(kind: &str) -> bool {
+ /// The chain of enclosing symbols at `cursor_line`, outermost first, for the
+ /// editor breadcrumb. Descends only through container kinds (namespace, class,
+ /// struct, interface, enum, module) so a function's local variables do not
+ /// clutter the breadcrumb.
+ fn symbol_chain_at_line(symbols: &[ns_lsp::SymbolInfo], cursor_line: usize) -> Vec<(String, usize)> {
+      fn is_container(kind: &str) -> bool {
         matches!(
             kind,
             "namespace" | "class" | "struct" | "interface" | "enum" | "module" | "package"
         )
     }
-    fn walk(
+     fn walk(
         symbols: &[ns_lsp::SymbolInfo],
         cursor_line: usize,
         chain: &mut Vec<(String, usize)>,
@@ -17483,11 +19276,225 @@ mod tests {
                 config: Default::default(),
             });
             app.show_output = true;
+             app
+         });
+     }
+
+    /// `sim_time_readout` hides the time without a configured clock and
+    /// formats elapsed time + nominal frequency once one is set.
+    #[test]
+    fn sim_time_readout_formats_cycles_and_clock() {
+        // No clock configured: no readout at all.
+        assert_eq!(sim_time_readout(0, 0), "");
+        // 1_000_000 cycles @ 1 MHz = 1 s.
+        let out = sim_time_readout(1_000_000, 1_000_000);
+        assert!(out.contains("时间: 1.00 s @ 1.0 MHz"), "{out}");
+        // 1_000 cycles @ 1 MHz = 1 ms.
+        let out = sim_time_readout(1_000, 1_000_000);
+        assert!(out.contains("1.00 ms"), "{out}");
+        // 100 cycles @ 1 MHz = 100 µs.
+        let out = sim_time_readout(100, 1_000_000);
+        assert!(out.contains("100.0 µs"), "{out}");
+        // 72 MHz nominal clock.
+        let out = sim_time_readout(72_000_000, 72_000_000);
+        assert!(out.contains("1.00 s @ 72.0 MHz"), "{out}");
+    }
+
+    /// `filter_device_peripheral` narrows registers by a case-insensitive
+    /// substring and keeps the peripheral header when the peripheral itself OR
+    /// any of its registers match.
+    #[test]
+    fn device_filter_matches_peripheral_and_registers() {
+        let peripheral = ns_device::Peripheral {
+            name: "USART1".to_string(),
+            base_address: 0x4001_3800,
+            description: String::new(),
+            registers: vec![
+                ns_device::Register {
+                    name: "CR1".to_string(),
+                    address: 0x4001_3800,
+                    size: 4,
+                    reset_value: 0,
+                    description: String::new(),
+                    fields: vec![],
+                },
+                ns_device::Register {
+                    name: "BRR".to_string(),
+                    address: 0x4001_3808,
+                    size: 4,
+                    reset_value: 0,
+                    description: String::new(),
+                    fields: vec![],
+                },
+            ],
+        };
+        // Empty filter: everything matches.
+        let (periph, regs) = IdeApp::filter_device_peripheral(&peripheral, "");
+        assert!(periph);
+        assert_eq!(regs.len(), 2);
+        // Peripheral name match keeps the header and all registers.
+        let (periph, regs) = IdeApp::filter_device_peripheral(&peripheral, "usart");
+        assert!(periph);
+        assert_eq!(regs.len(), 2);
+        // Register-only match keeps the header for context.
+        let (periph, regs) = IdeApp::filter_device_peripheral(&peripheral, "brr");
+        assert!(periph);
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0].name, "BRR");
+        // No match hides the peripheral.
+        let (periph, regs) = IdeApp::filter_device_peripheral(&peripheral, "gpio");
+        assert!(!periph);
+        assert!(regs.is_empty());
+     }
+
+    /// `export_register_snapshot` writes a JSON snapshot of the current
+    /// register groups into `.ns-ide/register-snapshot.json` and reports the
+    /// path; an empty register set reports the honest reason instead.
+    #[test]
+    fn export_register_snapshot_writes_json() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir().join(format!(
+            "ns-ide-reg-snapshot-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: temp.clone(),
+                config: Default::default(),
+            });
+            app.debug.register_groups.insert(
+                "Core".to_string(),
+                vec![
+                    ns_debug::Variable {
+                        name: "pc".to_string(),
+                        value: "0x08000100".to_string(),
+                        variables_reference: 0,
+                    },
+                    ns_debug::Variable {
+                        name: "sp".to_string(),
+                        value: "0x20001000".to_string(),
+                        variables_reference: 0,
+                    },
+                ],
+            );
+            app.export_register_snapshot(cx);
+            assert!(
+                app.status.contains("register-snapshot.json"),
+                "status: {}",
+                app.status
+            );
+            app
+        });
+        let snapshot = std::fs::read_to_string(temp.join(".ns-ide/register-snapshot.json")).unwrap();
+        assert!(snapshot.contains("\"pc\": \"0x08000100\""), "{snapshot}");
+        assert!(snapshot.contains("\"sp\": \"0x20001000\""), "{snapshot}");
+         let _ = std::fs::remove_dir_all(&temp);
+     }
+ 
+    /// `compare_register_snapshot` loads the saved snapshot and reports the
+    /// number of changed registers; a changed value is highlighted.
+    #[test]
+    fn compare_register_snapshot_counts_changes() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir().join(format!(
+            "ns-ide-reg-compare-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".ns-ide")).unwrap();
+        std::fs::write(
+            temp.join(".ns-ide/register-snapshot.json"),
+            r#"{"Core": {"pc": "0x08000100", "sp": "0x20001000"}}"#,
+        )
+        .unwrap();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: temp.clone(),
+                config: Default::default(),
+            });
+            app.debug.register_groups.insert(
+                "Core".to_string(),
+                vec![
+                    ns_debug::Variable {
+                        name: "pc".to_string(),
+                        value: "0x08000100".to_string(),
+                        variables_reference: 0,
+                    },
+                    ns_debug::Variable {
+                        name: "sp".to_string(),
+                        value: "0x20002000".to_string(),
+                        variables_reference: 0,
+                    },
+                ],
+            );
+            app.compare_register_snapshot(cx);
+            assert!(
+                app.status.contains("1 个已变更"),
+                "status: {}",
+                app.status
+            );
+            assert!(app.debug.reg_snapshot.is_some());
+            app
+        });
+         let _ = std::fs::remove_dir_all(&temp);
+     }
+ 
+    /// `disassemble_at` rejects an invalid address and reports it honestly.
+    #[test]
+    fn disassemble_at_rejects_invalid_address() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.ensure_disasm_input(cx);
+            app.debug.disasm_input.as_ref().unwrap().update(cx, |field, cx| {
+                field.set_text("zz", cx);
+            });
+            app.disassemble_at(cx);
+            assert!(app.status.contains("无效地址"), "status: {}", app.status);
             app
         });
     }
 
-    /// Headless render smoke test for the enhanced memory view: with a debug
+    /// `symbol_matches_filter` is a case-insensitive substring match; an empty
+    /// filter matches everything.
+    #[test]
+    fn symbol_matches_filter_is_case_insensitive_substring() {
+        let symbol = ns_lsp::SymbolInfo {
+            name: "UART_Init".to_string(),
+            kind: "function".to_string(),
+            line: 0,
+            column: 0,
+            children: vec![],
+        };
+        assert!(symbol_matches_filter(&symbol, ""));
+        assert!(symbol_matches_filter(&symbol, "uart"));
+        assert!(symbol_matches_filter(&symbol, "INIT"));
+        assert!(!symbol_matches_filter(&symbol, "gpio"));
+        assert!(!symbol_matches_filter(&symbol, "initx"));
+    }
+
+      /// `insert_include_line` places a new `#include` after the last existing
+    /// include (keeping the leading block grouped), or at the top when there
+     /// are none.
+    #[test]
+    fn insert_include_line_after_last_include() {
+        let source = "#include <stdint.h>\n#include <stdbool.h>\n\nint main() { return 0; }\n";
+        let out = insert_include_line(source, "#include <gpio.h>", include_insert_at(source));
+        assert_eq!(
+            out,
+            "#include <stdint.h>\n#include <stdbool.h>\n#include <gpio.h>\n\nint main() { return 0; }\n"
+        );
+        // No includes: inserted at the very top.
+        let bare = "int main() { return 0; }\n";
+        let out = insert_include_line(bare, "#include <gpio.h>", include_insert_at(bare));
+        assert_eq!(out, "#include <gpio.h>\nint main() { return 0; }\n");
+    }
+ 
+     /// Headless render smoke test for the enhanced memory view: with a debug
     /// panel open on the Memory tab and a named region, the region bar and the
     /// edit input must render without panicking.
     #[test]
@@ -18044,23 +20051,31 @@ fn firmware_size_summary_reports_usage_and_overflow() {
             config,
         });
         // A size within capacity reports a percentage; no overflow warning.
-        app.firmware_size = Some(ns_flash::FirmwareSize {
-            flash: 1024,
-            ram: 256,
-            total: 1280,
-            base: 0x0800_0000,
-        });
+         app.firmware_size = Some(ns_flash::FirmwareSize {
+             flash: 1024,
+             ram: 256,
+            text: 1024,
+            data: 256,
+            bss: 0,
+             total: 1280,
+             base: 0x0800_0000,
+            symbols: vec![],
+         });
         let line = app.render_firmware_size_summary();
         assert!(line.contains("Flash 1024"), "flash usage: {line}");
         assert!(line.contains("RAM 256"), "ram usage: {line}");
         assert!(!line.contains("超出"), "no overflow at capacity: {line}");
         // Over-capacity flash warns.
-        app.firmware_size = Some(ns_flash::FirmwareSize {
-            flash: 1_000_000,
-            ram: 100,
-            total: 1_000_100,
-            base: 0x0800_0000,
-        });
+         app.firmware_size = Some(ns_flash::FirmwareSize {
+             flash: 1_000_000,
+             ram: 100,
+            text: 1_000_000,
+            data: 100,
+            bss: 0,
+             total: 1_000_100,
+             base: 0x0800_0000,
+             symbols: vec![],
+         });
         let line = app.render_firmware_size_summary();
         assert!(line.contains("超出"), "overflow warned: {line}");
         app

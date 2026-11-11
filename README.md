@@ -9,7 +9,7 @@
 
 - Rust + [GPUI](https://crates.io/crates/gpui) 0.2.2（Zed 的 GUI 框架）
 - 工作区 crate：
-  - `ns-project` — `project.toml` 模型/校验/模板/最近项目/断点持久化
+  - `ns-project` — `project.toml` 模型/校验/模板/最近项目/断点持久化/最近文件
   - `ns-build` — 构建执行与 gcc/clang/rust 诊断解析（debug 配置自动加 `-g` / `-C debuginfo=2`）
   - `ns-debug` — 调试会话抽象（DAP 客户端）：发现并启动 `lldb-dap`，断点/调用栈/变量/控制台
   - `ns-flash` — 烧写适配器（OpenOCD / pyOCD / J-Link）+ 固件格式转换（ELF/HEX/BIN）
@@ -39,8 +39,8 @@
 - **运行编排（M6 切片）**：顶部「烧写并运行」（编译→烧写→复位运行）与「烧写并调试」（编译→烧写→连接调试器），命令面板「烧写并运行」/「烧写并调试」同源；任一环节失败即停止并如实报告，不静默继续。
 - **工具链全局路径（M11 切片）**：命令面板「工具链路径…」编辑全局工具链覆盖（arm-none-eabi-gcc/gdb、clang、gcc、rustc、zig、openocd、pyocd、JLinkExe），留空=从 PATH 探测；覆盖优先于自动发现，保存在用户配置目录（`toolchain.json`），跨项目共享；`ns_project::ToolchainConfig` + `registry`（语言→可用编译器，向导级联）。
 - **语言服务 LSP（M8 切片）**：新建 `ns_lsp` crate（LSP-over-stdio 客户端，Content-Length 帧、后台读写线程、请求/通知路由）；项目打开时按语言自动启动服务器（C/C++→clangd、Rust→rust-analyzer、Zig→zls、ZR→zr-lsp），文件打开/编辑实时同步 `didOpen`/`didChange`；诊断 `publishDiagnostics` 合并进问题面板（点击跳转源码）；`F12` 跳转到定义、`Shift+F12` 查找引用、`Cmd/Ctrl+K Cmd/Ctrl+I` 悬停提示（状态栏）、`Cmd/Ctrl+Space` 触发补全（浮动补全面板，↑/↓ 选择、Enter/Tab 确认、Esc 关闭）；单测含 mock 服务器（initialize/补全/定义/诊断）与真实 clangd 端到端（错误文件→诊断到达）。
-- **目标设备库（M9 切片）**：新建 `ns_device` crate——CMSIS-SVD XML 解析（`parse_svd`：外设→寄存器→位域，地址/大小/复位值）、内置设备目录（stm32f103c8 / stm32f407vg / nrf52840 / rp2040，`CATALOG`/`device_for_target`）、`linker_script`/`startup_file` 生成（flash/RAM 内存映射 + 向量表/复位处理）、`memory_map`/`registers_by_peripheral`；向导「目标设备」步显示 MCU 核/Flash/RAM 并在生成时自动写出 `link.ld` 与 `src/startup.s`；调试面板新增「设备」页按 SVD 展示外设寄存器（地址/复位值/位域）；**寄存器值点击编辑**：点当前值进入编辑（预填实时值），Enter 提交写回目标（仿真 `write_u32` / 调试 DAP `writeMemory`，4 字节小端）；单测覆盖解析/生成/目录查找与写入提交。
-- **ZR 语言（M10 切片）**：ZR 由外部 `zr` 语言提供（https://zrlang.github.io/），编译器为 `zr`，语言服务为 `zr lsp`。IDE 接入其编译器与语言服务：构建后端调用 `zr <entry> --target <triple> -o <artifact>`（`ns_build::plan_zr`，按 MCU 核选 `riscv32-unknown-none`/`arm-none-eabi`），LSP 客户端以 `zr lsp`（stdio）驱动（`didOpen`/`didChange`/`publishDiagnostics`/补全/悬停同构）；`zr` 工具需安装在 PATH 上，缺失时如实提示。自研 `ns_zr` crate 已移除，不再自研语言。
+- **目标设备库（M9 切片）**：新建 `ns_device` crate——CMSIS-SVD XML 解析（`parse_svd`：外设→寄存器→位域，地址/大小/复位值）、内置设备目录（stm32f103c8 / stm32f407vg / nrf52840 / rp2040，`CATALOG`/`device_for_target`）、`linker_script`/`startup_file` 生成（flash/RAM 内存映射 + 向量表/复位处理）、`memory_map`/`registers_by_peripheral`；向导「目标设备」步显示 MCU 核/Flash/RAM 并在生成时自动写出 `link.ld` 与 `src/startup.s`；调试面板新增「设备」页按 SVD 展示外设寄存器（地址/复位值/位域）；**寄存器值点击编辑**：点当前值进入编辑（预填实时值），Enter 提交写回目标（仿真 `write_u32` / 调试 DAP `writeMemory`，4 字节小端）；**外设寄存器树过滤**：过滤输入框按外设/寄存器名大小写不敏感子串过滤（外设名匹配显示整组，仅寄存器匹配保留外设头为上下文）；单测覆盖解析/生成/目录查找与写入提交与过滤。
+- **仿真时钟频率显示（F6）**：`project.toml` `[sim]` 新增 `clock_hz`（设置页可编辑）；仿真页在配置时钟后显示**仿真时间 + 名义频率**（`sim_time_readout`，如「时间: 1.00 s @ 72.0 MHz」），未配置只显示周期数。
 - **仿真（M7 切片）**：新建 `ns_sim` crate——内建指令级仿真器（RV32I 核：寄存器文件、64 KiB 内存、`load_elf`/`load_image`、`step`/`run`/`step_over`、断点、`ecall` 停机、`sign_extend`/`jal`/`branch` 立即数解码）；虚拟外设（内存映射 UART，`putchar` 回调 + 输出缓冲）；`simulate` 命令面板「仿真运行（内建指令级）」加载构建产物（ELF 优先，否则按入口原始加载）到仿真器；调试面板新增「仿真」页：控制条（加载并运行/单步/运行/复位/停止）、PC/周期/状态、32 个寄存器（ABI 名 + 值）、UART 输出；单测覆盖 ALU（加/减）、循环累加（1..10=55）、断点命中、load/store、ecall 停机，以及真实 ELF32 端到端（入口加载→循环→a0=55→停机）。
 - **全量配置页（M12）**：`Cmd/Ctrl+,` / 命令面板「项目设置…」打开设置模态，编辑 `project.toml` **全部字段**（project/compiler/debugger/flasher/build/sim 各节）+ 全局设置（终端 shell → `terminal.json`、全局配置键 `$config["key"]` → `config.json`）；保存即写回整个 `project.toml`（校验：名称非空、构建配置 debug|release、烧写器/探针类型枚举、语言 C|C++|Rust|Zig|ZR）。
 - **Agent 面板（参考 Zed agent）**：输出区「Agent」标签 / 命令面板「打开 Agent 面板」；任务列表（状态点 + 命令标题）、选中任务输出、底部 shell 命令输入 + 运行；后台线程跑 `sh -c`/`cmd /C`，stdout/stderr 流式追加，「清空」/「全部取消」。
@@ -64,7 +64,25 @@
 - **单元测试集成运行器（本轮）**：命令面板「运行单元测试」按语言/构建系统执行 `cargo test` / `ctest` / `make test` / `zig build test`，结果进输出面板与问题面板；ZR/汇编无内建运行器（如实提示）。
 - **栈使用分析（本轮）**：命令面板「栈使用分析（-fstack-usage）」对 C/C++ 项目逐源编译 `-fstack-usage` 并解析 `.su` 文件，按函数列出静态/动态栈深。
 - **覆盖率分析（本轮）**：命令面板「覆盖率分析（gcov）」对 C/C++ 项目用 `--coverage` 构建+运行测试二进制，`gcov` 汇总每文件行覆盖率（缺失工具如实提示）。
-
+- **全局符号搜索（本轮）**：`Cmd/Ctrl+Shift+O` 或命令面板「搜索项目符号…」经 LSP `workspace/symbol` 搜索项目内符号（名称/文件/行），↑↓ 选择、Enter/点击跳转，Esc 关闭。
+- **快速打开文件（本轮）**：`Cmd/Ctrl+P` 或命令面板「快速打开文件…」列出项目源文件，输入过滤、Enter/点击打开（跳过构建目录/二进制）。
+- **最近文件列表（本轮）**：`Cmd/Ctrl+E` 或命令面板「最近打开的文件…」列出项目内最近打开文件（最前=最新，去重，上限 100，随 `.ns-ide/recent_files.json` 持久化）。
+- **文件树符号过滤（本轮）**：侧栏「项目」标题下过滤输入框，按输入实时过滤文件树（匹配文件 + 祖先目录上下文），清空恢复完整树。
+- **仿真 step_out 返回识别完善（本轮）**：`step_out` 现识别 RISC-V `ret`/`mret` 与 ARM `bx lr`/`pop {..,pc}` 返回指令，步出中断处理函数正确停靠（`disassemble_riscv` 补 `mret`，Thumb 解码补 `bx`/`pop`）。
+- **覆盖率编辑器内联可视化（本轮）**：覆盖率分析后按行命中在编辑器内着色（未覆盖=jade 底、部分/全覆盖渐弱），gutter 覆盖条同步；`set_coverage` 清空/更新。
+- **寄存器快照导出（本轮）**：寄存器视图「导出快照」按钮把当前寄存器组写成 `.ns-ide/register-snapshot.json`（名称/值），状态栏报告路径。
+- **固件大小符号级分析（本轮）**：构建成功后「固件大小」摘要追加最大符号前 6 名（`nm --size-sort` 解析，过滤 absolute/undefined/debug）。
+- **构建时间逐文件统计（本轮）**：构建输出末尾追加「文件编译耗时（估计）」，按 CMake/Make `Building …` 与 `-c <file>` 标记测量真实墙钟间隔，降序排列。
+- **构建错误快速修复（本轮）**：问题面板对缺失头文件/未定义引用/未声明标识符/缺分号诊断显示「快速修复」；缺失头文件一键在最后一个 `#include` 后插入并重载编辑器。
+- **trace 触发/统计 + DWT PC 采样布防（本轮）**：trace 面板新增「PC 采样」开关（DWT 周期计数器布防，`DWT_CYCCNT` 复位 + 比较器 0 周期模式）；「实时包」区显示 ITM/DWT/异常/PC 采样统计。
+- **厂商工程导入（本轮）**：命令面板「导入工程（IAR/Keil/STM32CubeMX）…」解析 `.ewp`/`.uvprojx`/`.ioc` 为 `project.toml`（源码/包含目录/目标识别），写项目并打开。
+- **外设初始化代码生成（本轮）**：命令面板「生成外设初始化代码（SVD 配置）…」按 SVD 外设生成 `peripheral_init()` + 各外设 `xxx_init()` 助手。
+- **性能 profiler 热点聚合（本轮）**：trace 面板「热点」开关开启后把 DWT PC 采样按固件符号归并，下方显示函数热点直方图（占比条 + 命中数）。
+- **内存布局可视化（本轮）**：命令面板「内存布局视图（链接脚本区域/段占用）」解析 `link.ld` 的 `MEMORY` 并把固件段按地址归入区域，输出面板显示区域占用条（已用/容量/百分比）+ 最大段。
+- **include 依赖图（本轮）**：命令面板「include 依赖图（项目级）」扫源文件解析 `#include`，按包含目录解析本地头，输出面板列出每文件直接依赖与反向计数。
+- **依赖图 DAG 图形渲染（本轮）**：include 依赖图头部新增「图形/列表视图」切换；图形视图按最长依赖路径分层（`dag_layout`），绝对定位节点盒 + 水平边渲染分层 DAG（头文件金色、源文件米白）。
+- **宏展开/预处理输出（本轮）**：命令面板「宏展开/预处理输出（C/C++ -E）」对 C/C++ 项目运行编译器 `-E -P`，输出面板流式显示宏展开后的翻译单元（`-std`/`-D`/`-I` 同构建，非 C/C++ 或缺失编译器如实提示）。
+- **对比嵌入式 IDE 补齐（本轮）**：对照 IAR/Keil/STM32CubeIDE/PlatformIO/VSCode 能力模型补齐 11 项——**编辑器基础操作**（`Ctrl+/` 行注释、重复/删除行、`Alt+↑/↓` 移动行、`Shift+Alt+←/→` 选中展开/收缩）；**调试体验**（寄存器值编辑经 `setVariable`、内存视图搜索/填充、watch 表达式持久化到 `.ns-ide`）；**固件大小摘要**（`text`/`data`/`bss` 分区，`size` 工具三列解析）；**烧写后自动校验**（「烧写并校验」在烧写成功后链式执行 `FlashAction::Verify`）。
 未完成（实现但未验证）：**嵌入式目标 attach**（OpenOCD / ST-Link / J-Link / pyOCD / probe-rs 探针适配器 + `target remote` GDB 会话，命令面板「嵌入式调试（目标 attach）」→ 编译→烧写→attach；需硬件，尚未在本机验证）；**ZR 真实 `zrc` 编译器集成**（`zr-std` 声明库已提供，编译器本体后续接入），见 AGENTS.md §5.1 🚧 清单。
 
 ## 构建与运行

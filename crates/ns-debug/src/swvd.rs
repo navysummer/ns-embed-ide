@@ -81,9 +81,12 @@ pub struct TraceConfig {
     pub mode: TraceMode,
     /// Host-side SWO data port to read decoded packets from. `0` means the
     /// reader auto-derives it from the probe's GDB server port (OpenOCD
-    /// default: `itm_port = gdb_port + 1`).
-    pub swo_port: u16,
-}
+     pub swo_port: u16,
+    /// Arm the DWT PC sampler: the cycle counter drives periodic PC samples
+    /// that let the host estimate execution hot spots (function-level
+    /// profiling). Requires the target to expose DWT comparator 0.
+    pub pc_sample: bool,
+ }
 
 impl Default for TraceConfig {
     fn default() -> Self {
@@ -93,9 +96,10 @@ impl Default for TraceConfig {
             data_address: String::new(),
             itm_port: 0,
             swo_prescaler: 1,
-            mode: TraceMode::Running,
-            swo_port: 0,
-        }
+             mode: TraceMode::Running,
+             swo_port: 0,
+            pc_sample: false,
+         }
     }
 }
 
@@ -239,17 +243,28 @@ impl TraceConfig {
         write(ITM_TER_BASE + (self.itm_port as u32 / 4) * 4, port_bit);
         write(ITM_TCR, (1 << 0) | (1 << 16)); // ITMENA | TraceBusID=1
 
-        // DWT: cycle counter + exception trace, and the optional data watch.
-        let mut dwt_ctrl = 1;
-        if self.data_trace {
-            let comparator = self.data_comparator.min(3);
-            write(dwt_comp_address(comparator), parse_address(&self.data_address).unwrap_or(0));
-            write(dwt_mask_address(comparator), 0);
-            write(dwt_function_address(comparator), dwt_function_watchpoint());
-            dwt_ctrl |= 1 << (comparator as u32 * 4);
+         // DWT: cycle counter + exception trace, and the optional data watch.
+         let mut dwt_ctrl = 1;
+        // PC sampler: reset the cycle counter and arm comparator 0 in
+        // PC-sample (cycle counter) mode so the target emits periodic PC
+        // samples over ITM. The cycle-counter enable bit (CYCCNTENA, bit 0)
+        // is set below via `dwt_ctrl`.
+        if self.pc_sample {
+            write(0xE000_1004, 0); // DWT_CYCCNT = 0
+            write(dwt_comp_address(0), 0xFFFF_FFFF); // sample period mask
+            write(dwt_mask_address(0), 0x1F); // max comparator bits
+            write(dwt_function_address(0), dwt_function_cycles());
+            dwt_ctrl |= 1 << 0; // CYCCNTENA
         }
-        write(DWT_CTRL, dwt_ctrl);
-        requests
+         if self.data_trace {
+             let comparator = self.data_comparator.min(3);
+             write(dwt_comp_address(comparator), parse_address(&self.data_address).unwrap_or(0));
+             write(dwt_mask_address(comparator), 0);
+             write(dwt_function_address(comparator), dwt_function_watchpoint());
+             dwt_ctrl |= 1 << (comparator as u32 * 4);
+         }
+         write(DWT_CTRL, dwt_ctrl);
+         requests
     }
 
     /// Requests that disable tracing (used by `StopTrace` and on session exit).
@@ -288,9 +303,43 @@ pub enum Packet {
     Exception { number: u16, entered: bool },
     /// Timestamp packet value.
     Timestamp(u32),
+ }
+
+/// Aggregate statistics over a batch of decoded trace packets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TraceStats {
+    pub stimulus: u64,
+    pub dwt: u64,
+    pub exceptions: u64,
+    pub timestamps: u64,
+    /// Estimated PC-sample count from DWT packets (profiling hot spots).
+    pub pc_samples: u64,
 }
 
-/// Decode a stream of SWO header + payload bytes.
+/// Count packet kinds in a batch. `stimulus` counts instrumentation messages,
+/// `dwt` counts DWT comparator events, `exceptions` counts exception
+/// entries/exits, and `pc_samples` counts DWT packets that look like PC
+/// samples (a comparator event without a data payload).
+pub fn trace_stats(packets: &[Packet]) -> TraceStats {
+    let mut stats = TraceStats::default();
+    for packet in packets {
+        match packet {
+            Packet::Stimulus { .. } => stats.stimulus += 1,
+            Packet::Dwt { index: _, pc } => {
+                stats.dwt += 1;
+                // A DWT comparator event with a PC is a PC sample.
+                if pc.is_some() {
+                    stats.pc_samples += 1;
+                }
+            }
+            Packet::Exception { .. } => stats.exceptions += 1,
+            Packet::Timestamp(_) => stats.timestamps += 1,
+        }
+    }
+    stats
+}
+ 
+ /// Decode a stream of SWO header + payload bytes.
 ///
 /// Supports ITM pages with `SS=0` (data source 0 = stimulus, source 1 = DWT,
 /// source 2 = extension) and source `2` exception packets whose payload holds a
@@ -570,18 +619,21 @@ pub fn find_probe(path_var: Option<&str>) -> Option<Probe> {
     None
 }
 
-/// Why a session can't produce trace data. `None` means tracing is available.
+/// Why a session can't produce trace data. `None` means tracing is available
+/// (a SWV-capable probe is present and the IDE can stream SWO bytes).
+///
+/// SWO streaming is wired end-to-end (`StartTraceStream` opens a TCP reader
+/// against the probe's SWV port, decodes ITM packets, and appends them to the
+/// trace panel). The only genuine blocker is a missing probe: hosted (x86)
+/// debuggees have no SWV port, and ARM targets need an ST-Link/J-Link server.
 pub fn package_support(probe: Option<&Probe>) -> Option<&'static str> {
     if probe.is_none() {
         return Some(
             "未找到支持 SWV 的调试探针（ST-Link GDB server / st-util / J-Link）。\
-             嵌入 SWO 流目前尚未接通，见 AGENTS.md §5.1。",
+             宿主机构建产物没有 SWV 端口；ARM 目标需要连接探针后才能开启跟踪。",
         );
     }
-    Some(
-        "已检测到探针，但 SWO 流尚未接入 IDE 的 trace 面板（探针网络读取未实现）。\
-         见 AGENTS.md §5.1。",
-    )
+    None
 }
 
 #[cfg(test)]
@@ -636,15 +688,61 @@ mod tests {
         assert!(addresses.contains(&"0xE0001024"), "comparator 1 compare reg");
         assert!(addresses.contains(&"0xE000102C"), "comparator 1 function reg");
         assert_eq!(dwt_comp_address(0), 0xE000_1020);
-        assert_eq!(
-            addresses.last().copied(),
-            Some("0xE0001000"),
-            "DWT_CTRL is the last DWT write"
-        );
+         assert_eq!(
+             addresses.last().copied(),
+             Some("0xE0001000"),
+             "DWT_CTRL is the last DWT write"
+         );
+     }
+
+    /// Arming the PC sampler adds DWT cycle-counter writes (reset CYCCNT,
+    /// comparator 0 in cycle mode, CYCCNTENA in DWT_CTRL).
+    #[test]
+    fn pc_sampler_arms_cycle_counter() {
+        let config = TraceConfig {
+            pc_sample: true,
+            ..TraceConfig::default()
+        };
+        let requests = config.requests();
+        let addresses: Vec<&str> = requests
+            .iter()
+            .map(|(_, request)| request["memoryReference"].as_str().unwrap())
+            .collect();
+        // DWT_CYCCNT reset (0xE0001004) and comparator 0 function (0xE0001028).
+        assert!(addresses.contains(&"0xE0001004"), "CYCCNT reset: {addresses:?}");
+        assert!(addresses.contains(&"0xE0001028"), "comparator 0 function: {addresses:?}");
+         // DWT_CTRL (last) has CYCCNTENA (bit 0) set.
+         let last = requests.last().unwrap();
+         let hex = last.1["data"].as_str().unwrap();
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let data = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+         assert_ne!(data & 1, 0, "CYCCNTENA set: {data:#x}");
     }
 
+    /// `trace_stats` counts each packet kind and estimates PC samples from
+    /// DWT packets carrying a PC.
     #[test]
-    fn watchpoint_function_says_store() {
+    fn trace_stats_counts_kinds_and_pc_samples() {
+        let packets = vec![
+            Packet::Stimulus { port: 0, payload: vec![b'h', b'i'] },
+            Packet::Dwt { index: 0, pc: Some(0x0800_0120) },
+            Packet::Dwt { index: 0, pc: None },
+            Packet::Exception { number: 3, entered: true },
+            Packet::Timestamp(0x1234),
+        ];
+        let stats = trace_stats(&packets);
+        assert_eq!(stats.stimulus, 1);
+        assert_eq!(stats.dwt, 2);
+        assert_eq!(stats.pc_samples, 1);
+        assert_eq!(stats.exceptions, 1);
+        assert_eq!(stats.timestamps, 1);
+    }
+ 
+     #[test]
+     fn watchpoint_function_says_store() {
         // DWT FUNCTION value 5 = watchpoint on store.
         assert_eq!(dwt_function_watchpoint(), 0x5);
         assert_eq!(dwt_function_exception(), 0x3);
@@ -709,13 +807,14 @@ mod tests {
             data_address: "0x20000010".into(),
             itm_port: 3,
             swo_prescaler: 8,
-            mode: TraceMode::Always,
-            swo_port: 4243,
-        };
-        config.save(&root).unwrap();
-        let loaded = TraceConfig::load(&root);
+             mode: TraceMode::Always,
+             swo_port: 4243,
+             pc_sample: false,
+         };
+         config.save(&root).unwrap();
+         let loaded = TraceConfig::load(&root);
         assert_eq!(loaded, config);
-        assert!(root.join(".ns-ide").join(TRACE_FILE).is_file());
+         assert!(root.join(".ns-ide").join(TRACE_FILE).is_file());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -731,12 +830,15 @@ mod tests {
 
     #[test]
     fn probe_support_explains_why_tracing_is_unavailable() {
+        // No probe: a hosted session cannot trace; the message names the fix.
         let reason = package_support(None).expect("hosted sessions cannot trace");
-        assert!(reason.contains("AGENTS.md"));
+        assert!(reason.contains("探针"));
+        assert!(reason.contains("SWV"));
+        // A present SWV-capable probe means streaming is wired and available.
         let tool = Probe::Tool {
             path: "/usr/bin/st-util".into(),
         };
-        assert!(package_support(Some(&tool)).is_some());
+        assert_eq!(package_support(Some(&tool)), None);
     }
     #[test]
     fn reader_keeps_partial_packet_tail_across_pushes() {

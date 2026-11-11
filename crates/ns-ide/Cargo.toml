@@ -23,9 +23,10 @@ ns-sim.workspace = true
 rio-vt = "0.5"
 rustc-hash = "2.1"
 serde = { workspace = true }
-serde_json.workspace = true
-serialport = "4"
-unicode-segmentation.workspace = true
+ serde_json.workspace = true
+ serialport = "4"
+ toml.workspace = true
+ unicode-segmentation.workspace = true
 
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }

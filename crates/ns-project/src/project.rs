@@ -184,12 +184,16 @@ impl Default for BuildSection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct SimSection {
+ #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+ #[serde(default)]
+ pub struct SimSection {
     pub cpu: String,
     pub period: u64,
-}
+     /// Nominal CPU clock in Hz, used to display sim time and frequency.
+     /// `0` = unknown (no frequency readout).
+     #[serde(default)]
+     pub clock_hz: u64,
+  }
 
 /// Debug launch configuration (`[launch]` in `project.toml`): the arguments,
 /// environment variables and working directory passed to the debuggee when a

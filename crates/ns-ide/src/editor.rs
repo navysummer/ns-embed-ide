@@ -80,11 +80,19 @@ actions!(
         ToggleMinimap,
 
 
-        AddCursorUp,
-        AddCursorDown,
-        ClearSecondary,
+         AddCursorUp,
+         AddCursorDown,
+         ClearSecondary,
+         SelectNextOccurrence,
+        ExpandSelection,
+        ShrinkSelection,
+         ToggleComment,
+        DuplicateLine,
+        DeleteLine,
+        MoveLineUp,
+        MoveLineDown,
     ]
-);
+ );
 
 pub fn bindings() -> Vec<KeyBinding> {
     vec![
@@ -125,12 +133,25 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-alt-up", AddCursorUp, Some("Editor")),
         KeyBinding::new("cmd-alt-down", AddCursorDown, Some("Editor")),
         KeyBinding::new("ctrl-alt-down", AddCursorDown, Some("Editor")),
-        KeyBinding::new("escape", ClearSecondary, Some("Editor")),
-    ]
-}
-
-pub struct Editor {
-    focus_handle: FocusHandle,
+        KeyBinding::new("cmd-d", SelectNextOccurrence, Some("Editor")),
+        KeyBinding::new("ctrl-d", SelectNextOccurrence, Some("Editor")),
+         KeyBinding::new("escape", ClearSecondary, Some("Editor")),
+        KeyBinding::new("cmd-/", ToggleComment, Some("Editor")),
+        KeyBinding::new("ctrl-/", ToggleComment, Some("Editor")),
+        KeyBinding::new("cmd-shift-k", DeleteLine, Some("Editor")),
+        KeyBinding::new("ctrl-shift-k", DeleteLine, Some("Editor")),
+        KeyBinding::new("cmd-shift-d", DuplicateLine, Some("Editor")),
+        KeyBinding::new("ctrl-shift-d", DuplicateLine, Some("Editor")),
+         KeyBinding::new("alt-up", MoveLineUp, Some("Editor")),
+         KeyBinding::new("alt-down", MoveLineDown, Some("Editor")),
+        KeyBinding::new("cmd-alt-shift-right", ExpandSelection, Some("Editor")),
+        KeyBinding::new("ctrl-alt-shift-right", ExpandSelection, Some("Editor")),
+        KeyBinding::new("cmd-alt-shift-left", ShrinkSelection, Some("Editor")),
+        KeyBinding::new("ctrl-alt-shift-left", ShrinkSelection, Some("Editor")),
+     ]
+ }
+ pub struct Editor {
+     focus_handle: FocusHandle,
     text: String,
     language: Option<Language>,
     cursor: usize,
@@ -171,11 +192,14 @@ pub struct Editor {
     /// Additional cursors for multi-cursor editing (empty = single cursor).
     /// Each is a selection range (collapsed for a bare cursor).
     secondary: Vec<Range<usize>>,
-    /// Diagnostic rows (0-based line) with severity: `true` = error, `false` = warning.
-    /// Rendered as an underline on the line plus a gutter tick.
-    diagnostics: Vec<(usize, bool)>,
-    /// Read-only tab (hex dump / firmware artifact): edits are rejected.
-    read_only: bool,
+     /// Diagnostic rows (0-based line) with severity: `true` = error, `false` = warning.
+     /// Rendered as an underline on the line plus a gutter tick.
+     diagnostics: Vec<(usize, bool)>,
+    /// Line coverage from gcov (0-based line → hit count). `None`/empty means
+    /// no coverage data for this file. Lines with `0` hits are uncovered.
+    coverage: Vec<u64>,
+     /// Read-only tab (hex dump / firmware artifact): edits are rejected.
+     read_only: bool,
 }
 
 
@@ -220,9 +244,9 @@ impl Editor {
             semantic: Vec::new(),
             inlay_hints: Vec::new(),
             show_minimap: true,
-            secondary: Vec::new(),
-            diagnostics: Vec::new(),
-
+             secondary: Vec::new(),
+             diagnostics: Vec::new(),
+            coverage: Vec::new(),
         }
     }
 
@@ -254,12 +278,19 @@ impl Editor {
 
     /// Set the diagnostic rows (0-based line, `true` = error / `false` = warning).
     /// Rows are deduplicated; an error overrides a warning on the same line.
-    pub fn set_diagnostics(&mut self, marks: Vec<(usize, bool)>, cx: &mut Context<Self>) {
-        self.diagnostics = diagnostic_rows(marks);
+     pub fn set_diagnostics(&mut self, marks: Vec<(usize, bool)>, cx: &mut Context<Self>) {
+         self.diagnostics = diagnostic_rows(marks);
+         cx.notify();
+     }
+
+    /// Set line coverage (0-based line → hit count). Lines absent from the
+    /// vector are treated as uncovered; an empty vector clears the overlay.
+    pub fn set_coverage(&mut self, hits: Vec<u64>, cx: &mut Context<Self>) {
+        self.coverage = hits;
         cx.notify();
     }
-
-    /// Set the semantic token overlays (0-based line, start char, length, kind index).
+ 
+     /// Set the semantic token overlays (0-based line, start char, length, kind index).
     pub fn set_semantic_tokens(&mut self, spans: Vec<SemanticSpan>, cx: &mut Context<Self>) {
         self.semantic = spans;
         cx.notify();
@@ -588,7 +619,80 @@ impl Editor {
             cx.notify();
         }
     }
-
+    /// Select the next occurrence of the current word/selection (`Cmd/Ctrl+D`).
+    ///
+    /// The first press selects the word under the cursor (or the current
+    /// selection, when non-empty). Each further press adds the next
+    /// non-overlapping occurrence: the previously selected occurrence becomes
+    /// a secondary selection and the primary cursor moves onto the new one,
+    /// wrapping to the start after the last. Typing then edits every selected
+    /// occurrence at once (`replace_text_in_range` applies to `secondary`
+    /// ranges too). A selection change is not an edit, so it does not push an
+    /// undo entry.
+    pub fn select_next_occurrence(&mut self, cx: &mut Context<Self>) {
+        let search = if self.selection.is_empty() {
+            let word = self.word_under_cursor();
+            if word.is_empty() {
+                return;
+            }
+            word
+        } else {
+            self.text[self.selection.clone()].to_string()
+        };
+        if search.is_empty() {
+            return;
+        }
+        // Ranges already selected: the primary selection plus any secondary
+        // selection that is a real (non-collapsed) range.
+        let mut selected: Vec<Range<usize>> = Vec::new();
+        if !self.selection.is_empty() {
+            selected.push(self.selection.clone());
+        }
+        for extra in &self.secondary {
+            if !extra.is_empty() {
+                selected.push(extra.clone());
+            }
+        }
+        let last_end = selected
+            .iter()
+            .map(|r| r.end)
+            .max()
+            .unwrap_or(self.cursor);
+         let mut found = find_occurrence_after(&self.text, &search, last_end, &selected);
+         if found.is_none() {
+             found = find_occurrence_after(&self.text, &search, 0, &selected);
+         }
+         let Some(range) = found else {
+            // Every occurrence is already selected: reset to the first one
+            // only (VS Code's wrap behaviour), so repeated presses cycle.
+            let first = find_occurrence_after(&self.text, &search, 0, &[]);
+            if let Some(first) = first {
+                self.secondary.clear();
+                self.selection = first.clone();
+                self.cursor = first.end;
+                self.selection_reversed = false;
+                self.preferred_column = None;
+                self.marked_range = None;
+                let (line, _) = self.line_col(first.start);
+                self.reveal_line(line);
+                cx.notify();
+            }
+            return;
+         };
+        // Move the previous primary selection into `secondary` (if any), then
+        // make the new occurrence the primary selection/cursor.
+        if !self.selection.is_empty() {
+            self.secondary.push(self.selection.clone());
+        }
+        self.selection = range.clone();
+        self.cursor = range.end;
+        self.selection_reversed = false;
+        self.preferred_column = None;
+        self.marked_range = None;
+        let (line, _) = self.line_col(range.start);
+        self.reveal_line(line);
+        cx.notify();
+    }
 
 
 
@@ -1092,11 +1196,332 @@ impl Editor {
         }
         self.cursor = (self.cursor + 4 * line_offsets.len()).min(self.text.len());
         self.selection = self.cursor..self.cursor;
+         self.dirty = true;
+         cx.notify();
+     }
+ 
+    /// Toggle line comments over the selection (or the current line when the
+    /// selection is empty or single-line). If every targeted line is already
+    /// commented, remove the comment prefix; otherwise add it. Uses the
+    /// language's `//` prefix; assembly/unknown languages are a no-op.
+     fn toggle_comment(&mut self, cx: &mut Context<Self>) {
+        let Some(prefix) = self.language.and_then(|lang| lang.line_comment()) else {
+            return;
+        };
+        let selection = clamp_range(&self.text, self.selection.clone());
+        let (start_line, _) = self.line_col(selection.start);
+        let (end_line, _) = self.line_col(selection.end);
+        let starts = self.line_starts();
+        let lines: Vec<usize> = (start_line..=end_line)
+            .filter(|line| *line < starts.len())
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+         // Decide: comment if any targeted line is not already commented.
+         // Blank lines are ignored (they are not commented and do not count
+         // against an all-commented decision).
+         let non_blank: Vec<usize> = lines
+             .iter()
+            .copied()
+            .filter(|line| {
+                self.line_text(*line)
+                    .map(|text| !text.trim().is_empty())
+                    .unwrap_or(false)
+            })
+             .collect();
+        let all_commented = non_blank.iter().all(|line| {
+             self.line_text(*line)
+                 .map(|text| text.trim_start().starts_with(prefix))
+                 .unwrap_or(false)
+         });
+         self.snapshot();
+        if all_commented {
+            // Remove `//` from each line (after leading whitespace).
+            let mut offsets: Vec<usize> = Vec::new();
+            for line in &lines {
+                let Some(text) = self.line_text(*line) else {
+                    continue;
+                };
+                let leading = text.len() - text.trim_start().len();
+                let at = starts[*line] + leading;
+                if text[leading..].starts_with(prefix) {
+                    offsets.push(at);
+                }
+            }
+             offsets.sort_by_key(|offset| std::cmp::Reverse(*offset));
+             for offset in offsets {
+                // Remove the prefix plus one trailing space (the `// ` we add).
+                let mut end = (offset + prefix.len()).min(self.text.len());
+                if self.text[end..].starts_with(' ') {
+                    end += 1;
+                }
+                 self.text.replace_range(offset..end, "");
+             }
+            self.cursor = self.cursor.min(self.text.len());
+        } else {
+            // Insert `// ` at the start of each targeted line (after indent).
+             let mut inserts: Vec<usize> = Vec::new();
+             for line in &lines {
+                 if let Some(start) = starts.get(*line) {
+                     let text = self.line_text(*line).unwrap_or("");
+                    // Skip blank lines: commenting an empty line would leave a
+                    // dangling `// ` with no content.
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                     let leading = text.len() - text.trim_start().len();
+                     inserts.push(*start + leading);
+                 }
+             }
+            inserts.sort_by_key(|offset| std::cmp::Reverse(*offset));
+            let mut added = 0;
+            for offset in inserts {
+                self.text.insert_str(offset, &format!("{prefix} "));
+                added += prefix.len() + 1;
+            }
+            self.cursor = (self.cursor + added).min(self.text.len());
+        }
+        self.selection = self.cursor..self.cursor;
+        self.secondary.clear();
         self.dirty = true;
         cx.notify();
     }
 
-    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+    /// Duplicate the current line (or every line covered by the selection),
+    /// placing the copy below the original.
+     fn duplicate_line(&mut self, cx: &mut Context<Self>) {
+        let selection = clamp_range(&self.text, self.selection.clone());
+        let (start_line, _) = self.line_col(selection.start);
+        let (end_line, _) = self.line_col(selection.end);
+        let starts = self.line_starts();
+        if start_line >= starts.len() {
+            return;
+        }
+        let first_start = starts[start_line];
+        let last_end = self.line_end(end_line, &starts);
+        // The duplicated block includes its trailing newline when one exists;
+        // a final unterminated line is duplicated with a newline before it.
+        let (chunk, insert_at) = if let Some(&next) = starts.get(end_line + 1) {
+            if next > last_end && self.text[last_end..next].starts_with('\n') {
+                (self.text[first_start..next].to_string(), next)
+            } else {
+                (self.text[first_start..last_end].to_string(), last_end)
+            }
+        } else {
+            (format!("\n{}", &self.text[first_start..last_end]), last_end)
+        };
+        self.snapshot();
+        self.text.insert_str(insert_at, &chunk);
+        self.cursor = insert_at.min(self.text.len());
+        self.selection = self.cursor..self.cursor;
+        self.secondary.clear();
+        self.dirty = true;
+        cx.notify();
+    }
+
+    /// Delete the current line (or every line covered by the selection).
+     fn delete_line(&mut self, cx: &mut Context<Self>) {
+        let selection = clamp_range(&self.text, self.selection.clone());
+        let (start_line, _) = self.line_col(selection.start);
+        let (end_line, _) = self.line_col(selection.end);
+        let starts = self.line_starts();
+        if start_line >= starts.len() {
+            return;
+        }
+        let first_start = starts[start_line];
+        let mut last_end = self.line_end(end_line, &starts);
+        // Consume the trailing newline of the last selected line.
+        if let Some(&next) = starts.get(end_line + 1) {
+            if next > last_end && self.text[last_end..next].starts_with('\n') {
+                last_end = next;
+            }
+        } else if self.text.len() > last_end {
+            last_end = self.text.len();
+        }
+        self.snapshot();
+        self.text.replace_range(first_start..last_end, "");
+        self.cursor = first_start.min(self.text.len());
+        self.selection = self.cursor..self.cursor;
+        self.secondary.clear();
+        self.dirty = true;
+        cx.notify();
+    }
+
+    /// Move the current line (or the selected block) up/down by `delta` lines,
+    /// swapping with the adjacent line(s). `delta` is -1 (up) or 1 (down).
+     fn move_line(&mut self, delta: isize, cx: &mut Context<Self>) {
+         let selection = clamp_range(&self.text, self.selection.clone());
+         let (start_line, _) = self.line_col(selection.start);
+         let (end_line, _) = self.line_col(selection.end);
+         let starts = self.line_starts();
+        // The trailing newline creates a final empty "line" entry; the last
+        // real content line is one before it when the text ends with `\n`.
+        let content_last_line = if self.text.ends_with('\n') {
+            starts.len().saturating_sub(2)
+        } else {
+            starts.len().saturating_sub(1)
+        };
+         if start_line >= starts.len() {
+             return;
+         }
+         if delta < 0 && start_line == 0 {
+             return;
+         }
+        if delta > 0 && end_line >= content_last_line {
+             return;
+         }
+         let first_start = starts[start_line];
+         let mut last_end = self.line_end(end_line, &starts);
+         if let Some(&next) = starts.get(end_line + 1) {
+             if next > last_end && self.text[last_end..next].starts_with('\n') {
+                 last_end = next;
+             }
+         }
+         let block = self.text[first_start..last_end].to_string();
+         if delta < 0 {
+             // Swap with the line above: previous block then moving block.
+             let prev_start = starts[start_line - 1];
+             let prev_end = starts[start_line];
+             let prev_block = self.text[prev_start..prev_end].to_string();
+             let moving_end = first_start + block.len();
+             self.snapshot();
+             let mut new_text = String::with_capacity(self.text.len());
+             new_text.push_str(&self.text[..prev_start]);
+             new_text.push_str(&block);
+             new_text.push_str(&prev_block);
+             new_text.push_str(&self.text[moving_end..]);
+             self.text = new_text;
+             self.cursor = prev_start;
+         } else {
+             // Swap with the line below: next block then moving block.
+             let next_start = starts[end_line + 1];
+             let mut next_end = self.line_end(end_line + 1, &starts);
+             if let Some(&after) = starts.get(end_line + 2) {
+                 if after > next_end && self.text[next_end..after].starts_with('\n') {
+                     next_end = after;
+                 }
+             }
+             let next_block = self.text[next_start..next_end].to_string();
+             self.snapshot();
+             let mut new_text = String::with_capacity(self.text.len());
+             new_text.push_str(&self.text[..first_start]);
+             new_text.push_str(&next_block);
+             new_text.push_str(&block);
+            new_text.push_str(&self.text[next_end..]);
+             self.text = new_text;
+             self.cursor = first_start + next_block.len();
+         }
+         self.cursor = self.cursor.min(self.text.len());
+         self.selection = self.cursor..self.cursor;
+         self.secondary.clear();
+         self.dirty = true;
+         cx.notify();
+     }
+ 
+    /// Expand (or shrink) the current selection to the next word boundary on
+    /// the active side. `expand` grows toward the cursor's end (right) or
+    /// start (left); shrinking pulls the selection back to the prior boundary.
+    fn expand_or_shrink_selection(&mut self, expand: bool, cx: &mut Context<Self>) {
+        let selection = clamp_range(&self.text, self.selection.clone());
+        if expand {
+            // Grow the selection by one word boundary outward. If the cursor
+            // is at the end, extend right; otherwise extend left.
+            let at_end = self.cursor == selection.end && !self.selection_reversed;
+            if at_end {
+                let new_end = self.next_word_boundary(selection.end);
+                self.selection = selection.start..new_end;
+                self.cursor = new_end;
+            } else {
+                let new_start = self.previous_word_boundary(selection.start);
+                self.selection = new_start..selection.end;
+                self.cursor = new_start;
+            }
+        } else {
+            // Shrink: pull the cursor-side boundary back one word.
+            let at_end = self.cursor == selection.end;
+             if at_end {
+                 let new_end = self.previous_word_end(selection.end);
+                 if new_end > selection.start {
+                     self.selection = selection.start..new_end;
+                     self.cursor = new_end;
+                 }
+             } else {
+                 let new_start = self.next_word_start(selection.start);
+                 if new_start < selection.end {
+                     self.selection = new_start..selection.end;
+                     self.cursor = new_start;
+                 }
+             }
+         }
+        self.selection_reversed = false;
+        self.secondary.clear();
+        cx.notify();
+    }
+
+    /// The next word boundary strictly after `offset`: the end of the word
+    /// containing `offset`, or the end of the next word when `offset` sits on a
+    /// delimiter. Returns the text length when no further word exists.
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        let bytes = self.text.as_bytes();
+        let len = bytes.len();
+        let mut i = offset.min(len);
+        // Skip a leading delimiter run, then advance through the word.
+        while i < len && !is_word_byte(bytes[i]) {
+            i += 1;
+        }
+        while i < len && is_word_byte(bytes[i]) {
+            i += 1;
+        }
+        i
+    }
+
+    /// The previous word boundary strictly before `offset`.
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        let bytes = self.text.as_bytes();
+        let mut i = offset.min(bytes.len());
+        while i > 0 && !is_word_byte(bytes[i - 1]) {
+            i -= 1;
+        }
+        while i > 0 && is_word_byte(bytes[i - 1]) {
+            i -= 1;
+        }
+         i
+     }
+ 
+    /// The end of the word preceding `offset`, skipping any delimiter between
+    /// it and `offset`. Used to shrink a selection from its right edge so the
+    /// result excludes the trailing separator (e.g. "hello world" → "hello").
+    fn previous_word_end(&self, offset: usize) -> usize {
+        let bytes = self.text.as_bytes();
+        let mut i = offset.min(bytes.len());
+         // Skip a trailing delimiter run, then the word run, then the delimiter
+         // before it so the result is the end of the previous word (excludes
+         // the separator that the expansion added).
+         while i > 0 && !is_word_byte(bytes[i - 1]) {
+             i -= 1;
+         }
+         while i > 0 && is_word_byte(bytes[i - 1]) {
+             i -= 1;
+         }
+        while i > 0 && !is_word_byte(bytes[i - 1]) {
+            i -= 1;
+        }
+         i
+     }
+ 
+     /// The start of the word after `offset`, skipping any delimiter between it
+    fn next_word_start(&self, offset: usize) -> usize {
+        let bytes = self.text.as_bytes();
+        let len = bytes.len();
+        let mut i = offset.min(len);
+        while i < len && !is_word_byte(bytes[i]) {
+            i += 1;
+        }
+        i
+    }
+
+     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         let Some(previous) = self.undo.pop() else {
             return;
         };
@@ -1172,7 +1597,79 @@ impl Editor {
         self.clear_secondary(cx);
     }
 
-    fn on_right_mouse_down(
+    fn select_next_occurrence_action(
+        &mut self,
+        _: &SelectNextOccurrence,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+     ) {
+         self.select_next_occurrence(cx);
+     }
+ 
+    fn toggle_comment_action(
+        &mut self,
+        _: &ToggleComment,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_comment(cx);
+    }
+
+    fn duplicate_line_action(
+        &mut self,
+        _: &DuplicateLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.duplicate_line(cx);
+    }
+
+    fn delete_line_action(
+        &mut self,
+        _: &DeleteLine,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_line(cx);
+    }
+
+    fn move_line_up_action(
+        &mut self,
+        _: &MoveLineUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_line(-1, cx);
+    }
+
+    fn move_line_down_action(
+        &mut self,
+        _: &MoveLineDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+         self.move_line(1, cx);
+     }
+ 
+    fn expand_selection_action(
+        &mut self,
+        _: &ExpandSelection,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.expand_or_shrink_selection(true, cx);
+    }
+
+    fn shrink_selection_action(
+        &mut self,
+        _: &ShrinkSelection,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.expand_or_shrink_selection(false, cx);
+    }
+
+     fn on_right_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
@@ -1553,8 +2050,16 @@ impl Render for Editor {
             .on_action(cx.listener(Self::toggle_minimap_action))
             .on_action(cx.listener(Self::add_cursor_up_action))
             .on_action(cx.listener(Self::add_cursor_down_action))
-            .on_action(cx.listener(Self::clear_secondary_action))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+             .on_action(cx.listener(Self::clear_secondary_action))
+             .on_action(cx.listener(Self::select_next_occurrence_action))
+            .on_action(cx.listener(Self::toggle_comment_action))
+            .on_action(cx.listener(Self::duplicate_line_action))
+            .on_action(cx.listener(Self::delete_line_action))
+            .on_action(cx.listener(Self::move_line_up_action))
+             .on_action(cx.listener(Self::move_line_down_action))
+            .on_action(cx.listener(Self::expand_selection_action))
+            .on_action(cx.listener(Self::shrink_selection_action))
+             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1633,9 +2138,12 @@ struct PrepaintState {
     inlays: Vec<(Pixels, Pixels, ShapedLine)>,
     /// Diagnostic underlines (line bottom bar) — error/warning color per row.
     diagnostics: Vec<PaintQuad>,
-    /// Diagnostic gutter ticks (small square left of the line number).
-    diagnostic_gutter: Vec<PaintQuad>,
-}
+     /// Diagnostic gutter ticks (small square left of the line number).
+     diagnostic_gutter: Vec<PaintQuad>,
+    /// Coverage markers (uncovered lines get a red gutter bar; covered lines a
+    /// green bar). Drawn left of the line number, inside the gutter.
+    coverage_quads: Vec<PaintQuad>,
+ }
 
 
 impl IntoElement for CodeElement {
@@ -1685,6 +2193,7 @@ impl Element for CodeElement {
         let language = editor.language;
         let selection = editor.selection.clone();
         let cursor = editor.cursor;
+         let secondary = editor.secondary.clone();
         let breakpoints = editor.breakpoints.clone();
         let debug_line = editor.debug_line;
         let mut inlays = Vec::new();
@@ -1752,9 +2261,31 @@ impl Element for CodeElement {
                 text.len()
             };
 
-            if selection.start < selection.end && selection.start < end && selection.end > start {
-                let sel_start = selection.start.max(start);
-                let sel_end = selection.end.min(end);
+             if selection.start < selection.end && selection.start < end && selection.end > start {
+                 let sel_start = selection.start.max(start);
+                 let sel_end = selection.end.min(end);
+                 let x_start = shape.x_for_index(sel_start - start);
+                 let x_end = shape.x_for_index(sel_end - start);
+                 selections.push(fill(
+                     Bounds::new(
+                         Point::new(
+                             code_left + x_start,
+                             top + px(row as f32 * LINE_HEIGHT),
+                         ),
+                         size((x_end - x_start).max(px(2.)), px(LINE_HEIGHT)),
+                     ),
+                     theme::alpha(theme::ACCENT, 0.2),
+                 ));
+             }
+            // Secondary selections (multi-cursor / `Cmd+D` next-occurrence).
+            // Collapsed cursors are drawn later as bars; real ranges get the
+            // same highlight as the primary selection.
+            for extra in &secondary {
+                if extra.start >= extra.end || extra.start >= end || extra.end <= start {
+                    continue;
+                }
+                let sel_start = extra.start.max(start);
+                let sel_end = extra.end.min(end);
                 let x_start = shape.x_for_index(sel_start - start);
                 let x_end = shape.x_for_index(sel_end - start);
                 selections.push(fill(
@@ -1984,9 +2515,35 @@ impl Element for CodeElement {
                 )
                 .corner_radii(px(2.0)),
             );
-        }
+         }
 
-        PrepaintState {
+        // Coverage markers: a thin gutter bar colored by hit state (red for
+        // uncovered executable lines, green for covered). Drawn left of the
+        // line number, distinct from the wider diagnostic tick.
+        let mut coverage_quads = Vec::new();
+        let coverage = editor.coverage.clone();
+        if !coverage.is_empty() {
+            for (line, hits) in coverage.iter().enumerate() {
+                let (visible, hidden) = editor.visible_line(line);
+                if hidden {
+                    continue;
+                }
+                let y = top + px(visible as f32 * LINE_HEIGHT);
+                let color = if *hits == 0 { theme::DANGER } else { theme::JADE };
+                coverage_quads.push(
+                    fill(
+                        Bounds::new(
+                            Point::new(bounds.left() + px(7.0), y + px((LINE_HEIGHT - 6.0) / 2.0)),
+                            size(px(2.0), px(6.0)),
+                        ),
+                        theme::alpha(color, 0.85),
+                    )
+                    .corner_radii(px(1.0)),
+                );
+            }
+        }
+ 
+         PrepaintState {
             lines: line_shapes,
             line_numbers,
             breakpoints: breakpoint_quads,
@@ -1998,9 +2555,10 @@ impl Element for CodeElement {
             fold_quads,
             bracket_quads,
             inlays,
-            diagnostics: diagnostic_quads,
-            diagnostic_gutter,
-        }
+             diagnostics: diagnostic_quads,
+             diagnostic_gutter,
+            coverage_quads,
+         }
     }
 
     fn paint(
@@ -2048,13 +2606,16 @@ impl Element for CodeElement {
             window.paint_quad(diagnostic);
         }
 
-        for marker in prepaint.diagnostic_gutter.drain(..) {
-            window.paint_quad(marker);
-        }
+         for marker in prepaint.diagnostic_gutter.drain(..) {
+             window.paint_quad(marker);
+         }
 
-        for selection in prepaint.selections.drain(..) {
-            window.paint_quad(selection);
+        for quad in prepaint.coverage_quads.drain(..) {
+            window.paint_quad(quad);
         }
+         for selection in prepaint.selections.drain(..) {
+             window.paint_quad(selection);
+         }
 
         for breakpoint in prepaint.breakpoints.drain(..) {
             window.paint_quad(breakpoint);
@@ -2440,6 +3001,36 @@ fn find_matches_in(
     matches
 }
 
+/// Find the first occurrence of `query` at or after `from`, excluding any
+/// range already in `selected`. Non-overlapping: overlapping matches of an
+/// already-selected range are skipped (searching the next whole occurrence).
+fn find_occurrence_after(
+    text: &str,
+    query: &str,
+    from: usize,
+    selected: &[Range<usize>],
+) -> Option<Range<usize>> {
+    if query.is_empty() {
+        return None;
+    }
+    let mut search_from = from;
+    while search_from <= text.len() {
+        let start = text[search_from..].find(query).map(|r| search_from + r)?;
+        let end = start + query.len();
+        if end > text.len() {
+            return None;
+        }
+        let overlaps = selected
+            .iter()
+            .any(|r| start < r.end && end > r.start);
+        if !overlaps {
+            return Some(start..end);
+        }
+        search_from = if end == search_from { end + 1 } else { end };
+    }
+    None
+}
+
 /// Keep only folded regions that fit inside a `total`-line document, with a
 /// valid `start <= end` ordering. Used when restoring persisted fold state.
 fn clamp_folded_regions(total: usize, regions: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
@@ -2494,9 +3085,15 @@ fn clamp_boundary(text: &str, offset: usize) -> usize {
         offset -= 1;
     }
     offset
+ }
+ 
+/// Whether a byte is part of a word (alphanumeric or underscore). Word
+/// boundaries for selection expansion/shrink are delimited by these.
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-fn clamp_range(text: &str, range: Range<usize>) -> Range<usize> {
+ fn clamp_range(text: &str, range: Range<usize>) -> Range<usize> {
     let start = clamp_boundary(text, range.start);
     let end = clamp_boundary(text, range.end.max(start));
     start..end
@@ -2659,11 +3256,27 @@ mod tests {
         assert_eq!(diagnostic_rows(vec![]), vec![]);
         let rows = diagnostic_rows(vec![(3, false), (1, true), (3, true), (1, false), (3, false)]);
         assert_eq!(rows, vec![(1, true), (3, true)]);
-        assert_eq!(diagnostic_rows(vec![(2, false)]), vec![(2, false)]);
-    }
+         assert_eq!(diagnostic_rows(vec![(2, false)]), vec![(2, false)]);
+     }
 
+    /// `set_coverage` stores per-line hit counts and clears when given an
+    /// empty vector; uncovered lines are retained as `0`.
     #[test]
-    fn line_starts_and_columns() {
+    fn editor_coverage_stores_and_clears() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), None, cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.set_coverage(vec![2, 0, 1], cx);
+                assert_eq!(editor.coverage, vec![2, 0, 1]);
+                editor.set_coverage(vec![], cx);
+                assert!(editor.coverage.is_empty());
+            });
+         });
+    }
+ 
+     #[test]
+     fn line_starts_and_columns() {
         let text = "abc\ndef\n";
         let starts = line_starts(text);
         assert_eq!(starts, vec![0, 4, 8]);
@@ -2940,6 +3553,71 @@ mod tests {
         });
     }
 
+    /// `Cmd/Ctrl+D` selects the word, then adds the next non-overlapping
+    /// occurrence as the primary selection (prior ones move to `secondary`),
+    /// wrapping to the start after the last. The search is a literal substring
+    /// match; already-selected ranges are skipped.
+    #[test]
+    fn select_next_occurrence_accumulates_and_wraps() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| {
+            let mut e = Editor::new("foo bar foo baz foo\n".to_string(), None, cx);
+            e.move_to(0, cx); // cursor on the first `foo`
+            e
+        });
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                // Press 1: select the word at the cursor.
+                editor.select_next_occurrence(cx);
+                assert_eq!(&editor.text[editor.selection.clone()], "foo");
+                assert_eq!(editor.selection, 0..3);
+                assert!(editor.secondary.is_empty());
+                // Press 2: the first selection becomes secondary; primary moves on.
+                editor.select_next_occurrence(cx);
+                assert_eq!(editor.selection, 8..11);
+                assert_eq!(editor.secondary, vec![0..3]);
+                // Press 3: the third (last) match.
+                editor.select_next_occurrence(cx);
+                assert_eq!(editor.selection, 16..19);
+                assert_eq!(editor.secondary.len(), 2);
+                // All three `foo` occurrences are now selected. The next
+                // press finds none and resets to the first one only.
+                editor.select_next_occurrence(cx);
+                assert_eq!(editor.selection, 0..3);
+                assert!(editor.secondary.is_empty(), "reset clears secondary");
+                // A further press selects the second match again.
+                editor.select_next_occurrence(cx);
+                assert_eq!(editor.selection, 8..11);
+                assert_eq!(editor.secondary, vec![0..3]);
+            });
+        });
+    }
+
+    /// A collapsed cursor (no selection) on a non-word char must be a no-op,
+    /// and a selection must be reused verbatim as the search string.
+    #[test]
+    fn select_next_occurrence_uses_selection_and_skips_nonwords() {
+         let mut cx = gpui::TestAppContext::single();
+         let editor = cx.new(|cx| {
+            let mut e = Editor::new("foo  foo\n".to_string(), None, cx);
+            e.move_to(4, cx); // on the space between the two words
+             e
+         });
+         cx.update(|cx| {
+             editor.update(cx, |editor, cx| {
+                 editor.select_next_occurrence(cx);
+                // A collapsed cursor on a space has no word to select.
+                 assert!(editor.selection.is_empty());
+                 // Seed an explicit selection and search for it.
+                 editor.selection = 0..3;
+                 editor.cursor = 3;
+                 editor.select_next_occurrence(cx);
+                assert_eq!(editor.selection, 5..8);
+                 assert_eq!(editor.secondary, vec![0..3]);
+             });
+         });
+     }
+
     /// `apply_text_edit` must replace a 0-based LSP range and mark the document
     /// dirty, leaving a single collapsed cursor after the inserted text.
     #[test]
@@ -2993,4 +3671,144 @@ mod tests {
             });
         });
     }
-}
+     /// `toggle_comment` adds `// ` to a single line and removes it on the
+     /// second invocation (round trip).
+     #[test]
+     fn toggle_comment_round_trips() {
+         let mut cx = gpui::TestAppContext::single();
+         let editor = cx.new(|cx| Editor::new("foo\nbar\n".to_string(), Some(Language::Rust), cx));
+         cx.update(|cx| {
+             editor.update(cx, |editor, cx| {
+                 editor.cursor = 0;
+                 editor.selection = 0..0;
+                 editor.toggle_comment(cx);
+                 assert_eq!(editor.text, "// foo\nbar\n");
+                 editor.toggle_comment(cx);
+                 assert_eq!(editor.text, "foo\nbar\n");
+             });
+         });
+     }
+ 
+     /// `toggle_comment` over a multi-line selection comments every line and
+     /// uncomments them on the second invocation.
+     #[test]
+     fn toggle_comment_multi_line() {
+         let mut cx = gpui::TestAppContext::single();
+         let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), Some(Language::C), cx));
+         cx.update(|cx| {
+             editor.update(cx, |editor, cx| {
+                 editor.cursor = 4;
+                 editor.selection = 2..6; // spans lines 1..=2 (b, c)
+                 editor.toggle_comment(cx);
+                 assert_eq!(editor.text, "a\n// b\n// c\n");
+                // The first pass grew the text; reset the selection so the
+                // uncomment pass covers both commented lines.
+                editor.selection = 2..12;
+                 editor.toggle_comment(cx);
+                 assert_eq!(editor.text, "a\nb\nc\n");
+             });
+         });
+     }
+ 
+     /// `toggle_comment` is a no-op for assembly (no `//` line comment).
+     #[test]
+     fn toggle_comment_noop_for_asm() {
+         let mut cx = gpui::TestAppContext::single();
+         let editor = cx.new(|cx| Editor::new("ldr r0, r1\n".to_string(), Some(Language::Asm), cx));
+         cx.update(|cx| {
+             editor.update(cx, |editor, cx| {
+                 editor.cursor = 0;
+                 editor.selection = 0..0;
+                 editor.toggle_comment(cx);
+                 assert_eq!(editor.text, "ldr r0, r1\n");
+             });
+         });
+     }
+ 
+     /// `duplicate_line` copies the current line below itself.
+     #[test]
+     fn duplicate_line_copies_below() {
+         let mut cx = gpui::TestAppContext::single();
+         let editor = cx.new(|cx| Editor::new("a\nb\n".to_string(), None, cx));
+         cx.update(|cx| {
+             editor.update(cx, |editor, cx| {
+                 editor.cursor = 2; // on "b"
+                 editor.selection = 2..2;
+                 editor.duplicate_line(cx);
+                 assert_eq!(editor.text, "a\nb\nb\n");
+                 assert_eq!(editor.cursor, 4);
+             });
+         });
+     }
+ 
+     /// `delete_line` removes the current line including its newline.
+     #[test]
+     fn delete_line_removes_line() {
+         let mut cx = gpui::TestAppContext::single();
+         let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), None, cx));
+         cx.update(|cx| {
+             editor.update(cx, |editor, cx| {
+                 editor.cursor = 2; // on "b"
+                 editor.selection = 2..2;
+                 editor.delete_line(cx);
+                 assert_eq!(editor.text, "a\nc\n");
+             });
+         });
+     }
+ 
+     /// `move_line` swaps the current line with the one above/below.
+     #[test]
+     fn move_line_swaps() {
+         let mut cx = gpui::TestAppContext::single();
+         let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), None, cx));
+         cx.update(|cx| {
+             editor.update(cx, |editor, cx| {
+                 editor.cursor = 2; // on "b"
+                 editor.selection = 2..2;
+                 editor.move_line(-1, cx);
+                 assert_eq!(editor.text, "b\na\nc\n");
+                 editor.move_line(1, cx);
+                 assert_eq!(editor.text, "a\nb\nc\n");
+             });
+         });
+     }
+ 
+     /// `move_line` refuses to move the first line up or the last line down.
+     #[test]
+     fn move_line_respects_bounds() {
+         let mut cx = gpui::TestAppContext::single();
+         let editor = cx.new(|cx| Editor::new("a\nb\n".to_string(), None, cx));
+         cx.update(|cx| {
+             editor.update(cx, |editor, cx| {
+                 editor.cursor = 0;
+                 editor.selection = 0..0;
+                 editor.move_line(-1, cx);
+                 assert_eq!(editor.text, "a\nb\n");
+                 editor.cursor = 2;
+                editor.selection = 2..2;
+                 editor.move_line(1, cx);
+                 assert_eq!(editor.text, "a\nb\n");
+             });
+         });
+     }
+
+    /// `expand_or_shrink_selection` grows the selection to word boundaries and
+    /// shrinks it back.
+    #[test]
+    fn expand_and_shrink_selection_at_word_boundaries() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("hello world foo\n".to_string(), None, cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cursor = 0;
+                editor.selection = 0..0;
+                editor.expand_or_shrink_selection(true, cx);
+                assert_eq!(editor.selection, 0..5, "first word 'hello'");
+                editor.expand_or_shrink_selection(true, cx);
+                assert_eq!(editor.selection, 0..11, "through ' world'");
+                editor.expand_or_shrink_selection(false, cx);
+                assert_eq!(editor.selection, 0..5, "shrink back to 'hello'");
+            });
+        });
+    }
+ }

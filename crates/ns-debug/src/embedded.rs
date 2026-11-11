@@ -1144,18 +1144,22 @@ impl EmbeddedSession {
                     type_name: None,
                 });
             }
-            DebugCommand::StepOver { .. } => {
-                let _ = self.mi_command("next");
-            }
-            DebugCommand::StepIn { .. } => {
-                let _ = self.mi_command("step");
-            }
-            DebugCommand::StepOut { .. } => {
-                let _ = self.mi_command("finish");
-            }
-            DebugCommand::Pause { .. } => {
-                let _ = self.mi_command("interrupt");
-            }
+             DebugCommand::StepOver { .. } => {
+                 let _ = self.mi_command("next");
+             }
+             DebugCommand::StepIn { .. } => {
+                 let _ = self.mi_command("step");
+             }
+             DebugCommand::StepOut { .. } => {
+                 let _ = self.mi_command("finish");
+             }
+             DebugCommand::StepInstruction { .. } => {
+                 // One machine instruction, without entering calls (`nexti`).
+                 let _ = self.mi_command("nexti");
+             }
+             DebugCommand::Pause { .. } => {
+                 let _ = self.mi_command("interrupt");
+             }
             DebugCommand::Stop => {
                 let _ = self.mi_command("kill");
                 let _ = self.mi_command("detach");

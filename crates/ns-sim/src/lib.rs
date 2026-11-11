@@ -1237,7 +1237,6 @@ impl Simulator {
     /// estimated latency, so peripherals must be ticked by that same amount or
     /// timers run slow relative to the CPU clock.
     pub fn tick_peripherals_for(&mut self, cycles: u64) {
-        let cycle = self.cycle_count;
         for timer in self.peripherals.timers.iter_mut() {
             let mut overflow = false;
             for _ in 0..cycles.max(1) {
@@ -1261,10 +1260,6 @@ impl Simulator {
                     watchdog.elapsed = 0;
                 }
             }
-        }
-        // Record the current GPIO input as an event so the IDE can visualize it.
-        if self.peripherals.gpio_in != 0 && cycle % 8 == 0 {
-            // no-op placeholder to keep the log meaningful without spamming
         }
     }
 
@@ -2437,18 +2432,14 @@ fn disassemble_arm_state(pc: u32, read: &dyn Fn(u32) -> u8, arm_state: bool) -> 
     match half & 0xF800 {
         0x2000 => format!("movs r{}, #{}", (half >> 8) & 7, half & 0xff),
         0x3000 => format!("adds r{}, #{}", (half >> 8) & 7, half & 0xff),
-        0x4000 => format!("ands r{}, r{}", (half >> 8) & 7, (half >> 3) & 7),
-        0x4400 => format!("add r{}, r{}", (half >> 8) & 7, (half >> 3) & 0xf),
-        0x6000 => format!("str r{}, [r{}, #{}]", (half >> 8) & 7, (half >> 3) & 7, ((half >> 6) & 0x1f) * 4),
-        0x6800 => format!("ldr r{}, [r{}, #{}]", (half >> 8) & 7, (half >> 3) & 7, ((half >> 6) & 0x1f) * 4),
-        0xD000 => format!("b{} {:#x}", cond_suffix(((half >> 8) & 0xf) as u8), pc.wrapping_add(4 + ((half as i8 as i32) * 2) as u32)),
-        0xE000 => format!("b {:#x}", pc.wrapping_add(4 + (((half & 0x7ff) as i16) * 2) as u32)),
         // BX / BLX (register): 0x4700-0x477F. `bx lr` is a function return.
         _ if insn & 0xFF00 == 0x4700 => {
             let r = ((half >> 3) & 0x0f) | (((half >> 4) & 0x8));
             let mnem = if half & 0x80 != 0 { "blx" } else { "bx" };
             format!("{mnem} r{}", r)
         }
+        // High-register ops / BX fallback (0x4400-0x47FF).
+        0x4400 => format!("add r{}, r{}", (half >> 8) & 7, (half >> 3) & 0xf),
         // POP: 0xBC00-0xBDFF. A pop that restores PC leaves the function.
         _ if insn & 0xFE00 == 0xBC00 => {
             let mut regs: Vec<String> = (0..8)
@@ -2460,7 +2451,13 @@ fn disassemble_arm_state(pc: u32, read: &dyn Fn(u32) -> u8, arm_state: bool) -> 
             }
             format!("pop {{{}}}", regs.join(", "))
         }
-        _ if insn & 0xFFFF_8000 == 0x4000 => {
+        0x6000 => format!("str r{}, [r{}, #{}]", (half >> 8) & 7, (half >> 3) & 7, ((half >> 6) & 0x1f) * 4),
+        0x6800 => format!("ldr r{}, [r{}, #{}]", (half >> 8) & 7, (half >> 3) & 7, ((half >> 6) & 0x1f) * 4),
+        0xD000 => format!("b{} {:#x}", cond_suffix(((half >> 8) & 0xf) as u8), pc.wrapping_add(4 + ((half as i8 as i32) * 2) as u32)),
+        0xE000 => format!("b {:#x}", pc.wrapping_add(4 + (((half & 0x7ff) as i16) * 2) as u32)),
+        // Format-2 data-processing (ALU) 0x4000-0x43FF. NOTE: `half & 0xF800`
+        // (not `insn & 0xFFFF_8000`, which is always 0 for a 16-bit `insn`).
+        _ if half & 0xF800 == 0x4000 => {
             let op = (half >> 6) & 0xf;
             let name = match op {
                 0x0 => "ands", 0x1 => "eors", 0x2 => "lsls", 0x3 => "lsrs",
@@ -2468,7 +2465,9 @@ fn disassemble_arm_state(pc: u32, read: &dyn Fn(u32) -> u8, arm_state: bool) -> 
                 0x8 => "tst", 0x9 => "rsbs", 0xA => "cmp", 0xB => "cmn",
                 0xC => "orrs", 0xD => "muls", 0xE => "bics", _ => "mvns",
             };
-            format!("{name} r{}, r{}", (half >> 8) & 7, (half >> 3) & 7)
+            // rd = bits 2-0, rm = bits 5-3 (not bits 10-8/6-3: that is the
+            // Format-4 shift/imm encoding, not the ALU register fields).
+            format!("{name} r{}, r{}", half & 7, (half >> 3) & 7)
         }
         _ => format!(".hword 0x{half:04x}"),
     }
@@ -2915,14 +2914,70 @@ mod tests {
     #[test]
     fn return_mnemonic_detection() {
         // Return-class mnemonics across architectures are recognized.
-        for insn in ["ret", "reti", "rts", "rti", "rfe", "rte", "retf"] {
+        for insn in ["ret", "reti", "rts", "rti", "rfe", "rte", "retf", "mret"] {
             assert!(is_return_mnemonic(insn), "{insn}");
             assert!(is_return_mnemonic(&format!("{insn} #0x10")), "{insn} with operand");
         }
+        // ARM-family returns: `bx lr`/`bx r14` and `pop {.., pc}` / `ldm .. {.., pc}`.
+        for insn in ["bx lr", "bx r14", "blx lr", "pop {r4, pc}", "pop {pc}", "ldm sp!, {r4, pc}"] {
+            assert!(is_return_mnemonic(insn), "{insn}");
+        }
         // Non-return instructions are rejected.
-        for insn in ["add a0, a1", "lw a0, 0(a1)", "mov A, #0x2A", "reti_handler"] {
+        for insn in [
+            "add a0, a1",
+            "lw a0, 0(a1)",
+            "mov A, #0x2A",
+            "reti_handler",
+            "bx r0",
+            "bx r1",
+            "pop {r4, r5}",
+            "ldr r0, [r1]",
+        ] {
             assert!(!is_return_mnemonic(insn), "{insn}");
         }
+    }
+
+    /// `step_out` stops at the function epilogue across architectures: RISC-V
+    /// `ret`/`mret` (interrupt return) and ARM `bx lr` / `pop {.., pc}`.
+    #[test]
+    fn step_out_stops_at_returns() {
+        // RISC-V: a function that ends with `ret` (jalr x0, ra, 0).
+        let mut sim = Simulator::for_arch(Arch::RiscV).expect("RISC-V core");
+        sim.load_image(0x8000_0000, &[
+            0x13, 0x03, 0x00, 0x00, // addi x6, x0, 0   (0x80000000)
+            0x67, 0x00, 0x00, 0x00, // ret              (0x80000004)
+        ]);
+        sim.set_program_counter(0x8000_0000);
+        let result = sim.step_out(64);
+        assert_eq!(result, StepResult::Advanced);
+        // After the ret executes, PC is the caller's next instruction (ra).
+        assert_eq!(sim.program_counter(), 0);
+
+        // ARM Thumb: `bx lr` (0x4770) is a return.
+        let mut sim = Simulator::for_arch(Arch::Arm).expect("ARM core");
+        // Write the bytes directly (no `load_image`: that would reset the core
+        // and treat the code as a vector table, flipping the core to ARM state).
+        sim.arm.as_mut().unwrap().set_arm_state(false);
+        sim.arm.as_mut().unwrap().write_bytes(0x0800_0000, &[0x70, 0x47]);
+        sim.set_program_counter(0x0800_0000);
+        sim.write_reg(14, 0x0800_0010); // LR = return address
+        let result = sim.step_out(64);
+        assert_eq!(result, StepResult::Advanced);
+        assert_eq!(sim.program_counter(), 0x0800_0010);
+    }
+
+    #[test]
+    fn step_out_stops_at_mret_after_interrupt() {
+        let mut sim = Simulator::for_arch(Arch::RiscV).expect("RISC-V core");
+        // Main loop at 0x80000000; an ISR at 0x80000200 that ends with mret.
+        sim.load_image(0x8000_0000, &[0x13, 0x01, 0x00, 0x00]); // nop-ish addi
+        sim.load_image(0x8000_0200, &[0x73, 0x00, 0x20, 0x30]); // mret (0x30200073)
+        sim.set_program_counter(0x8000_0200);
+        sim.csr.mepc = 0x8000_0004;
+        // Stepping out of the ISR stops after mret, back in the main loop.
+        let result = sim.step_out(64);
+        assert_eq!(result, StepResult::Advanced);
+        assert_eq!(sim.program_counter(), 0x8000_0004);
     }
 
     #[test]
@@ -3535,6 +3590,35 @@ mod tests {
         };
         assert_eq!(disassemble_one_state(Arch::Arm, 0, &read, true), "b 0x8");
     }
+    #[test]
+    fn disassembles_thumb_alu_instructions() {
+        // Regression: the Thumb-1 format-2 ALU guard was `insn & 0xFFFF_8000
+        // == 0x4000`, always false for a 16-bit `insn`, so every ALU op fell
+        // through to `.hword`. Guard must mask with 0xF800 on `half`.
+        let cases: &[(u16, &str)] = &[
+            (0x4000, "ands r0, r0"),
+            (0x4011, "ands r1, r2"),
+            (0x4091, "lsls r1, r2"),
+            (0x4100, "asrs r0, r0"),
+            (0x4200, "tst r0, r0"),
+            (0x4291, "cmp r1, r2"),
+            (0x4351, "muls r1, r2"),
+            (0x43d1, "mvns r1, r2"),
+        ];
+        for (insn, expected) in cases {
+            let bytes = [*insn as u8, (*insn >> 8) as u8];
+            let read = |addr: u32| {
+                let i = addr as usize;
+                if i < 2 { bytes[i] } else { 0 }
+            };
+            assert_eq!(
+                disassemble_one_state(Arch::Arm, 0, &read, false),
+                *expected,
+                "insn {insn:#06x}"
+            );
+        }
+    }
+
 
     #[test]
     fn register_metadata_per_architecture() {

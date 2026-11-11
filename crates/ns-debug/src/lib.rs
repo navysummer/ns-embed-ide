@@ -21,8 +21,9 @@ use std::thread;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
-pub mod swvd;
-pub mod embedded;
+ pub mod swvd;
+ pub mod embedded;
+pub mod profile;
 
 pub use dap::{read_message, wait_for_response, write_message};
 pub use embedded::{
@@ -267,10 +268,12 @@ pub enum DebugCommand {
     Continue { thread_id: u64 },
     /// Run until the given source location (DAP `continueTo`).
     ContinueTo { thread_id: u64, path: String, line: usize },
-    StepOver { thread_id: u64 },
-    StepIn { thread_id: u64 },
-    StepOut { thread_id: u64 },
-    Pause { thread_id: u64 },
+     StepOver { thread_id: u64 },
+     StepIn { thread_id: u64 },
+     StepOut { thread_id: u64 },
+    /// Single-step one machine instruction (DAP `stepInstruction`).
+    StepInstruction { thread_id: u64 },
+     Pause { thread_id: u64 },
     /// Set the value of a variable (DAP `setVariable`). The answer arrives as
     /// [`DebugMessage::VariableSet`] so the caller can refresh the panel.
     SetVariable { variables_reference: u64, name: String, value: String },
@@ -538,22 +541,31 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                             }),
                         );
                     }
-                    DebugCommand::StepOver { thread_id } => {
-                        request(&mut stdin, sequence, "next", json!({ "threadId": thread_id }));
-                        sequence += 1;
-                    }
-                    DebugCommand::StepIn { thread_id } => {
-                        request(&mut stdin, sequence, "stepIn", json!({ "threadId": thread_id }));
-                        sequence += 1;
-                    }
-                    DebugCommand::StepOut { thread_id } => {
-                        request(&mut stdin, sequence, "stepOut", json!({ "threadId": thread_id }));
-                        sequence += 1;
-                    }
-                    DebugCommand::Pause { thread_id } => {
-                        request(&mut stdin, sequence, "pause", json!({ "threadId": thread_id }));
-                        sequence += 1;
-                    }
+                     DebugCommand::StepOver { thread_id } => {
+                         request(&mut stdin, sequence, "next", json!({ "threadId": thread_id }));
+                         sequence += 1;
+                     }
+                     DebugCommand::StepIn { thread_id } => {
+                         request(&mut stdin, sequence, "stepIn", json!({ "threadId": thread_id }));
+                         sequence += 1;
+                     }
+                     DebugCommand::StepOut { thread_id } => {
+                         request(&mut stdin, sequence, "stepOut", json!({ "threadId": thread_id }));
+                         sequence += 1;
+                     }
+                     DebugCommand::StepInstruction { thread_id } => {
+                         request(
+                             &mut stdin,
+                             sequence,
+                             "stepInstruction",
+                             json!({ "threadId": thread_id }),
+                         );
+                         sequence += 1;
+                     }
+                     DebugCommand::Pause { thread_id } => {
+                         request(&mut stdin, sequence, "pause", json!({ "threadId": thread_id }));
+                         sequence += 1;
+                     }
                     DebugCommand::Stop => {
                         request(
                             &mut stdin,

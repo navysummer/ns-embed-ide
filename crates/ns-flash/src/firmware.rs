@@ -89,17 +89,49 @@ pub fn load_firmware(path: &Path) -> Result<FirmwareImage> {
 /// their virtual address falls inside the target's flash or RAM window (from
 /// `ns_device::memory_map`). Intel HEX / BIN payloads have a single contiguous
 /// base and are attributed to whichever region contains `base`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FirmwareSize {
-    /// Bytes occupying the target's flash region (code + rodata).
-    pub flash: u64,
-    /// Bytes occupying the target's RAM region (data + bss initializers).
-    pub ram: u64,
-    /// Total payload bytes loaded (flash + ram).
-    pub total: u64,
+ pub struct FirmwareSize {
+     /// Bytes occupying the target's flash region (code + rodata).
+     pub flash: u64,
+     /// Bytes occupying the target's RAM region (data + bss initializers).
+     pub ram: u64,
+    /// Bytes in the `.text` section (code), from the `size` tool. `0` when
+    /// the tool is unavailable or the artifact is not ELF.
+    pub text: u64,
+    /// Bytes in the `.data` section (initialized globals), from `size`.
+    pub data: u64,
+    /// Bytes in the `.bss` section (zeroed globals), from `size`.
+    pub bss: u64,
+     /// Total payload bytes loaded (flash + ram).
+     pub total: u64,
     /// The lowest load address observed.
     pub base: u64,
-}
+    /// Largest symbols (by size) in the firmware, from `nm`. Empty when the
+    /// symbol table is unavailable (non-ELF artifact or no `nm` tool).
+    pub symbols: Vec<SymbolSize>,
+ }
+ 
+ impl Default for FirmwareSize {
+    fn default() -> Self {
+         FirmwareSize {
+            flash: 0,
+             ram: 0,
+            text: 0,
+            data: 0,
+            bss: 0,
+             total: 0,
+             base: 0,
+             symbols: Vec::new(),
+         }
+     }
+ }
+
+/// One symbol's size, name and section from `nm --size-sort`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolSize {
+    pub name: String,
+    pub size: u64,
+    pub address: u64,
+ }
 
 /// Compute the memory-usage breakdown of the firmware at `path`, given the
 /// target's flash and RAM windows. Returns `Ok(None)` when the file is not a
@@ -174,11 +206,112 @@ pub fn analyze_firmware_size(
             }
         }
     }
-    size.base = first_addr.unwrap_or(0);
-    if size.total == 0 {
-        return Ok(None);
+     size.base = first_addr.unwrap_or(0);
+     if size.total == 0 {
+         return Ok(None);
+     }
+     // For ELF artifacts, enrich with the largest symbols via `nm`.
+     if format == FirmwareFormat::Elf {
+         size.symbols = analyze_symbols(path);
+        let (text, data, bss) = analyze_size_breakdown(path);
+        size.text = text;
+        size.data = data;
+        size.bss = bss;
+     }
+     Ok(Some(size))
+ }
+
+/// Run `nm --size-sort --radix=d` on an ELF and return the largest symbols.
+/// Returns an empty vector when `nm` is unavailable or the file is not ELF.
+pub fn analyze_symbols(path: &Path) -> Vec<SymbolSize> {
+    let nm = match ns_project::toolchain::find_command("nm") {
+        Some(nm) => nm,
+        None => return Vec::new(),
+    };
+    let output = match std::process::Command::new(&nm)
+        .arg("--size-sort")
+        .arg("--radix=d")
+        .arg(path)
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return Vec::new(),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_nm_symbols(&text)
+ }
+ 
+ /// Run `size` on an ELF and return the classic `text`/`data`/`bss` byte
+ /// counts. Returns `(0, 0, 0)` when `size` is unavailable or the artifact is
+ /// not an ELF. The `size` tool's default output has three columns
+ /// (`text`, `data`, `bss`) followed by the file name; the GNU `size` also
+ /// supports `--format=sysv` for a per-section listing, but the plain three
+ /// column form is what cross toolchains (e.g. `arm-none-eabi-size`) emit by
+ /// default and is the most portable.
+ pub fn analyze_size_breakdown(path: &Path) -> (u64, u64, u64) {
+     let size = match ns_project::toolchain::find_command("size") {
+        Some(size) => size,
+        None => return (0, 0, 0),
+    };
+    let output = match std::process::Command::new(&size).arg(path).output() {
+        Ok(output) if output.status.success() => output,
+        _ => return (0, 0, 0),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_size_breakdown(&text)
+}
+
+/// Parse the three-column `text data bss` line from `size` output. The header
+/// line (`text    data     bss     dec     hex filename`) and the data line
+/// follow the same layout, so the first numeric line wins.
+pub fn parse_size_breakdown(text: &str) -> (u64, u64, u64) {
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            if let (Ok(t), Ok(d), Ok(b)) = (
+                parts[0].parse::<u64>(),
+                parts[1].parse::<u64>(),
+                parts[2].parse::<u64>(),
+            ) {
+                return (t, d, b);
+            }
+        }
     }
-    Ok(Some(size))
+    (0, 0, 0)
+}
+/// Parse `nm --size-sort --radix=d` output: each line is
+/// `<address> <size> <type> <name>` (decimal address and size). Only
+/// non-empty, real (non-absolute, non-undefined) symbols are kept; the result
+/// is sorted by size descending so callers can show the largest first.
+pub fn parse_nm_symbols(text: &str) -> Vec<SymbolSize> {
+    let mut symbols: Vec<SymbolSize> = Vec::new();
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let address = match parts[0].parse::<u64>() {
+            Ok(addr) => addr,
+            Err(_) => continue,
+        };
+        let size = match parts[1].parse::<u64>() {
+            Ok(size) => size,
+            Err(_) => continue,
+        };
+        let name = parts[3..].join(" ");
+        // Skip absolute (`a`/`A`), undefined (`u`/`U`) and debug (`n`/`N`)
+        // symbols; they occupy no flash/RAM footprint.
+        let kind = parts[2].chars().next().unwrap_or(' ');
+        if matches!(kind, 'a' | 'A' | 'u' | 'U' | 'n' | 'N') {
+            continue;
+        }
+        if size == 0 {
+            continue;
+        }
+        symbols.push(SymbolSize { name, size, address });
+    }
+    symbols.sort_by(|a, b| b.size.cmp(&a.size));
+    symbols
 }
 
 /// Whether an address falls in any `(start, size)` window.
@@ -516,9 +649,31 @@ mod tests {
 
     #[test]
     fn rejects_bad_checksum() {
-        let hex = ":0400000001020304FF\n:00000001FF";
-        assert!(decode_intel_hex(hex).is_err());
-    }
+         let hex = ":0400000001020304FF\n:00000001FF";
+         assert!(decode_intel_hex(hex).is_err());
+     }
+
+    /// `parse_nm_symbols` keeps real, sized symbols, drops absolute/undefined/
+    /// debug and zero-sized entries, and sorts by size descending.
+    #[test]
+     fn parses_nm_symbols_and_sorts_by_size() {
+         let text = "\
+            0000000010000000 0000000000000012 T main\n\
+            0000000010000010 0000000000000032 t helper\n\
+             0000000008000000 0000000000000000 A absolute\n\
+             0000000000000000 0000000000000008 U undefined\n\
+             0000000000000000 0000000000000004 n debug_symbol\n\
+            0000000010000100 0000000000000024 T big_function\n";
+         let symbols = parse_nm_symbols(text);
+         assert_eq!(symbols.len(), 3);
+        // Sorted descending by size: helper (32) > big_function (24) > main (18).
+         assert_eq!(symbols[0].name, "helper");
+        assert_eq!(symbols[0].size, 32);
+         assert_eq!(symbols[1].name, "big_function");
+        assert_eq!(symbols[1].size, 24);
+         assert_eq!(symbols[2].name, "main");
+        assert_eq!(symbols[2].size, 12);
+     }
 
     #[test]
     fn missing_eof_is_error() {
@@ -665,6 +820,20 @@ fn unknown_format_returns_none() {
     let size = analyze_firmware_size(&path, &[], &[]).unwrap();
     assert!(size.is_none());
     std::fs::remove_dir_all(&dir).ok();
-}
-}
+ }
 
+#[test]
+fn parses_size_three_column_breakdown() {
+    // GNU `size` default output: `text data bss dec hex filename`.
+    let report = "   text    data     bss     dec     hex filename\n\
+                  1024       64     512    1600     640 fw.elf\n";
+    assert_eq!(parse_size_breakdown(report), (1024, 64, 512));
+    // A cross toolchain may omit the header; the first numeric line still wins.
+    let bare = "  2048      128    1024    3200     c80 fw.elf\n";
+    assert_eq!(parse_size_breakdown(bare), (2048, 128, 1024));
+    // Non-numeric or empty output degrades to zeros.
+    assert_eq!(parse_size_breakdown(""), (0, 0, 0));
+     assert_eq!(parse_size_breakdown("text data bss\n"), (0, 0, 0));
+ }
+
+}

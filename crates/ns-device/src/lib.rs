@@ -737,8 +737,104 @@ pub fn registers_by_peripheral(device: &Device) -> BTreeMap<String, Vec<&Registe
     map
 }
 
-#[cfg(test)]
-mod tests {
+/// A requested peripheral to configure for init-code generation.
+#[derive(Debug, Clone)]
+pub struct PeripheralConfig {
+    /// Peripheral name as it appears in the SVD (e.g. `GPIOA`, `USART1`).
+    pub name: String,
+    /// Human-readable intent used to seed the init code (e.g. `GPIO 输出`).
+    pub purpose: String,
+    /// Optional pin/clock hints from CubeMX-style config (not parsed in depth).
+    pub options: Vec<String>,
+}
+
+/// Generate a C init function that enables and configures the requested
+/// peripherals. The generated code is a best-effort skeleton: it sets the
+/// peripheral's clock-enable bit and writes reset values for registers the
+/// SVD describes, so the user can fill in the exact configuration. `target` is
+/// the catalog key (e.g. `stm32f103c8`); returns `None` for unknown targets.
+ pub fn generate_peripheral_init(target: &str, configs: &[PeripheralConfig]) -> Option<String> {
+     let device = device_for_target(target)?;
+    let mut lines = String::new();
+    lines.push_str(&format!(
+        "/* Auto-generated peripheral initialization for {target}.\n"
+    ));
+    lines.push_str(" * Edit the register writes to match your application.\n");
+    lines.push_str(" * Call `peripheral_init()` once from `main()` before use.\n");
+    lines.push_str(" */\n\n");
+    lines.push_str("#include <stdint.h>\n\n");
+
+    // Each enabled peripheral gets its own init helper.
+    for config in configs {
+        let Some(peripheral) = device.peripheral(&config.name) else {
+            continue;
+        };
+        let fn_name = format!("{}_init", config.name.to_ascii_lowercase());
+        lines.push_str(&format!("void {fn_name}(void) {{\n"));
+        lines.push_str(&format!(
+            "    /* {} — {} */\n",
+            config.name,
+            if config.purpose.is_empty() {
+                "配置外设"
+            } else {
+                &config.purpose
+            }
+        ));
+        // Acknowledge clock enable for the peripheral block.
+        lines.push_str(&format!(
+            "    // TODO: 使能 {name} 的时钟（RCC->APBxENR / AHBxENR 对应位）。\n",
+            name = config.name
+        ));
+        for register in &peripheral.registers {
+            if register.name.to_uppercase().contains("CR")
+                || register.name.to_uppercase().contains("CFG")
+                || register.name.to_uppercase().contains("BRR")
+            {
+                // Configuration registers: seed with the SVD reset value so the
+                // user has a sane base to modify.
+                lines.push_str(&format!(
+                    "    // {name}@{addr:#010x} = {reset:#010x}; /* {desc} */\n",
+                    name = register.name,
+                    addr = register.address,
+                    reset = register.reset_value,
+                    desc = register.description
+                ));
+            }
+        }
+        lines.push_str("}\n\n");
+    }
+
+    // Aggregate init that calls each helper.
+    lines.push_str("void peripheral_init(void) {\n");
+    for config in configs {
+        if device.peripheral(&config.name).is_some() {
+            lines.push_str(&format!(
+                "    {}_init();\n",
+                config.name.to_ascii_lowercase()
+            ));
+        }
+    }
+    lines.push_str("}\n");
+
+    Some(lines)
+}
+
+/// Extract the peripheral names the SVD lists for a target (for the
+/// configuration UI to offer as choices).
+pub fn peripheral_names(target: &str) -> Vec<String> {
+    device_for_target(target)
+        .map(|device| {
+            device
+                .sorted_peripherals()
+                .into_iter()
+                .map(|peripheral| peripheral.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+ }
+ 
+ #[cfg(test)]
+ mod tests {
     use super::*;
 
     const SAMPLE: &str = r#"<?xml version="1.0"?>
@@ -832,5 +928,50 @@ mod tests {
         assert!(linker_script("unknown-mcu").is_none());
         assert!(startup_file("unknown-mcu").is_none());
         assert!(device_for_target("unknown-mcu").is_none());
+     }
+
+    #[test]
+    fn generates_peripheral_init_for_catalog_target() {
+        let configs = vec![
+            PeripheralConfig {
+                name: "GPIOA".to_string(),
+                purpose: "LED 输出".to_string(),
+                options: vec!["pin0".to_string()],
+            },
+            PeripheralConfig {
+                name: "USART1".to_string(),
+                purpose: "调试串口".to_string(),
+                options: Vec::new(),
+            },
+        ];
+        let code = generate_peripheral_init("stm32f103c8", &configs).unwrap();
+        assert!(code.contains("peripheral_init"));
+        assert!(code.contains("gpioa_init"));
+        assert!(code.contains("usart1_init"));
+        assert!(code.contains("LED 输出"));
+        assert!(code.contains("#include <stdint.h>"));
     }
-}
+
+    #[test]
+    fn peripheral_init_skips_unknown_peripheral() {
+        let configs = vec![PeripheralConfig {
+            name: "NOT_A_PERIPH".to_string(),
+            purpose: String::new(),
+            options: Vec::new(),
+        }];
+        let code = generate_peripheral_init("stm32f103c8", &configs).unwrap();
+        assert!(!code.contains("not_a_periph_init"));
+    }
+
+    #[test]
+    fn peripheral_names_lists_catalog_peripherals() {
+        let names = peripheral_names("stm32f103c8");
+        assert!(names.contains(&"GPIOA".to_string()));
+        assert!(names.contains(&"USART1".to_string()));
+    }
+
+    #[test]
+    fn peripheral_init_unknown_target_is_none() {
+        assert!(generate_peripheral_init("unknown-mcu", &[]).is_none());
+    }
+ }

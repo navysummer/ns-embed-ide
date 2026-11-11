@@ -18,8 +18,9 @@ pub struct CommandEntry {
 }
 
 pub const COMMANDS: &[CommandEntry] = &[
-    CommandEntry { id: "new-project", title: "新建项目", keys: "cmd/ctrl+n", keywords: "new create project 新建 创建" },
-    CommandEntry { id: "open-project", title: "打开项目…", keys: "cmd/ctrl+o", keywords: "open project 打开 项目" },
+     CommandEntry { id: "new-project", title: "新建项目", keys: "cmd/ctrl+n", keywords: "new create project 新建 创建" },
+    CommandEntry { id: "import-project", title: "导入工程（IAR/Keil/STM32CubeMX）…", keys: "", keywords: "import iar keil stm32cubemx ewp uvprojx ioc 导入 工程 迁移" },
+     CommandEntry { id: "open-project", title: "打开项目…", keys: "cmd/ctrl+o", keywords: "open project 打开 项目" },
     CommandEntry { id: "save", title: "保存当前文件", keys: "cmd/ctrl+s", keywords: "save 保存" },
     CommandEntry { id: "build", title: "构建项目", keys: "cmd/ctrl+b", keywords: "build compile 构建 编译 b" },
     CommandEntry { id: "rebuild", title: "重新构建（清理后构建）", keys: "", keywords: "rebuild clean rebuild 重新 构建 清理" },
@@ -51,11 +52,13 @@ pub const COMMANDS: &[CommandEntry] = &[
     CommandEntry { id: "flash-verify", title: "校验固件", keys: "", keywords: "flash verify 校验 固件 烧写" },
     CommandEntry { id: "flash-read", title: "读回固件（保存 BIN）", keys: "", keywords: "flash read readback dump 读回 固件 保存" },
     CommandEntry { id: "flash-and-run", title: "烧写并运行", keys: "", keywords: "flash run flash-and-run 烧写 运行 复位" },
-    CommandEntry { id: "flash-and-debug", title: "烧写并调试", keys: "", keywords: "flash debug flash-and-debug 烧写 调试" },
-    CommandEntry { id: "toolchain", title: "工具链路径…", keys: "", keywords: "toolchain path global 工具链 路径 全局 配置" },
-    CommandEntry { id: "generate-device-files", title: "生成设备文件（链接脚本/启动文件）", keys: "", keywords: "device startup linker ld svd 设备 启动文件 链接脚本 生成" },
-    CommandEntry { id: "go-to-definition", title: "跳转到定义", keys: "f12", keywords: "go to definition jump 跳转 定义 声明" },
-    CommandEntry { id: "find-references", title: "查找引用", keys: "shift+f12", keywords: "find references usages 查找 引用" },
+     CommandEntry { id: "flash-and-debug", title: "烧写并调试", keys: "", keywords: "flash debug flash-and-debug 烧写 调试" },
+    CommandEntry { id: "flash-and-verify", title: "烧写并校验", keys: "", keywords: "flash verify flash-and-verify 烧写 校验 链" },
+     CommandEntry { id: "generate-device-files", title: "生成设备文件（链接脚本/启动文件）", keys: "", keywords: "device startup linker ld svd 设备 启动文件 链接脚本 生成" },
+    CommandEntry { id: "include-graph", title: "include 依赖图（项目级）", keys: "", keywords: "include graph dependency deps 依赖 图 头文件 include 包含 分析" },
+     CommandEntry { id: "memory-layout", title: "内存布局视图（链接脚本区域/段占用）", keys: "", keywords: "memory layout map linker regions sections 内存 布局 区域 段 占用 可视化" },
+     CommandEntry { id: "generate-peripheral-init", title: "生成外设初始化代码（SVD 配置）…", keys: "", keywords: "peripheral init code generate svd cube 外设 初始化 生成 配置 gpio uart" },
+     CommandEntry { id: "go-to-definition", title: "跳转到定义", keys: "f12", keywords: "go to definition jump 跳转 定义 声明" },
     CommandEntry { id: "hover", title: "显示悬停提示", keys: "cmd/ctrl+k cmd/ctrl+i", keywords: "hover type signature tooltip 悬停 提示 类型" },
     CommandEntry { id: "signature-help", title: "签名帮助", keys: "cmd/ctrl+shift+space", keywords: "signature help parameter args 签名 帮助 参数" },
     CommandEntry { id: "inlay-hints", title: "内联提示", keys: "", keywords: "inlay hints 内联 提示 type param" },
@@ -72,12 +75,12 @@ pub const COMMANDS: &[CommandEntry] = &[
     CommandEntry { id: "split-right", title: "编辑器分屏（右侧）", keys: "", keywords: "split pane editor divide 分屏 分割 视图 双栏 side by side" },
     CommandEntry { id: "close-split", title: "关闭分屏", keys: "", keywords: "split close pane 关闭 分屏 分割 视图" },
     CommandEntry { id: "run-tests", title: "运行单元测试", keys: "", keywords: "run test tests unittest cargo test ctest make test 单元测试 测试 运行" },
-    CommandEntry { id: "stack-usage", title: "栈使用分析（-fstack-usage）", keys: "", keywords: "stack usage fstack analyze 栈 使用 分析 内存" },
-    CommandEntry { id: "coverage", title: "覆盖率分析（gcov）", keys: "", keywords: "coverage gcov line cover 覆盖率 行覆盖 测试 分析" },
-    CommandEntry { id: "workspace-symbols", title: "搜索项目符号…", keys: "cmd/ctrl+shift+o", keywords: "workspace symbol search find goto 全局 符号 搜索 导航 ctrl+t" },
-    CommandEntry { id: "quick-open", title: "快速打开文件…", keys: "cmd/ctrl+p", keywords: "quick open file jump goto 快速 打开 文件 导航 ctrl+p" },
-    CommandEntry { id: "recent-files", title: "最近打开的文件…", keys: "cmd/ctrl+e", keywords: "recent files history 最近 打开 文件 历史 导航" },
-];
+     CommandEntry { id: "stack-usage", title: "栈使用分析（-fstack-usage）", keys: "", keywords: "stack usage fstack analyze 栈 使用 分析 内存" },
+     CommandEntry { id: "coverage", title: "覆盖率分析（gcov）", keys: "", keywords: "coverage gcov line cover 覆盖率 行覆盖 测试 分析" },
+    CommandEntry { id: "preprocess", title: "宏展开/预处理输出（C/C++ -E）", keys: "", keywords: "preprocess macro expand cpp e preprocessor 宏 展开 预处理 输出" },
+     CommandEntry { id: "recent-files", title: "最近打开的文件…", keys: "cmd/ctrl+e", keywords: "recent files history 最近 打开 文件 历史 导航" },
+     CommandEntry { id: "tasks", title: "任务面板（TODO/FIXME 扫描）", keys: "", keywords: "todo fixme xxx hack bug task marker 任务 待办 标记 扫描 面板" },
+ ];
 
 /// Rank `COMMANDS` for the given query.
 ///
@@ -204,7 +207,8 @@ mod tests {
     fn flash_commands_are_ranked() {
         let ranked = rank("烧写");
         assert!(ranked.contains(&index_of("flash")));
-        assert!(ranked.contains(&index_of("flash-and-run")));
-        assert!(ranked.contains(&index_of("flash-and-debug")));
-    }
-}
+         assert!(ranked.contains(&index_of("flash-and-run")));
+         assert!(ranked.contains(&index_of("flash-and-debug")));
+        assert!(ranked.contains(&index_of("flash-and-verify")));
+     }
+ }

@@ -11,14 +11,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc::RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
-use ns_project::{Language, Project};
-
+ use anyhow::{Context, Result, bail};
+ use ns_project::{Language, Project};
+ 
+ pub mod layout;
+ 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuildPlan {
-    pub program: String,
-    pub args: Vec<String>,
-    pub cwd: PathBuf,
+ pub struct BuildPlan {
+     pub program: String,
+     pub args: Vec<String>,
+     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
     pub artifact: PathBuf,
 }
@@ -34,15 +36,29 @@ impl BuildPlan {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BuildOutcome {
-    pub success: bool,
-    pub code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-    pub duration: Duration,
-    pub plan: BuildPlan,
+ #[derive(Debug, Clone)]
+ pub struct BuildOutcome {
+     pub success: bool,
+     pub code: Option<i32>,
+     pub stdout: String,
+     pub stderr: String,
+     pub duration: Duration,
+     pub plan: BuildPlan,
+    /// Estimated per-source-file compile time, parsed from the build output.
+    /// Only populated when the toolchain prints per-file progress (Make/CMake
+    /// `Building ...` lines) or per-file `-c` invocations; otherwise empty.
+    pub file_timings: Vec<FileTiming>,
 }
+
+/// Estimated wall-clock spent compiling one source file, derived from the
+/// build output's per-file markers. The toolchain may print each source as it
+/// starts; the gap to the next marker (or the end of the build) is the
+/// estimate. `elapsed_ms` is the time attributed to that file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileTiming {
+    pub file: String,
+    pub elapsed_ms: u64,
+ }
 
 impl BuildOutcome {
     pub fn diagnostics(&self, root: &Path) -> Vec<Diagnostic> {
@@ -108,6 +124,104 @@ impl Diagnostic {
             (Some(path), None, _) => path.display().to_string(),
             _ => "构建输出".to_string(),
         }
+    }
+ }
+
+/// A suggested quick fix for a build diagnostic that does not require a
+/// language server (missing include, undefined reference, undeclared
+/// identifier, missing semicolon). `kind` tells the IDE how to apply it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickFix {
+    /// Insert an `#include <...>` line at the top of the file.
+    AddInclude { header: String },
+    /// Add a linker flag (e.g. `-lm`) to the build's linker flags.
+    AddLinkFlag { flag: String },
+    /// A human-readable hint with no automatic edit.
+    Hint(String),
+}
+
+/// Suggest a quick fix for a single build diagnostic. `source_text` is the
+/// source file's current contents (used to check whether an include already
+/// exists); pass `None` when the file cannot be read.
+pub fn suggest_quick_fix(diagnostic: &Diagnostic, source_text: Option<&str>) -> Option<QuickFix> {
+    let message = &diagnostic.message;
+    let lower = message.to_lowercase();
+
+    // `undefined reference to `foo`` -> linker flag or symbol hint.
+    if lower.contains("undefined reference") {
+        if let Some(symbol) = extract_symbol_after(message, "undefined reference to") {
+            return Some(QuickFix::Hint(format!(
+                "未定义引用 `{symbol}`：检查是否缺少链接库（如 `-l` 标志）或该符号所在的源文件未参与构建。"
+            )));
+        }
+        return Some(QuickFix::Hint(
+            "未定义引用：检查链接器库标志（`[compiler]` 的链接参数）与源文件是否全部参与构建。".to_string(),
+        ));
+    }
+
+    // `fatal error: xxx.h: No such file or directory` -> AddInclude.
+    if lower.contains("no such file or directory")
+        || (lower.contains("fatal error") && lower.contains(".h"))
+    {
+        let header = message
+            .split_whitespace()
+             .find(|token| token.contains(".h"))
+             .map(|token| {
+                token.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '/')
+             })
+             .unwrap_or_default();
+        if !header.is_empty() {
+            let already = source_text
+                .map(|text| text.contains(&format!("<{header}>")))
+                .unwrap_or(false);
+            if !already {
+                return Some(QuickFix::AddInclude {
+                    header: header.to_string(),
+                });
+            }
+            return Some(QuickFix::Hint(format!(
+                "头文件 `<{header}>` 已包含但仍报错：检查 include 路径（`[compiler]` 的 includes 或安装位置）。"
+            )));
+        }
+    }
+
+    // `'foo' undeclared (first use in this function)` -> declaration hint.
+     if lower.contains("undeclared") || lower.contains("was not declared") {
+         let symbol = extract_symbol_after(message, "‘")
+             .or_else(|| extract_symbol_after(message, "'"))
+             .or_else(|| extract_symbol_after(message, "`"))
+             .unwrap_or_default();
+        if !symbol.is_empty() {
+             return Some(QuickFix::Hint(format!(
+                "标识符 `{symbol}` 未声明：检查拼写、是否缺少 `#include`，或需在使用前声明/定义。"
+            )));
+        }
+    }
+
+    // `expected ';' before ...` -> missing semicolon hint.
+    if lower.contains("expected ';'") {
+        return Some(QuickFix::Hint(
+            "缺少分号：上一行语句结尾可能是 `;`（或宏展开后缺 `;`）。".to_string(),
+        ));
+    }
+
+    None
+}
+
+/// Extract the quoted identifier/symbol after a marker in a diagnostic message.
+fn extract_symbol_after(message: &str, marker: &str) -> Option<String> {
+    let idx = message.find(marker)?;
+    let rest = &message[idx + marker.len()..];
+     let symbol: String = rest
+         .trim_start()
+        .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_')
+         .chars()
+         .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '$'))
+         .collect();
+    if symbol.is_empty() {
+        None
+    } else {
+        Some(symbol)
     }
 }
 
@@ -725,27 +839,90 @@ pub fn collect_stack_usage(out_dir: &Path) -> Vec<StackUsageEntry> {
     entries
 }
 
-/// Aggregate line-coverage summary for one source file, from `gcov`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CoverageFile {
-    /// Source file path as reported by gcov.
-    pub file: String,
-    /// Lines executed at least once.
-    pub executed: u64,
-    /// Lines never executed.
-    pub not_executed: u64,
+ /// Aggregate line-coverage summary for one source file, from `gcov`.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct CoverageFile {
+     /// Source file path as reported by gcov.
+     pub file: String,
+     /// Lines executed at least once.
+     pub executed: u64,
+     /// Lines never executed.
+     pub not_executed: u64,
+    /// Per-line coverage from `gcov -t` (0-based line → count of executions).
+    /// Only executable lines appear; `None` means line-level data is absent.
+    pub line_hits: Option<Vec<u64>>,
+ }
+ 
+ impl CoverageFile {
+     /// Percentage of executable lines covered (0-100), rounded down.
+     pub fn percent(&self) -> u64 {
+         let total = self.executed + self.not_executed;
+         if total == 0 {
+             return 0;
+         }
+         self.executed * 100 / total
+     }
+ }
+
+/// Parse `gcov -t` per-line output into a flat line-hit map.
+///
+/// gcov's `-t` (stdout) format writes, for each source file, a
+/// `:line:source` header followed by `count:line_no:source_code` rows. The
+/// count field is `#####` (never executed), `-` (non-executable), or a
+/// decimal execution count. This returns `(file, Vec<u64>)` pairs where the
+/// vector is indexed by 0-based line and holds the hit count (0 = never).
+///
+/// Rows that are not executable (`-`) are omitted so the vector stays dense
+/// for executable lines; callers map line numbers directly.
+pub fn parse_gcov_lines(text: &str) -> Vec<(String, Vec<u64>)> {
+    let mut files: Vec<(String, Vec<u64>)> = Vec::new();
+    let mut current: Option<usize> = None;
+    for line in text.lines() {
+        // `:0:File 'src/main.c'` (with `-t` gcov prefixes the file header
+        // with `:<line>:File '...'`).
+        if let Some(idx) = line.find("File '") {
+            let rest = &line[idx + "File '".len()..];
+            let file = rest.trim_end_matches('\'').to_string();
+            files.push((file, Vec::new()));
+            current = Some(files.len() - 1);
+            continue;
+        }
+        let Some(fi) = current else { continue };
+        // `count:line_no:source` — parse the two leading numeric fields.
+        let mut parts = line.splitn(3, ':');
+        let count_field = parts.next().unwrap_or("").trim();
+        let line_field = parts.next().unwrap_or("").trim();
+        if count_field.is_empty() || line_field.is_empty() {
+            continue;
+        }
+        if count_field == "-" {
+            // Non-executable line; skip (no hit entry).
+            continue;
+        }
+        let Ok(line_no) = line_field.parse::<usize>() else {
+            continue;
+        };
+        if line_no == 0 {
+            continue;
+        }
+        let hits = if count_field == "#####" {
+            0u64
+        } else {
+            match count_field.parse::<u64>() {
+                Ok(hits) => hits,
+                Err(_) => continue,
+            }
+        };
+        let line = line_no - 1; // 0-based.
+        let vec = &mut files[fi].1;
+        if vec.len() <= line {
+            vec.resize(line + 1, 0);
+        }
+        vec[line] = hits;
+    }
+    files
 }
 
-impl CoverageFile {
-    /// Percentage of executable lines covered (0-100), rounded down.
-    pub fn percent(&self) -> u64 {
-        let total = self.executed + self.not_executed;
-        if total == 0 {
-            return 0;
-        }
-        self.executed * 100 / total
-    }
-}
 
 /// Parse `gcov` aggregate output (produced without `-t`) into per-file line
 /// coverage. Each file appears as a `File '<path>'` header followed by a
@@ -758,11 +935,12 @@ pub fn parse_gcov_report(text: &str) -> Vec<CoverageFile> {
         // `File 'src/main.c'` opens a per-file section.
         if let Some(rest) = trimmed.strip_prefix("File '") {
             let file = rest.trim_end_matches('\'').to_string();
-            current = Some(CoverageFile {
-                file,
-                executed: 0,
-                not_executed: 0,
-            });
+             current = Some(CoverageFile {
+                 file,
+                 executed: 0,
+                 not_executed: 0,
+                line_hits: None,
+             });
             continue;
         }
         // A `Lines executed: N% of M` line closes the current file's summary.
@@ -912,30 +1090,111 @@ pub fn run_coverage(
     if stems.is_empty() {
         return Ok(None);
     }
-    let mut output = Vec::new();
-    for stem in &stems {
-        let report = Command::new(&gcov)
-            .arg("-o")
-            .arg(out_dir)
-            .arg(stem)
-            .current_dir(project_root)
-            .output();
-        if let Ok(report) = report {
-            output.extend(report.stdout);
-            output.push(b'\n');
+     let mut output = Vec::new();
+     for stem in &stems {
+         let report = Command::new(&gcov)
+             .arg("-o")
+             .arg(out_dir)
+            .arg("-t")
+             .arg(stem)
+             .current_dir(project_root)
+             .output();
+         if let Ok(report) = report {
+             output.extend(report.stdout);
+             output.push(b'\n');
+         }
+     }
+     let text = String::from_utf8_lossy(&output);
+    let mut files = parse_gcov_report(&text);
+    // Attach per-line hit data from the same `-t` output.
+    let lines = parse_gcov_lines(&text);
+    for file in &mut files {
+        let path = file.file.clone();
+        if let Some((_, hits)) = lines.iter().find(|(f, _)| *f == path) {
+            file.line_hits = Some(hits.clone());
         }
     }
-    let text = String::from_utf8_lossy(&output);
-    let files = parse_gcov_report(&text);
     Ok((!files.is_empty()).then_some(files))
-}
+ }
 
 fn find_program(name: &str) -> Option<String> {
     let path = ns_project::toolchain::find_command(name)?;
     Some(path.display().to_string())
 }
+/// Plan a C/C++ preprocessor run: compile each C/C++ source with `-E` (only
+/// preprocess) and stream the concatenated output, so the IDE can show the
+/// macro-expanded translation unit. Returns `None` when the project is not
+/// C/C++ or no compiler is configured, so the IDE can report it cleanly.
+pub fn plan_preprocess(project: &Project) -> Option<BuildPlan> {
+    let language = project.config.project.language;
+    if !matches!(language, Language::C | Language::Cpp) {
+        return None;
+    }
+    let compiler = resolve_compiler(project);
+    if compiler.is_empty() {
+        return None;
+    }
+    let sources = project.source_files().ok()?;
+    let c_sources: Vec<&PathBuf> = sources
+        .iter()
+        .filter(|source| {
+            let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("");
+            matches!(ext, "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "C")
+        })
+        .collect();
+    if c_sources.is_empty() {
+        return None;
+    }
+    // A single `-E` invocation over all sources (not one per source) keeps the
+    // output a single stream and matches how the compiler would expand macros
+    // across the project. `-P` strips the `# <line> <file>` markers so the
+    // preview is readable source, not a marker-heavy dump.
+    let mut args = Vec::new();
+    let std = if project.config.compiler.std.trim().is_empty() {
+        language.default_std()
+    } else {
+        project.config.compiler.std.trim()
+    };
+    if !std.is_empty() {
+        args.push(format!("-std={std}"));
+    }
+    let opt = project.config.compiler.opt.trim();
+    if !opt.is_empty() {
+        args.extend(opt.split_whitespace().map(str::to_string));
+    }
+    for define in &project.config.compiler.defines {
+        let define = define.trim();
+        if !define.is_empty() {
+            args.push(format!("-D{define}"));
+        }
+    }
+    for include in &project.config.compiler.includes {
+        let include = include.trim();
+        if include.is_empty() {
+            continue;
+        }
+        let path = if Path::new(include).is_absolute() {
+            PathBuf::from(include)
+        } else {
+            project.root.join(include)
+        };
+        args.push(format!("-I{}", path.display()));
+    }
+    args.push("-E".to_string());
+    args.push("-P".to_string());
+    for source in &c_sources {
+        args.push(source.display().to_string());
+    }
+    Some(BuildPlan {
+        program: compiler,
+        args,
+        cwd: project.root.clone(),
+        env: Vec::new(),
+        artifact: PathBuf::new(),
+    })
+}
 
-fn plan_native(project: &Project, compiler: &str, artifact: PathBuf) -> Result<BuildPlan> {
+ fn plan_native(project: &Project, compiler: &str, artifact: PathBuf) -> Result<BuildPlan> {
     let sources = project.source_files()?;
     if sources.is_empty() {
         bail!("src/ 下没有找到源文件");
@@ -1520,10 +1779,11 @@ pub fn execute(plan: &BuildPlan) -> BuildOutcome {
             code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            duration: started.elapsed(),
-            plan: plan.clone(),
-        },
-        Err(error) => BuildOutcome {
+             duration: started.elapsed(),
+             plan: plan.clone(),
+            file_timings: Vec::new(),
+         },
+         Err(error) => BuildOutcome {
             success: false,
             code: None,
             stdout: String::new(),
@@ -1533,9 +1793,10 @@ pub fn execute(plan: &BuildPlan) -> BuildOutcome {
                 plan.command_line(),
                 error
             ),
-            duration: started.elapsed(),
-            plan: plan.clone(),
-        },
+             duration: started.elapsed(),
+             plan: plan.clone(),
+            file_timings: Vec::new(),
+         },
     }
 }
 
@@ -1594,9 +1855,10 @@ fn execute_stream_inner(
                     plan.command_line(),
                     error
                 ),
-                duration: started.elapsed(),
-                plan: plan.clone(),
-            };
+                 duration: started.elapsed(),
+                 plan: plan.clone(),
+                file_timings: Vec::new(),
+             };
         }
     };
 
@@ -1634,30 +1896,52 @@ fn execute_stream_inner(
     });
     drop(tx);
 
-    let mut stdout_buf = String::new();
-    let mut stderr_buf = String::new();
-    let mut cancelled = false;
-    loop {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(line) => {
-                if line.is_stderr {
-                    stderr_buf.push_str(&line.text);
-                    stderr_buf.push('\n');
-                } else {
-                    stdout_buf.push_str(&line.text);
-                    stdout_buf.push('\n');
+     let mut stdout_buf = String::new();
+     let mut stderr_buf = String::new();
+     let mut cancelled = false;
+    // Real per-file timing: when a per-file marker line arrives, close the
+    // previous file's window (gap to this marker) and start a new one. The
+    // last window closes at the end of the build.
+    let mut marker: Option<(String, std::time::Instant)> = None;
+    let mut file_timings: Vec<FileTiming> = Vec::new();
+     loop {
+         match rx.recv_timeout(Duration::from_millis(100)) {
+             Ok(line) => {
+                 if line.is_stderr {
+                     stderr_buf.push_str(&line.text);
+                     stderr_buf.push('\n');
+                 } else {
+                     stdout_buf.push_str(&line.text);
+                     stdout_buf.push('\n');
+                 }
+                if let Some(file) = file_from_build_line(&line.text) {
+                    let now = std::time::Instant::now();
+                    if let Some((prev_file, prev_at)) = marker.take() {
+                        file_timings.push(FileTiming {
+                            file: prev_file,
+                            elapsed_ms: now.duration_since(prev_at).as_millis() as u64,
+                        });
+                    }
+                    marker = Some((file, now));
                 }
-                on_line(line);
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-                    cancelled = true;
-                    let _ = child.kill();
-                    break;
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
+                 on_line(line);
+             }
+             Err(RecvTimeoutError::Timeout) => {
+                 if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                     cancelled = true;
+                     let _ = child.kill();
+                     break;
+                 }
+             }
+             Err(RecvTimeoutError::Disconnected) => break,
+         }
+     }
+    // Close the final window against the total build duration.
+    if let Some((prev_file, prev_at)) = marker.take() {
+        file_timings.push(FileTiming {
+             file: prev_file,
+            elapsed_ms: std::time::Instant::now().duration_since(prev_at).as_millis() as u64,
+         });
     }
     let _ = stdout_thread.join();
     let _ = stderr_thread.join();
@@ -1678,13 +1962,43 @@ fn execute_stream_inner(
         code,
         stdout: stdout_buf,
         stderr,
-        duration: started.elapsed(),
-        plan: plan.clone(),
+         duration: started.elapsed(),
+         plan: plan.clone(),
+        file_timings,
+     }
+ }
+ /// Extract a source file name from a build progress/compile line. Handles
+/// `[ 25%] Building C object .../foo.c.o`, `cc ... -c foo.c`, and
+/// `clang ... -c /path/foo.c`.
+fn file_from_build_line(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
     }
+    // CMake progress: `[ 25%] Building C object CMakeFiles/.../foo.c.o`
+    if line.contains("Building ") {
+        if let Some(idx) = line.find("object ") {
+            let rest = &line[idx + "object ".len()..];
+            let file = rest.split_whitespace().next().unwrap_or("");
+            let file = file.trim_end_matches(".o");
+            if !file.is_empty() {
+                return Some(file.to_string());
+            }
+        }
+    }
+    // Compiler `-c <file>`: look for the last `-c` and take the following token.
+    if let Some(idx) = line.rfind(" -c ") {
+        let rest = &line[idx + 4..];
+        let file = rest.split_whitespace().next().unwrap_or("");
+        if file.ends_with(".c") || file.ends_with(".cpp") || file.ends_with(".cc") {
+            return Some(file.to_string());
+        }
+    }
+    None
 }
-
-/// Parse GCC/Clang and Cargo style diagnostics from build output.
-pub fn parse_diagnostics(text: &str, root: &Path) -> Vec<Diagnostic> {
+ 
+ /// Parse GCC/Clang and Cargo style diagnostics from build output.
+ pub fn parse_diagnostics(text: &str, root: &Path) -> Vec<Diagnostic> {
     let mut result: Vec<Diagnostic> = Vec::new();
 
     for raw_line in text.lines() {
@@ -1858,11 +2172,90 @@ mod tests {
         assert_eq!(diagnostics[0].line, Some(12));
         assert_eq!(diagnostics[0].column, Some(5));
         assert_eq!(diagnostics[1].severity, Severity::Warning);
-        assert!(diagnostics[0].path.as_ref().unwrap().ends_with("src/main.c"));
-    }
+         assert!(diagnostics[0].path.as_ref().unwrap().ends_with("src/main.c"));
+     }
 
+    /// `file_from_build_line` extracts the source file from CMake progress
+    /// lines and compiler `-c` invocations, and ignores unrelated lines.
     #[test]
-    fn parses_rust_errors_with_location_hint() {
+    fn file_from_build_line_extracts_source() {
+        assert_eq!(
+            file_from_build_line("[ 25%] Building C object CMakeFiles/app.dir/src/main.c.o"),
+            Some("CMakeFiles/app.dir/src/main.c".to_string())
+        );
+        assert_eq!(
+            file_from_build_line("arm-none-eabi-gcc -mcpu=cortex-m3 -c src/blink.c"),
+            Some("src/blink.c".to_string())
+        );
+        assert_eq!(file_from_build_line("Linking C executable app.elf"), None);
+        assert_eq!(file_from_build_line("make: *** [all] Error 1"), None);
+         assert_eq!(file_from_build_line(""), None);
+     }
+
+    /// `suggest_quick_fix` maps common compiler errors to actionable fixes:
+    /// missing include -> AddInclude, undefined reference -> hint, undeclared
+    /// identifier -> hint, and unknown messages -> None.
+    #[test]
+    fn suggests_quick_fix_for_common_errors() {
+        let missing_include = Diagnostic {
+            path: None,
+            line: None,
+            column: None,
+            severity: Severity::Error,
+            message: "fatal error: stdio.h: No such file or directory".to_string(),
+            raw: String::new(),
+        };
+        assert_eq!(
+            suggest_quick_fix(&missing_include, Some("int main(){}")),
+            Some(QuickFix::AddInclude {
+                header: "stdio.h".to_string()
+            })
+        );
+        // Already included -> hint, not a duplicate insert.
+        assert!(matches!(
+            suggest_quick_fix(&missing_include, Some("#include <stdio.h>\n")),
+            Some(QuickFix::Hint(_))
+        ));
+
+        let undefined = Diagnostic {
+            path: None,
+            line: None,
+            column: None,
+            severity: Severity::Error,
+            message: "undefined reference to `sqrt`".to_string(),
+            raw: String::new(),
+        };
+        assert!(matches!(
+            suggest_quick_fix(&undefined, None),
+            Some(QuickFix::Hint(msg)) if msg.contains("sqrt")
+        ));
+
+        let undeclared = Diagnostic {
+            path: None,
+            line: None,
+            column: None,
+            severity: Severity::Error,
+            message: "‘foo’ undeclared (first use in this function)".to_string(),
+            raw: String::new(),
+        };
+        assert!(matches!(
+            suggest_quick_fix(&undeclared, None),
+            Some(QuickFix::Hint(msg)) if msg.contains("foo")
+        ));
+
+        let unrelated = Diagnostic {
+            path: None,
+            line: None,
+            column: None,
+            severity: Severity::Warning,
+            message: "make: *** [all] Error 1".to_string(),
+            raw: String::new(),
+        };
+        assert_eq!(suggest_quick_fix(&unrelated, None), None);
+    }
+ 
+     #[test]
+     fn parses_rust_errors_with_location_hint() {
         let text = "error[E0308]: mismatched types\n  --> src/main.rs:7:18\n   |\n";
         let diagnostics = parse_diagnostics(text, Path::new("/project"));
         assert_eq!(diagnostics.len(), 1);
@@ -1890,10 +2283,64 @@ mod tests {
         let plan = plan_build(&project).unwrap();
         assert!(plan.args.iter().any(|arg| arg == "-g"), "debug 构建必须带 -g: {:?}", plan.args);
 
+         let _ = fs::remove_dir_all(root);
+     }
+ 
+    #[test]
+    fn preprocess_plan_uses_compiler_flags_and_e() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-embed-ide-preprocess-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"t\"\nversion = \"0.1.0\"\nlanguage = \"C\"\ntarget = \"x86_64\"\ncompiler = \"cc\"\nsimulator = \"\"\ndebugger = \"lldb\"\nflasher = \"\"\n\n[compiler]\nstd = \"c11\"\nopt = \"-O0\"\ndefines = [\"LED=1\"]\nincludes = [\"include\"]\n\n[debugger]\ninterface = \"swd\"\n\n[flasher]\ninterface = \"swd\"\n\n[build]\nconfig = \"debug\"\nout_dir = \"build\"\n\n[sim]\ncpu = \"\"\nperiod = 0\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/main.c"), "#include <stdint.h>\n").unwrap();
+        fs::create_dir_all(root.join("include")).unwrap();
+        fs::write(root.join("include/defs.h"), "#pragma once\n").unwrap();
+
+        let project = Project::open(&root).unwrap();
+        let plan = plan_preprocess(&project).expect("C project has a preprocess plan");
+        assert!(plan.args.contains(&"-E".to_string()), "must run preprocessor only: {:?}", plan.args);
+        assert!(plan.args.contains(&"-P".to_string()), "must strip line markers: {:?}", plan.args);
+        assert!(plan.args.contains(&"-DLED=1".to_string()), "defines forwarded: {:?}", plan.args);
+        assert!(
+            plan.args.iter().any(|a| a.starts_with("-I") && a.contains("include")),
+            "include dirs forwarded: {:?}",
+            plan.args
+        );
+        assert!(
+            plan.args.iter().any(|a| a.ends_with("src/main.c")),
+            "source file included: {:?}",
+            plan.args
+        );
         let _ = fs::remove_dir_all(root);
     }
 
-    /// `generate_compile_commands` writes a clangd `compile_commands.json` with
+    #[test]
+    fn preprocess_plan_none_for_non_c() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-embed-ide-preprocess-rust-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"t\"\nversion = \"0.1.0\"\nlanguage = \"Rust\"\ntarget = \"x86_64\"\ncompiler = \"rustc\"\nsimulator = \"\"\ndebugger = \"lldb\"\nflasher = \"\"\n\n[build]\nconfig = \"debug\"\nout_dir = \"build\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let project = Project::open(&root).unwrap();
+        assert!(plan_preprocess(&project).is_none(), "Rust has no C preprocess");
+        let _ = fs::remove_dir_all(root);
+    }
+
+     /// `generate_compile_commands` writes a clangd `compile_commands.json` with
     /// one entry per C source and the `-D`/`-I`/`-std` flags from `project.toml`.
     #[test]
     fn generate_compile_commands_emits_cflags_and_units() {
@@ -2551,8 +2998,40 @@ printf '%s\n' "$@"
         let project = Project::open(&root).unwrap();
         assert!(plan_coverage(&project).is_none(), "Rust has no coverage plan");
         let _ = fs::remove_dir_all(&root);
+     }
+
+    /// `parse_gcov_lines` reads gcov's `-t` per-line output: executable rows
+    /// carry a hit count (or `#####` for never-executed), non-executable `-`
+    /// rows are omitted, and the result is indexed by 0-based line.
+    #[test]
+    fn parses_gcov_line_hits() {
+        let report = "        -:    0:File 'src/main.c'\n\
+                      2:    1:int main(void) {\n\
+                      1:    2:    return 0;\n\
+                      -:    3:}\n";
+        let lines = parse_gcov_lines(report);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].0, "src/main.c");
+        let hits = &lines[0].1;
+        assert_eq!(hits.len(), 2, "non-executable line 3 omitted");
+        assert_eq!(hits[0], 2);
+        assert_eq!(hits[1], 1);
+        // A never-executed row is recorded as a 0 hit.
+        let report = "        -:    0:File 'src/main.c'\n\
+                      #####:    1:int main(void) {\n\
+                      -:    2:}\n";
+        let lines = parse_gcov_lines(report);
+        assert_eq!(lines[0].1[0], 0);
     }
 
+    /// The aggregate report parser defaults `line_hits` to `None` (line-level
+    /// data is attached separately by `run_coverage`).
+    #[test]
+    fn gcov_aggregate_report_has_no_line_hits_by_default() {
+        let report = "File 'src/main.c'\nLines executed:100.00% of 2\n";
+        let files = parse_gcov_report(report);
+        assert_eq!(files[0].line_hits, None);
+    }
     /// End-to-end: build a tiny C file with `--coverage`, run it, then gcov it
     /// and confirm `run_coverage` returns per-file line coverage. Skips when
     /// gcov or a host compiler is unavailable (CI without gcc).
