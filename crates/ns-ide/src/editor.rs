@@ -724,6 +724,11 @@ impl Editor {
         visible_lines_in(&self.text, &self.folded).len()
     }
 
+    /// Number of logical lines in the document (1-based count; empty text = 1).
+    pub fn line_count(&self) -> usize {
+        line_starts(&self.text).len().max(1)
+    }
+
     /// Return the list of document line indices that should be drawn.
     pub fn visible_lines(&self) -> Vec<usize> {
         visible_lines_in(&self.text, &self.folded)
@@ -2126,10 +2131,12 @@ struct PrepaintState {
     lines: Vec<ShapedLine>,
     line_numbers: Vec<ShapedLine>,
     breakpoints: Vec<PaintQuad>,
-    selections: Vec<PaintQuad>,
-    debug_line: Option<PaintQuad>,
+     selections: Vec<PaintQuad>,
+    /// Find-match highlight quads (from the open find bar query).
+    find_matches: Vec<PaintQuad>,
+      debug_line: Option<PaintQuad>,
     debug_marker: Option<ShapedLine>,
-    cursor: Option<PaintQuad>,
+     cursor: Option<PaintQuad>,
     /// Vertical bars for secondary (multi-) cursors.
     secondary_cursors: Vec<PaintQuad>,
     fold_quads: Vec<PaintQuad>,
@@ -2191,9 +2198,11 @@ impl Element for CodeElement {
         let editor = self.editor.read(cx);
         let text = editor.text.clone();
         let language = editor.language;
-        let selection = editor.selection.clone();
-        let cursor = editor.cursor;
-         let secondary = editor.secondary.clone();
+         let selection = editor.selection.clone();
+         let cursor = editor.cursor;
+        let find_matches = editor.find_matches.clone();
+        let find_current = editor.find_current;
+          let secondary = editor.secondary.clone();
         let breakpoints = editor.breakpoints.clone();
         let debug_line = editor.debug_line;
         let mut inlays = Vec::new();
@@ -2209,8 +2218,9 @@ impl Element for CodeElement {
         let top = bounds.top() - px(scroll_y);
         let mut line_shapes = Vec::new();
         let mut line_numbers = Vec::new();
-        let mut selections = Vec::new();
-        let mut block_comment = false;
+         let mut selections = Vec::new();
+        let mut find_match_quads = Vec::new();
+         let mut block_comment = false;
         let starts = line_starts(&text);
         let code_font = font(theme::MONO_FONT);
         let number_font = font(theme::UI_FONT);
@@ -2298,9 +2308,39 @@ impl Element for CodeElement {
                     ),
                     theme::alpha(theme::ACCENT, 0.2),
                 ));
-            }
+             }
 
-            // Inlay hints for this line: shape the label and position it after the anchor.
+            // Find-bar matches on this line: highlight each overlapping range,
+            // with the current match in a stronger accent.
+            for (match_index, range) in find_matches.iter().enumerate() {
+                if range.start >= end || range.end <= start {
+                    continue;
+                }
+                let match_start = range.start.max(start);
+                let match_end = range.end.min(end);
+                if match_start >= match_end {
+                    continue;
+                }
+                let x_start = shape.x_for_index(match_start - start);
+                let x_end = shape.x_for_index(match_end - start);
+                let is_current = match_index == find_current;
+                find_match_quads.push(fill(
+                    Bounds::new(
+                        Point::new(
+                            code_left + x_start,
+                            top + px(row as f32 * LINE_HEIGHT),
+                        ),
+                        size((x_end - x_start).max(px(2.)), px(LINE_HEIGHT)),
+                    ),
+                    if is_current {
+                        theme::alpha(theme::ACCENT, 0.42)
+                    } else {
+                        theme::alpha(theme::ACCENT, 0.18)
+                    },
+                ));
+            }
+ 
+             // Inlay hints for this line: shape the label and position it after the anchor.
             for hint in editor.inlay_hints.iter().filter(|hint| hint.line == line_index) {
                 let hint_x = shape.x_for_index(hint.start.min(line.len()));
                 let hint_run = TextRun {
@@ -2547,8 +2587,9 @@ impl Element for CodeElement {
             lines: line_shapes,
             line_numbers,
             breakpoints: breakpoint_quads,
-            selections,
-            debug_line,
+             selections,
+            find_matches: find_match_quads,
+             debug_line,
             debug_marker,
             cursor: cursor_quad,
             secondary_cursors,
@@ -2617,7 +2658,11 @@ impl Element for CodeElement {
              window.paint_quad(selection);
          }
 
-        for breakpoint in prepaint.breakpoints.drain(..) {
+        for find_match in prepaint.find_matches.drain(..) {
+            window.paint_quad(find_match);
+        }
+ 
+         for breakpoint in prepaint.breakpoints.drain(..) {
             window.paint_quad(breakpoint);
         }
 
@@ -3438,9 +3483,36 @@ mod tests {
         // Non-overlapping: "aaaa" with "aa" yields two matches (0..2, 2..4).
         assert_eq!(find_matches_in("aaaa", "aa", true, false), vec![0..2, 2..4]);
         assert!(find_matches_in("text", "", true, false).is_empty());
-    }
+     }
 
+    /// Setting a find query populates the match ranges the renderer highlights,
+    /// and `find_next` cycles the current match (rendered stronger).
     #[test]
+    fn find_query_populates_highlight_matches_and_cycles() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("let a = 1; let b = a + a;\n".to_string(), None, cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.set_find_query("a", cx);
+                 assert_eq!(editor.find_matches, vec![4..5, 19..20, 23..24]);
+                assert_eq!(editor.find_current, 0);
+
+                 editor.find_next(false, cx);
+                 assert_eq!(editor.find_current, 1);
+                 editor.find_next(false, cx);
+                 assert_eq!(editor.find_current, 2);
+                 // Forward wraps back to the first match (3 matches, index 2 -> 0).
+                 editor.find_next(false, cx);
+                 assert_eq!(editor.find_current, 0);
+
+                 // Backwards from the first match wraps to the last match.
+                 editor.find_next(true, cx);
+                 assert_eq!(editor.find_current, 2);
+            });
+        });
+    }
+ 
+     #[test]
     fn clamps_folded_regions_to_document() {
         // total = 4 lines: only regions fully inside 0..=3 survive.
         let regions = vec![(0, 3), (1, 2), (3, 4), (2, 1), (5, 6)];

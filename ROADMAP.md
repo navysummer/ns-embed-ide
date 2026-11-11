@@ -487,7 +487,26 @@ FLM 解析此前已接入 OpenOCD；本轮把 FLM 几何与项目 target 扩展�
 
 **已完成**：快捷键可配置（用户级 `keybindings.json` 覆盖 + 编辑模态 + 启动加载）；重映射后重启生效。
 
-## 验收总则（AGENTS.md §1.2）
+
+## P35 · Git 分支操作与状态解析修正（F14）
+
+对比嵌入式 IDE 的 Git 集成：分支/历史数据已获取但**未渲染**，`checkout`/`create_branch`/`pull`/`push` 底层函数已实现但**未接线**（4 个死代码警告）；`status --porcelain` 的重命名条目（`R  old -> new`）被当作一个伪路径，分离 HEAD 时 `git branch` 的 `(HEAD detached …)` 伪条目被当成真实分支。
+
+| 任务 | 状态 | 验收 |
+|---|---|---|
+| 分支行渲染 | ✅ | 历史·分支区每行本地分支可点击切换（当前分支玉色 `●` 标记）；`git_checkout` 切换后刷新状态/diff |
+| 新建分支对话框 | ✅ | 顶栏「＋新建分支」弹输入框（`GitBranchDialog`），Enter/「创建并切换」调 `git::create_branch`，空名拒绝；Esc/「取消」关闭；Enter 经 `ConditionDialogSave` 接线 |
+| 拉取/推送按钮 | ✅ | 顶栏「↓ 拉取」「↑ 推送」调 `git::pull`/`git::push`，失败如实显示到错误行 |
+| 重命名解析 | ✅ | `repo_status` 对 `R  old -> new` 取 ` -> ` 后的目标路径，不再显示 `old -> new` 伪路径；diff/暂存/选中均用目标 |
+| 分离 HEAD 过滤 | ✅ | `branches` 过滤 `(HEAD detached …)`/`(no branch)` 伪条目，面板不再把分离 HEAD 当真实分支 |
+| 单测 | ✅ | `create_and_switch_branch_updates_status`、`pull_and_push_report_errors_honestly`、`rename_reports_target_as_changed_path`；ns-ide git 7 项全绿 |
+
+**已完成**：Git 面板分支操作（切换/新建/拉取/推送）接线；`status --porcelain` 重命名目标解析；分离 HEAD 伪分支过滤；`git.rs` 4 个死代码警告消除（`cargo check --workspace` 0 警告 0 错误）。
+
+---
+
+> 执行顺序：P1 → P31 已完成。迭代 16 新增 **P35（Git 分支操作与状态解析修正）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+>
 
 1. `cargo check --workspace` 0 警告 0 错误；禁止 `#[allow(dead_code)]` 等掩盖。
 2. 功能完整实现，禁止 `todo!()`/占位/假数据/「仅演示路径」。

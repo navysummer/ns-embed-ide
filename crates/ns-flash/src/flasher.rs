@@ -60,12 +60,15 @@ pub struct FlashRequest {
     /// Read-back output file (only meaningful for `FlashAction::Read`).
     pub read_to: Option<PathBuf>,
     /// Optional adapter serial/device overrides, passed through to the tool.
-    pub device: Option<String>,
-    /// Optional external flash-algorithm geometry (from a `.FLM` file). When
-    /// present, adapters use its page size / base address to configure the
-    /// flash programming.
-    pub algorithm: Option<crate::flash_algorithm::FlashAlgorithm>,
-}
+     pub device: Option<String>,
+     /// Optional external flash-algorithm geometry (from a `.FLM` file). When
+     /// present, adapters use its page size / base address to configure the
+     /// flash programming.
+     pub algorithm: Option<crate::flash_algorithm::FlashAlgorithm>,
+    /// When set, the flash subprocess is killed after the flag is observed
+    /// (polled while streaming output), so a long erase/verify can be aborted.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+ }
 
 #[derive(Debug, Clone)]
 pub struct FlashOutcome {
@@ -156,13 +159,14 @@ fn which(program: &str) -> Result<String> {
 /// Run a command and capture its output. `stdin` is written to the child's
 /// standard input when provided (used by J-Link Commander). `on_line` receives
 /// each line of stdout/stderr as it is produced (streaming progress).
-fn run_command(
-    program: &str,
-    args: &[String],
-    cwd: &Path,
-    stdin: Option<&str>,
-    on_line: &mut dyn FnMut(&str),
-) -> Result<FlashOutcome> {
+ fn run_command(
+     program: &str,
+     args: &[String],
+     cwd: &Path,
+     stdin: Option<&str>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+     on_line: &mut dyn FnMut(&str),
+ ) -> Result<FlashOutcome> {
     use std::io::{BufRead, BufReader, Write};
     let start = Instant::now();
     let mut child = Command::new(program)
@@ -188,9 +192,18 @@ fn run_command(
     let mut err_reader = BufReader::new(child.stderr.take().expect("stderr piped"));
     // Read stdout fully first, streaming each line; then drain stderr. This
     // keeps the tool's normal progress output visible as it is produced.
-    let mut buf = String::new();
-    loop {
-        buf.clear();
+     let mut buf = String::new();
+    let mut cancelled = false;
+     loop {
+        if let Some(flag) = cancel {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                cancelled = true;
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+        }
+         buf.clear();
         match out_reader.read_line(&mut buf) {
             Ok(0) => break,
             Ok(_) => {
@@ -200,7 +213,15 @@ fn run_command(
             Err(_) => break,
         }
     }
-    while let Ok(n) = err_reader.read_line(&mut buf) {
+     while let Ok(n) = err_reader.read_line(&mut buf) {
+        if let Some(flag) = cancel {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                cancelled = true;
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+        }
         if n == 0 {
             break;
         }
@@ -210,7 +231,7 @@ fn run_command(
     }
     let status = child.wait()?;
     let duration = start.elapsed();
-    let success = status.success();
+    let success = status.success() && !cancelled;
     let code = status.code();
     Ok(FlashOutcome {
         success,
@@ -235,19 +256,48 @@ impl OpenOcd {
         }
     }
 
-    fn base_args(&self, request: &FlashRequest) -> Vec<String> {
-        let interface = match request.interface.as_str() {
-            "jtag" => "jtag",
-            _ => "swd",
-        };
-        vec![
-            format!("-f interface/{interface}.cfg"),
-            "-f".to_string(),
-            "target/stm32f1x.cfg".to_string(),
-            "-c".to_string(),
-            format!("adapter speed 1000"),
-        ]
-    }
+     fn base_args(&self, request: &FlashRequest) -> Vec<String> {
+         let interface = match request.interface.as_str() {
+             "jtag" => "jtag",
+             _ => "swd",
+         };
+        let target_cfg = openocd_target_cfg(request.device.as_deref().unwrap_or(""));
+         vec![
+             format!("-f interface/{interface}.cfg"),
+             "-f".to_string(),
+            target_cfg,
+             "-c".to_string(),
+             format!("adapter speed 1000"),
+         ]
+     }
+ }
+
+/// Map a `project.toml` target key to the OpenOCD target config it needs.
+/// Unrecognised targets fall back to `stm32f1x.cfg` (the historical default).
+pub fn openocd_target_cfg(device: &str) -> String {
+    let key = device.trim().to_ascii_lowercase();
+    let cfg = match key.as_str() {
+        // STM32 family -> the matching OpenOCD target config.
+        "stm32f103c8" | "stm32f103" | "stm32f1" | "stm32f103c6" | "stm32f103rb" => "stm32f1x",
+        "stm32f407vg" | "stm32f407" | "stm32f4" | "stm32f405" | "stm32f427" | "stm32f429" => {
+            "stm32f4x"
+        }
+        "stm32f030" | "stm32f0" | "stm32f042" | "stm32f051" | "stm32f072" => "stm32f0x",
+        "stm32f746" | "stm32f7" | "stm32f745" | "stm32f769" => "stm32f7x",
+        "stm32l0" | "stm32l053" | "stm32l072" => "stm32l0x",
+        "stm32l4" | "stm32l476" | "stm32l432" | "stm32l433" => "stm32l4x",
+        "stm32g0" | "stm32g031" | "stm32g071" => "stm32g0x",
+        "stm32g4" | "stm32g431" | "stm32g474" => "stm32g4x",
+        "stm32h7" | "stm32h743" | "stm32h750" => "stm32h7x",
+        "stm32wb" | "stm32wb55" => "stm32wbx",
+        "nrf52" | "nrf52832" | "nrf52840" => "nrf52",
+        "rp2040" | "rp2350" => "rp2040",
+        "lpc2148" | "lpc21xx" | "lpc22xx" => "lpc2100",
+        "at91sam7" | "at91sam7s" => "at91sam7",
+        "stm8s" | "stm8s103" => "stm8s103",
+        _ => "stm32f1x",
+    };
+    format!("target/{cfg}.cfg")
 }
 
 impl Flasher for OpenOcd {
@@ -315,7 +365,7 @@ impl Flasher for OpenOcd {
         let mut args = self.base_args(request);
         args.extend(action_args);
         args.extend(["-c".to_string(), "shutdown".to_string()]);
-        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), None, on_line)?;
+        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), None, request.cancel.as_deref(), on_line)?;
         outcome.tool = FlashTool::OpenOcd;
         outcome.action = request.action;
         Ok(outcome)
@@ -376,7 +426,7 @@ impl Flasher for PyOcd {
                 ]
             }
         };
-        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), None, on_line)?;
+        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), None, request.cancel.as_deref(), on_line)?;
         outcome.tool = FlashTool::PyOcd;
         outcome.action = request.action;
         Ok(outcome)
@@ -463,7 +513,7 @@ impl Flasher for JLink {
         }
         commands.push_str("exit\n");
         args.push(commands.clone());
-        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), Some(&commands), on_line)?;
+        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), Some(&commands), request.cancel.as_deref(), on_line)?;
         outcome.tool = FlashTool::JLink;
         outcome.action = request.action;
         Ok(outcome)
@@ -516,7 +566,7 @@ impl Flasher for StLink {
                 ]
             }
         };
-        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), None, on_line)?;
+        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), None, request.cancel.as_deref(), on_line)?;
         outcome.tool = FlashTool::StLink;
         outcome.action = request.action;
         Ok(outcome)
@@ -572,7 +622,7 @@ impl Flasher for ProbeRs {
                 ]
             }
         };
-        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), None, on_line)?;
+        let mut outcome = run_command(&self.program, &args, &request.firmware.parent().unwrap_or(Path::new(".")), None, request.cancel.as_deref(), on_line)?;
         outcome.tool = FlashTool::ProbeRs;
         outcome.action = request.action;
         Ok(outcome)
@@ -625,7 +675,8 @@ mod tests {
             interface: "swd".to_string(),
             read_to: None,
             device: None,
-            algorithm: None,
+             algorithm: None,
+            cancel: None,
         };
         let flasher = OpenOcd::new(stub.to_str().unwrap());
         let outcome = flasher.run(&request, &mut |_| {}).unwrap();
@@ -699,7 +750,8 @@ mod tests {
             interface: project.config.flasher.interface.clone(),
             read_to: None,
             device: None,
-            algorithm: None,
+             algorithm: None,
+            cancel: None,
         };
         let outcome = adapter.run(&request, &mut |_| {}).unwrap();
         assert!(outcome.success, "flash should succeed: {}", outcome.combined_output());
@@ -711,5 +763,62 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+ }
+
+/// The OpenOCD adapter resolves the project target to a matching target
+/// config; unrecognised devices fall back to `stm32f1x.cfg`.
+#[test]
+fn openocd_target_cfg_maps_device_and_falls_back() {
+    assert_eq!(openocd_target_cfg("stm32f103c8"), "target/stm32f1x.cfg");
+    assert_eq!(openocd_target_cfg("stm32f407vg"), "target/stm32f4x.cfg");
+    assert_eq!(openocd_target_cfg("nrf52840"), "target/nrf52.cfg");
+    assert_eq!(openocd_target_cfg("rp2040"), "target/rp2040.cfg");
+    assert_eq!(openocd_target_cfg("lpc2148"), "target/lpc2100.cfg");
+    // Unknown / explicit device strings use the historical default.
+    assert_eq!(openocd_target_cfg(""), "target/stm32f1x.cfg");
+    assert_eq!(openocd_target_cfg("custom-mcu"), "target/stm32f1x.cfg");
+ }
+
+/// A pre-set cancel flag aborts the subprocess and reports failure rather
+/// than a spurious success.
+#[test]
+fn flash_cancel_flag_aborts_and_reports_failure() {
+    if cfg!(windows) {
+        return; // stub uses /bin/sh.
     }
+    let dir = std::env::temp_dir().join(format!("ns-flash-cancel-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let fw = dir.join("fw.hex");
+    std::fs::write(
+        &fw,
+        ":020000040000FA\n:0400000001020304F2\n:00000001FF",
+    )
+    .unwrap();
+
+    // A stub that sleeps long enough for the cancel check to observe the flag.
+    let stub = dir.join("stub-slow");
+    std::fs::write(&stub, "#!/bin/sh\nsleep 30\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let request = FlashRequest {
+        tool: FlashTool::OpenOcd,
+        action: FlashAction::Flash,
+        firmware: fw.clone(),
+        interface: "swd".to_string(),
+        read_to: None,
+        device: None,
+        algorithm: None,
+        cancel: Some(cancel),
+    };
+    let flasher = OpenOcd::new(stub.to_str().unwrap());
+    let outcome = flasher.run(&request, &mut |_| {}).unwrap();
+    assert!(!outcome.success, "cancelled flash must not report success");
+    let _ = std::fs::remove_dir_all(&dir);
 }
+ }

@@ -161,20 +161,21 @@ pub struct ThreadInfo {
     pub id: u64,
     pub name: String,
 }
-
-#[derive(Debug, Clone)]
-pub struct Instruction {
-    /// Absolute address of the instruction.
-    pub address: u64,
-    /// Assembly text, e.g. `movl 0xc12(%rip), %eax ; marker`.
-    pub instruction: String,
-    /// Raw bytes, e.g. `8b 05 12 0c 00 00`.
-    pub bytes: String,
-    pub line: Option<usize>,
-    /// Path of the source file, when available.
-    pub file: Option<String>,
-}
-
+ #[derive(Debug, Clone)]
+ pub struct Instruction {
+     /// Absolute address of the instruction.
+     pub address: u64,
+     /// Assembly text, e.g. `movl 0xc12(%rip), %eax ; marker`.
+     pub instruction: String,
+     /// Raw bytes, e.g. `8b 05 12 0c 00 00`.
+     pub bytes: String,
+     pub line: Option<usize>,
+     /// Path of the source file, when available.
+     pub file: Option<String>,
+    /// The symbol (function) this instruction belongs to, when the adapter
+    /// resolved it (`resolveSymbols`). For example `main`.
+    pub symbol: Option<String>,
+ }
 /// UI-bound messages produced by the debug session.
 #[derive(Debug, Clone)]
 pub enum DebugMessage {
@@ -277,9 +278,12 @@ pub enum DebugCommand {
     /// Set the value of a variable (DAP `setVariable`). The answer arrives as
     /// [`DebugMessage::VariableSet`] so the caller can refresh the panel.
     SetVariable { variables_reference: u64, name: String, value: String },
-    /// Detach and terminate the debuggee.
-    Stop,
-    GetStackTrace { thread_id: u64 },
+     /// Detach and terminate the debuggee.
+     Stop,
+    /// Restart the debuggee in place via the DAP `restart` request (keeps the
+    /// adapter and breakpoints alive instead of a full teardown/relaunch).
+    Restart,
+     GetStackTrace { thread_id: u64 },
     /// Fetch the scopes for a frame; the answer arrives as [`DebugMessage::Scopes`].
     GetScopes { frame_id: u64 },
     /// Fetch memory bytes starting at `reference` (a hex address like `0x1000003E8`).
@@ -573,9 +577,18 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                             "disconnect",
                             json!({ "terminateDebuggee": true, "restart": false }),
                         );
-                        break;
+                         break;
+                     }
+                    DebugCommand::Restart => {
+                        request(
+                            &mut stdin,
+                            sequence,
+                            "restart",
+                            json!({ "restart": true }),
+                        );
+                        sequence += 1;
                     }
-                    DebugCommand::GetStackTrace { thread_id } => {
+                     DebugCommand::GetStackTrace { thread_id } => {
                         request(
                             &mut stdin,
                             sequence,
@@ -1366,8 +1379,13 @@ fn parse_instruction(instruction: &Value) -> Option<Instruction> {
             .and_then(|location| location.get("path"))
             .and_then(Value::as_str)
             .map(str::to_string),
-    })
-}
+        symbol: instruction
+            .get("symbol")
+            .and_then(Value::as_str)
+            .filter(|symbol| !symbol.is_empty())
+            .map(str::to_string),
+     })
+ }
 
 fn translate_response(
     response: &Value,

@@ -60,9 +60,9 @@ pub fn missing_guide(name: &str) -> Option<&'static str> {
         ("gdb", "brew install gdb"),
         ("openocd", "brew install open-ocd"),
         ("pyocd", "pip install pyocd"),
-        ("JLinkExe", "下载 SEGGER J-Link 安装包"),
-        ("probe-rs", "cargo install probe-rs-tools"),
-        // Keil/IAR 交叉工具链（各架构裸机编译器）。
+         ("JLinkExe", "下载 SEGGER J-Link 安装包"),
+         ("probe-rs", "cargo install probe-rs-tools"),
+        ("st-flash", "brew install stlink (ST-Link 命令行工具)"),
         ("avr-gcc", "brew tap osx-cross/avr && brew install avr-gcc (或下载 Microchip AVR GCC)"),
         ("avr-g++", "brew tap osx-cross/avr && brew install avr-gcc (或下载 Microchip AVR GCC)"),
         ("msp430-elf-gcc", "下载 TI MSP430 GCC 工具链 (ti.com/msp430-gcc)"),
@@ -150,11 +150,11 @@ pub fn debuggers(language: Language) -> Vec<Tool> {
 
 pub fn flashers(language: Language) -> Vec<Tool> {
     let names: &[&str] = match language {
-        Language::C | Language::Cpp | Language::Rust | Language::Zig => {
-            &["openocd", "pyocd", "JLinkExe", "probe-rs"]
-        }
-        Language::ZR => &["openocd"],
-        Language::Asm => &["openocd", "pyocd", "JLinkExe"],
+         Language::C | Language::Cpp | Language::Rust | Language::Zig => {
+            &["openocd", "pyocd", "JLinkExe", "probe-rs", "st-flash"]
+         }
+         Language::ZR => &["openocd"],
+        Language::Asm => &["openocd", "pyocd", "JLinkExe", "st-flash"],
     };
     tools(names)
 }
@@ -225,11 +225,25 @@ mod tests {
         assert!(missing_guide("v850-elf-gcc").is_some());
         assert!(missing_guide("rx-elf-gcc").is_some());
         assert!(missing_guide("rl78-elf-gcc").is_some());
-        assert!(missing_guide("sdcc").is_some());
-    }
+         assert!(missing_guide("sdcc").is_some());
+        // ST-Link CLI flasher.
+        assert!(missing_guide("st-flash").is_some());
+     }
 
     #[test]
-    fn absent_tool_has_no_version() {
+    fn flashers_include_stflash_and_fallback() {
+        let c_tools = flashers(Language::C);
+        assert!(
+            c_tools.iter().any(|tool| tool.name == "st-flash"),
+            "C flashers must include st-flash"
+        );
+        // ZR only exposes OpenOCD (no st-flash for the ZR toolchain).
+        let zr_tools = flashers(Language::ZR);
+        assert!(zr_tools.iter().all(|tool| tool.name != "st-flash"));
+    }
+
+     #[test]
+     fn absent_tool_has_no_version() {
         let tool = Tool {
             name: "definitely-not-real-xyz".to_string(),
             path: None,

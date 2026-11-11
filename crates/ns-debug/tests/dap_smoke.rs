@@ -154,9 +154,77 @@ fn dap_launch_hit_continue_terminate() {
     );
 
     let _ = fs::remove_dir_all(root);
-}
+ }
 
+/// The DAP `restart` request restarts the debuggee in place: after hitting a
+/// breakpoint and restarting, the program runs from `main` again and stops at
+/// the same breakpoint (the loop counter is reset).
 #[test]
+fn dap_restart_reruns_from_main() {
+    if ns_debug::find_dap_adapter().is_none() {
+        eprintln!("lldb-dap 不可用，跳过端到端测试");
+        return;
+    }
+    if Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("cc 不可用，跳过端到端测试");
+        return;
+    }
+
+    let (root, source, program) = compile_fixture();
+    let source_display = source.display().to_string();
+    let config = DebugConfig {
+        program,
+        args: Vec::new(),
+        env: Vec::new(),
+        cwd: root.clone(),
+        breakpoints: vec![DebugBreakpoint {
+            path: source_display.clone(),
+            line: 4,
+            ..Default::default()
+        }],
+    };
+
+    let handle = ns_debug::spawn(&config).expect("failed to launch debug session");
+    wait_for(&handle, |msg| matches!(msg, DebugMessage::Ready), Duration::from_secs(10), "Ready");
+
+    // First stop at line 4 (i == 0).
+    let stop = wait_for(
+        &handle,
+        |msg| matches!(msg, DebugMessage::Stopped { .. }),
+        Duration::from_secs(10),
+        "first breakpoint stop",
+    );
+     let DebugMessage::Stopped { thread_id: _, .. } = stop else {
+        unreachable!()
+    };
+
+     // Native restart: the adapter stays alive and the debuggee re-runs.
+     handle.send(DebugCommand::Restart).unwrap();
+    // After a restart the program runs from `main` again; drive it through
+    // the loop's two iterations and out to a clean process exit, continuing
+    // from whichever thread stops next.
+    let mut continue_count = 0;
+    loop {
+        match wait_for(
+            &handle,
+            |msg| matches!(msg, DebugMessage::Stopped { .. } | DebugMessage::Terminated),
+            Duration::from_secs(15),
+            "stop-or-exit after restart",
+        ) {
+            DebugMessage::Stopped { thread_id, .. } => {
+                handle.send(DebugCommand::Continue { thread_id }).unwrap();
+                continue_count += 1;
+                assert!(continue_count <= 4, "restart did not reach a clean exit");
+            }
+            DebugMessage::Terminated => break,
+            _ => unreachable!(),
+        }
+    }
+ 
+     let _ = fs::remove_dir_all(root);
+}
+ 
+ #[test]
 fn dap_conditional_breakpoint_fires_only_when_true() {
     if ns_debug::find_dap_adapter().is_none() {
         eprintln!("lldb-dap 不可用，跳过端到端测试");

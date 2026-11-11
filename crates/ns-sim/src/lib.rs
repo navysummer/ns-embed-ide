@@ -990,21 +990,25 @@ impl Simulator {
             self.tick_peripherals_for(self.last_instruction_cycles as u64);
             return result;
         }
-        if let Some(core) = self.arm.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.clone();
-            let result = core.step(&bps);
-            self.pc = core.regs[arm::PC];
-            self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
-            self.cycle_count += self.last_instruction_cycles as u64;
-            self.halted = core.halted;
-            let result = match result {
-                arm::ArmStep::Advanced => StepResult::Advanced,
-                arm::ArmStep::Breakpoint => StepResult::Breakpoint,
-                arm::ArmStep::Halted => StepResult::Halted,
-            };
-            self.tick_peripherals_for(self.last_instruction_cycles as u64);
-            return result;
-        }
+         if let Some(core) = self.arm.as_mut() {
+             let bps: Vec<u32> = self.breakpoints.clone();
+             let result = core.step(&bps);
+             self.pc = core.regs[arm::PC];
+             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
+             self.cycle_count += self.last_instruction_cycles as u64;
+             self.halted = core.halted;
+            let store_events = std::mem::take(&mut core.store_events);
+             let result = match result {
+                 arm::ArmStep::Advanced => StepResult::Advanced,
+                 arm::ArmStep::Breakpoint => StepResult::Breakpoint,
+                 arm::ArmStep::Halted => StepResult::Halted,
+             };
+            for (address, byte) in store_events {
+                self.peripheral_write(address, byte);
+            }
+             self.tick_peripherals_for(self.last_instruction_cycles as u64);
+             return result;
+         }
         if let Some(core) = self.x51.as_mut() {
             let bps: Vec<u32> = self.breakpoints.clone();
             let result = core.step(&bps);
@@ -1540,17 +1544,19 @@ impl Simulator {
         }
         self.memory[(address as usize) % MEMORY_SIZE]
     }
-    pub fn write_u32(&mut self, address: u32, value: u32) {
-        if let Some(core) = self.arm.as_mut() {
-            core.write_u32(address, value);
-            return;
-        }
-        if let Some(core) = self.xtensa.as_mut() {
-            core.write_u32(address, value);
-            return;
-        }
+     pub fn write_u32(&mut self, address: u32, value: u32) {
+         if let Some(core) = self.arm.as_mut() {
+             core.write_u32(address, value);
+            self.peripheral_write(address, value as u8);
+             return;
+         }
+         if let Some(core) = self.xtensa.as_mut() {
+             core.write_u32(address, value);
+            self.peripheral_write(address, value as u8);
+             return;
+         }
         if let Some(core) = self.avr.as_mut() {
-            for i in 0..4 {
+             for i in 0..4 {
                 let byte = (value >> (8 * i)) as u8;
                 let addr = address.wrapping_add(i as u32);
                 match addr {
@@ -1566,26 +1572,31 @@ impl Simulator {
             }
             return;
         }
-        if let Some(core) = self.msp430.as_mut() {
-            core.write_u32(address, value);
-            return;
-        }
-        if let Some(core) = self.v850.as_mut() {
-            core.write_u32(address, value);
-            return;
-        }
-        if let Some(core) = self.stm8.as_mut() {
-            core.write_mem_u32(address, value);
-            return;
-        }
-        if let Some(core) = self.rx.as_mut() {
-            core.write_u32(address, value);
-            return;
-        }
-        if let Some(core) = self.rl78.as_mut() {
-            core.write_u32(address, value);
-            return;
-        }
+         if let Some(core) = self.msp430.as_mut() {
+             core.write_u32(address, value);
+            self.peripheral_write(address, value as u8);
+             return;
+         }
+         if let Some(core) = self.v850.as_mut() {
+             core.write_u32(address, value);
+            self.peripheral_write(address, value as u8);
+             return;
+         }
+         if let Some(core) = self.stm8.as_mut() {
+             core.write_mem_u32(address, value);
+            self.peripheral_write(address, value as u8);
+             return;
+         }
+         if let Some(core) = self.rx.as_mut() {
+             core.write_u32(address, value);
+            self.peripheral_write(address, value as u8);
+             return;
+         }
+         if let Some(core) = self.rl78.as_mut() {
+             core.write_u32(address, value);
+            self.peripheral_write(address, value as u8);
+             return;
+         }
         let base = (address as usize) & !3;
         for i in 0..4 {
             let idx = base.wrapping_add(i) % MEMORY_SIZE;
@@ -1944,19 +1955,18 @@ impl Simulator {
             | ((self.memory[(base + 1) % MEMORY_SIZE] as u16) << 8)
     }
 
-    /// Route a store to virtual peripherals if the address is in their range.
-    fn peripheral_write(&mut self, address: u32, _byte: u8) {
-        if address >= self.peripherals.uart_base && address < self.peripherals.uart_base + 8 {
-            let data = self.memory[(address as usize) % MEMORY_SIZE];
-            if data != 0 {
-                self.peripherals.outputs.push(data);
-                (self.peripherals.putchar)(data);
-            }
-        }
-        self.gpio_write(address);
-        self.timer_write(address);
-        self.watchdog_write(address);
-    }
+     /// Route a store to virtual peripherals if the address is in their range.
+    fn peripheral_write(&mut self, address: u32, byte: u8) {
+         if address >= self.peripherals.uart_base && address < self.peripherals.uart_base + 8 {
+            if byte != 0 {
+                self.peripherals.outputs.push(byte);
+                (self.peripherals.putchar)(byte);
+             }
+         }
+         self.gpio_write(address);
+         self.timer_write(address);
+         self.watchdog_write(address);
+     }
 
     /// Handle watchdog register writes: base+0x00 feed (0xAA55 resets the
     /// timer), base+0x04 enable/disable, base+0x08 timeout cycles.
@@ -3121,9 +3131,47 @@ mod tests {
         sim.write_u32(base + 0x08, 0x0000_0001);
         sim.gpio_write(base + 0x08);
         assert_eq!(sim.peripherals.gpio_out & 1, 0);
-    }
+     }
 
-    /// The watchdog counts core cycles when enabled; feeding it (0xAA55)
+    /// Stores through the ARM core must route to the virtual peripherals:
+    /// writing a nonzero byte to the UART data register produces output.
+    #[test]
+    fn arm_stores_route_to_peripherals() {
+        let mut sim = Simulator::for_arch(Arch::Arm).expect("ARM core");
+        let uart = sim.peripherals.uart_base;
+        sim.write_u32(uart, b'A' as u32);
+        assert!(
+            sim.peripherals.outputs.contains(&b'A'),
+            "ARM UART store must reach the virtual UART; outputs: {:?}",
+            sim.peripherals.outputs
+        );
+        // A zero byte is a no-op (not echoed).
+        sim.write_u32(uart, 0);
+        assert_eq!(sim.peripherals.outputs.iter().filter(|&&b| b == 0).count(), 0);
+     }
+
+    /// A Thumb `str r0, [r1]` executed via `step()` must route the store to the
+    /// virtual UART — the ARM core records byte stores and the simulator drains
+    /// them into the peripheral handlers after each instruction.
+    #[test]
+    fn arm_step_str_routes_store_to_peripheral() {
+        let mut sim = Simulator::for_arch(Arch::Arm).expect("ARM core");
+        let uart = sim.peripherals.uart_base;
+        sim.arm.as_mut().unwrap().regs[0] = b'B' as u32;
+        sim.arm.as_mut().unwrap().regs[1] = uart;
+        // Thumb `str r0, [r1]`: 0x6000 | rn(1) = 0x6001, little-endian bytes.
+        sim.write_bytes(0, &[0x01, 0x60]);
+        sim.arm.as_mut().unwrap().xpsr |= 0x2000_0000; // Thumb bit
+        sim.set_program_counter(0);
+        let _ = sim.step();
+        assert!(
+            sim.peripherals.outputs.contains(&b'B'),
+            "ARM `str` must route to the UART; outputs: {:?}",
+            sim.peripherals.outputs
+        );
+    }
+ 
+     /// The watchdog counts core cycles when enabled; feeding it (0xAA55)
     /// reloads the countdown, and an un-fed watchdog fires a reset whose
     /// `reset_count`/`last_reset_pc` the IDE can surface.
     #[test]

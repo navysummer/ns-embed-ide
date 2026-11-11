@@ -416,7 +416,7 @@ period = 0                    # 仿真周期参数（可选）
 - **跟踪窗口（SWO/SWV）配置面板**：
   - 底层 `ns-debug::swvd`：DWT 比较器编码、ITM 包解码（`decode`）、探针发现（`NS_TRACE_PROBE`/ST-Link GDB server/OpenOCD 端口）、`parse_address`、`validate`/`requests`/`stop_requests`；单测覆盖寄存器写入顺序、包解码、探针支持说明、配置校验与文件回退。
 - **构建**：debug 配置自动加 `-g`（native）/`-C debuginfo=2`（rustc），产物调试可用。
-- **F14 Git 集成（M12 切片）**：状态栏「Git」项（点击打开面板）显示分支与变更数；Git 面板（输出区新标签）列出变更文件（暂存/取消暂存/删除/未跟踪徽章），选中文件显示 unified diff，提交框输入信息后一键提交；**可折叠「历史 · 分支」区**（提交 hash/subject 列表 + 分支计数，PyCharm 式）；非仓库目录如实提示。底层 `ns-ide::git`：`repo_status`（`status --porcelain` 解析 + `branch --show-current`，含 unborn 分支）、`diff`/`stage`/`unstage`/`commit`、`log`/`branches`；单测覆盖分支/未跟踪/暂存/提交/diff/非仓库/空提交拒绝。
+- **F14 Git 集成（M12 切片）**：状态栏「Git」项（点击打开面板）显示分支与变更数；Git 面板（输出区新标签）列出变更文件（暂存/取消暂存/删除/未跟踪徽章），选中文件显示 unified diff，提交框输入信息后一键提交；**可折叠「历史 · 分支」区**（提交 hash/subject 列表 + 分支计数，PyCharm 式），**历史·分支区每行本地分支可点击切换**（当前分支玉色标记），**顶栏「＋新建分支」「↓ 拉取」「↑ 推送」按钮**（新建分支弹输入框创建并切换，拉取/推送如实报告错误）；非仓库目录如实提示。底层 `ns-ide::git`：`repo_status`（`status --porcelain` 解析 + `branch --show-current`，含 unborn 分支；**重命名条目解析为变更目标路径**，不再显示 `old -> new` 伪路径）、`diff`/`stage`/`unstage`/`commit`、`log`/`branches`（**过滤分离 HEAD 伪分支**）、`checkout`/`create_branch`/`pull`/`push`；单测覆盖分支/未跟踪/暂存/提交/diff/非仓库/空提交拒绝/新建切换分支/拉取推送错误/重命名目标/分离 HEAD。
   - **F10 工具链管理（M11 切片）**：`ns-project::toolchain` 增加 `Tool::version`（运行 `--version` 探测首行）与 `missing_guide`（按工具给安装建议）；新建项目向导的工具步骤为每个工具显示「路径 · 版本」，缺失则显示**安装命令指引**（`missing_guide`，如 `brew install arm-none-eabi-gcc` / `pip install pyocd` / `cargo install probe-rs-tools`），检测结果按需缓存（不逐帧起子进程）；`missing_guide` 覆盖 Keil/IAR 交叉工具链（`avr-gcc`/`msp430-elf-gcc`/`v850-elf-gcc`/`rx-elf-gcc`/`rl78-elf-gcc`/`sdcc`，SDCC 支持 8051/80251/STM8 目标），缺失时给出对应安装指引；单测覆盖版本探测/安装建议/未知工具与交叉工具链指引。
 - **F10 工具链校验（M11 切片）**：`Project::tool_warnings` 校验 `project.toml` 中配置的编译器/仿真器/调试器/烧写器是否在 PATH（空值=自动发现跳过），缺失时给出安装建议；`Project::open` 仅对结构性错误（空名称/版本/输出目录）失败，工具缺失作为警告在打开项目后显示到「问题」面板。
 - **F14 静态分析（M12 切片）**：命令面板「静态分析」按语言运行 `clang-tidy`（C/C++，按 `project.toml` 传 `--std`/`-D`/`-I`）、`cargo clippy --message-format=short`（Rust）、`zig build-exe -fno-emit-bin`（Zig）、`zr <entry> -c`（ZR，仅检查不产出），结果经统一诊断解析进「问题」面板；工具缺失时如实提示。底层 `ns_build::plan_static_analysis`；端到端单测用可告警的 Rust 工程跑 `cargo clippy` 并断言 `clone_on_copy` 被解析。
@@ -514,7 +514,14 @@ period = 0                    # 仿真周期参数（可选）
   - **F7 调试体验**：寄存器值编辑（调试会话中 `✎` 打开 `setVariable` 对话框修改寄存器值）；内存视图搜索/填充（`search_memory`/`fill_memory` 已接入，命中高亮）；watch 表达式持久化（`persist_breakpoints` 把观察点写入 `.ns-ide/breakpoints.json`，重开恢复）。
   - **F8 固件大小摘要增强**：`FirmwareSize` 新增 `text`/`data`/`bss` 字段；`analyze_size_breakdown`（`size` 工具三列解析）+ `parse_size_breakdown`；`render_firmware_size_summary` 追加「分区: text N B · data N B · bss N B」行。
    - **F8 烧写后自动校验（verify 链）**：`FlashMode::Verify`——「烧写并校验」（`flash-and-verify` 命令/`topm-flash-verify` 菜单）在烧写成功后自动链式执行 `FlashAction::Verify`（构建失败即停，不静默继续）。
-
+  - **F3.2 头文件/源文件切换**：命令面板/右键「切换到头文件/源文件」（`goto-header-source`）解析 `#include` 定位对应 `.h`/`.c`（同目录 + `[compiler] includes`），打开并聚焦对应文件；无对应文件时如实提示。
+  - **F3 编辑器标签右键菜单**：标签页右键菜单「关闭其他标签」「关闭右侧标签」「关闭全部标签」；`close_tab` 真正移除标签（不只改活动索引），`close_other_tabs`/`close_tabs_to_right` 精确保留目标标签；单测 `tabs_close_and_other_tabs_keep_target` 覆盖关闭中间标签与关闭其他。
+  - **F7 调试 watch 表达式持久化**：watch 表达式（非运行值）持久化到 `.ns-ide/watch.json`，重开项目恢复（`persist_watches`/`load_watches`）；跨调试会话保留（`launch_debug` 经 `std::mem::take` 把旧 watches 带入新会话）；单测 `watch_expressions_persist_and_reload` 覆盖往返与去重。
+  - **F7 变量面板手动刷新**：变量页标题栏新增「↻ 刷新」按钮（`dbg-vars-refresh`），清除缓存的作用域/变量并对当前栈帧重新下发 `GetScopes`；无栈帧时如实提示；单测 `refresh_variables_clears_and_reports`。
+  - **F5 构建配置下拉选择器**：状态栏「构建配置」改为下拉（`build-config-opt-debug/release`），选中即写回活动目标对应 `[[targets]]` 条目（无条目则新建，保存失败按 `RollbackKind` 精确回滚），`toggle_build_config` 拆分为 `set_build_config` 并注册命令面板「切换构建配置（debug ↔ release）」（`toggle-build-config`）；单测 `set_build_config_persists_to_project` 覆盖持久化/幂等/非法拒绝。
+  - **F3.3 调试控制台命令历史**：调试控制台输入框回车求值后记录命令（`DebugView::push_console_history`，去重连续重复、上限 100）；`↑`/`↓` 在历史中导航（首次按 `↑` 保存当前草稿，越过最新恢复草稿）；单测 `debug_console_history_navigates_and_dedupes` 覆盖导航/去重/空历史。
+  - **F3 跳转到行**：命令面板/`Cmd/Ctrl+G`「跳转到行…」（`go-to-line`）打开对话框输入 1 基行号，回车/「跳转」经 `Editor::set_cursor_line` 移动光标（越界自动夹紧，`Editor::line_count` 计算逻辑行数），非数字如实提示；单测 `go_to_line_dialog_jumps_and_clamps` 覆盖跳转/夹紧/非法输入。
+  - **F1.2 文件树右键增强**：文件树右键菜单新增「复制路径」（`tree-menu-copy-path`，经 `cx.write_to_clipboard` 写绝对路径到系统剪贴板）与「在访达中显示」（`tree-menu-reveal`，macOS `open -R` / 其他平台 `xdg-open` 父目录），均关闭菜单并在状态栏报告。
 - **未完成（本轮对比识别，不得视为已完成）**：
    - **多核/多芯片调试**：单目标单会话；无多核（如双核 STM32H7）调度与核间同步。
   - **RTOS 模板**：FreeRTOS 自包含模板可构建，但无内核感知调试（任务列表/栈使用经 RTOS 适配）。

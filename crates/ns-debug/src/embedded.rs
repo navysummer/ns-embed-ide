@@ -1160,14 +1160,22 @@ impl EmbeddedSession {
              DebugCommand::Pause { .. } => {
                  let _ = self.mi_command("interrupt");
              }
-            DebugCommand::Stop => {
-                let _ = self.mi_command("kill");
-                let _ = self.mi_command("detach");
-                let _ = self.mi_command("quit");
-                let _ = self.server.kill();
-                *self.stopped.lock().unwrap() = true;
+             DebugCommand::Stop => {
+                 let _ = self.mi_command("kill");
+                 let _ = self.mi_command("detach");
+                 let _ = self.mi_command("quit");
+                 let _ = self.server.kill();
+                 *self.stopped.lock().unwrap() = true;
+             }
+            DebugCommand::Restart => {
+                // Embedded target restart: reset the MCU via the probe
+                // monitor, then continue from the reset vector. The GDB
+                // server connection stays alive.
+                let _ = self.mi_command("monitor reset");
+                let _ = self.mi_command("continue");
+                let _ = self.messages.send(DebugMessage::Continued);
             }
-            DebugCommand::GetStackTrace { thread_id: _ } => {
+             DebugCommand::GetStackTrace { thread_id: _ } => {
                 let output = self.mi_command("stack list-frames")?;
                 let frames = parse_mi_frames(&output);
                 let _ = self.messages.send(DebugMessage::StackTrace { frames });
@@ -1431,9 +1439,10 @@ fn disassemble_bytes(data: &[u8], base: u64) -> Vec<Instruction> {
             address,
             instruction: text,
             bytes: format!("{:02x} {:02x}", chunk[0], chunk[1]),
-            line: None,
-            file: None,
-        });
+             line: None,
+             file: None,
+            symbol: None,
+         });
         if instructions.len() >= 64 {
             break;
         }

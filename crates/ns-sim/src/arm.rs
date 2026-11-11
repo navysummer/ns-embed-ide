@@ -46,11 +46,14 @@ pub struct ArmCore {
     /// ARM7/ARM9/Cortex-A reset with a vector whose bit 0 is clear; Cortex-M
     /// always boots in Thumb state (this stays `false`).
     pub arm_state: bool,
-    /// Whether execution should stop.
-    pub halted: bool,
-    /// Number of instructions executed since reset.
-    pub cycle_count: u64,
-}
+     /// Whether execution should stop.
+     pub halted: bool,
+     /// Number of instructions executed since reset.
+     pub cycle_count: u64,
+    /// Byte-level stores performed since the last drain, as (address, byte).
+    /// The `Simulator` routes these to its virtual peripherals after each step.
+    pub store_events: Vec<(u32, u8)>,
+ }
 
 impl ArmCore {
     pub fn new() -> Self {
@@ -64,9 +67,10 @@ impl ArmCore {
             memory: vec![0; ADDR_SIZE],
             vtor: 0,
             arm_state: false,
-            halted: false,
-            cycle_count: 0,
-        }
+             halted: false,
+             cycle_count: 0,
+            store_events: Vec::new(),
+         }
     }
 
     /// Set the program counter (keeps the Thumb bit in the low bit).
@@ -164,15 +168,24 @@ impl ArmCore {
             self.memory[base + 3],
         ])
     }
-    pub fn write_u32(&mut self, address: u32, value: u32) {
-        let Some(base) = self.map_addr(address & !3) else {
-            return; // unbacked address: drop write
-        };
-        if base + 4 > self.memory.len() {
-            return;
-        }
-        self.memory[base..base + 4].copy_from_slice(&value.to_le_bytes());
-    }
+     pub fn write_u32(&mut self, address: u32, value: u32) {
+         let Some(base) = self.map_addr(address & !3) else {
+             for i in 0..4 {
+                 self.store_events.push((address.wrapping_add(i as u32), (value >> (8 * i)) as u8));
+             }
+             return; // unbacked address: drop write
+         };
+         if base + 4 > self.memory.len() {
+             for i in 0..4 {
+                 self.store_events.push((address.wrapping_add(i as u32), (value >> (8 * i)) as u8));
+             }
+             return;
+         }
+         self.memory[base..base + 4].copy_from_slice(&value.to_le_bytes());
+         for i in 0..4 {
+             self.store_events.push((address.wrapping_add(i as u32), (value >> (8 * i)) as u8));
+         }
+     }
     pub fn read_u16(&self, address: u32) -> u16 {
         let Some(base) = self.map_addr(address) else {
             return 0;
@@ -182,27 +195,35 @@ impl ArmCore {
         }
         u16::from_le_bytes([self.memory[base], self.memory[base + 1]])
     }
-    pub fn write_u16(&mut self, address: u32, value: u16) {
-        let Some(base) = self.map_addr(address) else {
-            return;
-        };
-        if base + 2 > self.memory.len() {
-            return;
-        }
-        self.memory[base..base + 2].copy_from_slice(&value.to_le_bytes());
-    }
-    pub fn read_u8(&self, address: u32) -> u8 {
-        let Some(base) = self.map_addr(address) else {
-            return 0;
-        };
-        self.memory[base]
-    }
-    pub fn write_u8(&mut self, address: u32, value: u8) {
-        let Some(base) = self.map_addr(address) else {
-            return;
-        };
-        self.memory[base] = value;
-    }
+     pub fn write_u16(&mut self, address: u32, value: u16) {
+         let Some(base) = self.map_addr(address) else {
+            self.store_events.push((address, value as u8));
+            self.store_events.push((address.wrapping_add(1), (value >> 8) as u8));
+             return;
+         };
+         if base + 2 > self.memory.len() {
+            self.store_events.push((address, value as u8));
+            self.store_events.push((address.wrapping_add(1), (value >> 8) as u8));
+             return;
+         }
+         self.memory[base..base + 2].copy_from_slice(&value.to_le_bytes());
+         self.store_events.push((address, value as u8));
+         self.store_events.push((address.wrapping_add(1), (value >> 8) as u8));
+     }
+     pub fn read_u8(&self, address: u32) -> u8 {
+         let Some(base) = self.map_addr(address) else {
+             return 0;
+         };
+         self.memory[base]
+     }
+     pub fn write_u8(&mut self, address: u32, value: u8) {
+         let Some(base) = self.map_addr(address) else {
+            self.store_events.push((address, value));
+             return;
+         };
+         self.memory[base] = value;
+         self.store_events.push((address, value));
+     }
 
     /// Write a block of bytes (e.g. an ELF segment).
     pub fn write_bytes(&mut self, base: u32, bytes: &[u8]) {
@@ -478,36 +499,43 @@ impl ArmCore {
                     _ => {}
                 }
             }
-            // 0x6: load/store word immediate offset (bit 11 = load)
-            0x6 => {
-                let load = (insn >> 11) & 1 != 0;
-                let addr = self.regs[rn].wrapping_add(imm5 * 4);
-                if load {
-                    self.regs[rd] = self.read_u32(addr);
-                } else {
-                    self.write_u32(addr, self.regs[rd]);
-                }
-            }
-            // 0x7: load/store byte immediate offset (bit 11 = load)
-            0x7 => {
-                let load = (insn >> 11) & 1 != 0;
-                let addr = self.regs[rn].wrapping_add(imm5);
-                if load {
-                    self.regs[rd] = self.read_u8(addr) as u32;
-                } else {
-                    self.write_u8(addr, self.regs[rd] as u8);
-                }
-            }
-            // 0x8: load/store half immediate offset (bit 11 = load)
-            0x8 => {
-                let load = (insn >> 11) & 1 != 0;
-                let addr = self.regs[rn].wrapping_add(imm5 * 2);
-                if load {
-                    self.regs[rd] = self.read_u16(addr) as u32;
-                } else {
-                    self.write_u16(addr, self.regs[rd] as u16);
-                }
-            }
+             // 0x6: load/store word immediate offset (bit 11 = load)
+             0x6 => {
+                 let load = (insn >> 11) & 1 != 0;
+                // Thumb: `STR/LDR Rt, [Rn, #imm]` — Rn = bits 2-0, Rt = bits 5-3.
+                let base = (insn & 0x07) as usize;
+                let data = ((insn >> 3) & 0x07) as usize;
+                let addr = self.regs[base].wrapping_add(imm5 * 4);
+                 if load {
+                    self.regs[data] = self.read_u32(addr);
+                 } else {
+                    self.write_u32(addr, self.regs[data]);
+                 }
+             }
+             // 0x7: load/store byte immediate offset (bit 11 = load)
+             0x7 => {
+                 let load = (insn >> 11) & 1 != 0;
+                let base = (insn & 0x07) as usize;
+                let data = ((insn >> 3) & 0x07) as usize;
+                let addr = self.regs[base].wrapping_add(imm5);
+                 if load {
+                    self.regs[data] = self.read_u8(addr) as u32;
+                 } else {
+                    self.write_u8(addr, self.regs[data] as u8);
+                 }
+             }
+             // 0x8: load/store half immediate offset (bit 11 = load)
+             0x8 => {
+                 let load = (insn >> 11) & 1 != 0;
+                let base = (insn & 0x07) as usize;
+                let data = ((insn >> 3) & 0x07) as usize;
+                let addr = self.regs[base].wrapping_add(imm5 * 2);
+                 if load {
+                    self.regs[data] = self.read_u16(addr) as u32;
+                 } else {
+                    self.write_u16(addr, self.regs[data] as u16);
+                 }
+             }
             // 0x9: SP-relative load/store word (bit 11 = load)
             0x9 => {
                 let load = (insn >> 11) & 1 != 0;
@@ -1515,9 +1543,9 @@ mod tests {
         let mut c = core();
         c.regs[0] = 0x2000_0000;
         c.regs[1] = 0xDEAD_BEEF;
-        // STR r1, [r0, #0]  (0x6009)
-        // LDR r2, [r0, #0]  (0x6812)
-        run(&mut c, &[0x6009, 0x6812], 2);
+         // STR r1, [r0, #0]  (0x6008: Rn=0, Rt=1)
+         // LDR r2, [r0, #0]  (0x6810: Rn=0, Rt=2)
+         run(&mut c, &[0x6008, 0x6810], 2);
         assert_eq!(c.regs[2], 0xDEAD_BEEF);
     }
 

@@ -104,7 +104,14 @@ pub fn repo_status(root: &Path) -> RepoStatus {
             }
             let staged = bytes[0] as char;
             let worktree = bytes[1] as char;
-            let path = line[3..].trim().to_string();
+            let raw_path = line[3..].trim().to_string();
+            // Rename/copy entries report both sides (`R  old -> new`); the
+            // work-tree path is the rename target, which is what the panel
+            // shows and the diff reads.
+            let path = match raw_path.split_once(" -> ") {
+                Some((_, target)) => target.trim().to_string(),
+                None => raw_path,
+            };
             Some(GitChange {
                 path,
                 staged,
@@ -166,10 +173,15 @@ pub fn branches(root: &Path) -> Vec<(String, bool)> {
         .map(|output| {
             output
                 .lines()
-                .map(|line| {
+                .filter_map(|line| {
                     let current = line.starts_with('*');
                     let name = line.trim_start_matches("* ").trim().to_string();
-                    (name, current)
+                    // On a detached HEAD `git branch` prints a pseudo-entry
+                    // `(HEAD detached at <hash>)`; it is not a real branch.
+                    if name.starts_with("(HEAD detached") || name == "(no branch)" {
+                        return None;
+                    }
+                    Some((name, current))
                 })
                 .collect()
         })
@@ -205,13 +217,41 @@ pub fn unstage(root: &Path, path: &str) -> Result<(), String> {
 
 
 /// Commit the staged changes with `message`.
-pub fn commit(root: &Path, message: &str) -> Result<(), String> {
-    if message.trim().is_empty() {
-        return Err("提交信息不能为空".to_string());
+ /// Commit the staged changes with `message`.
+ pub fn commit(root: &Path, message: &str) -> Result<(), String> {
+     if message.trim().is_empty() {
+         return Err("提交信息不能为空".to_string());
+     }
+     git(root, &["commit", "-m", message.trim()]).map(|_| ())
+ }
+
+/// Switch to an existing local branch (`git checkout <branch>`).
+pub fn checkout(root: &Path, branch: &str) -> Result<(), String> {
+    if branch.trim().is_empty() {
+        return Err("分支名不能为空".to_string());
     }
-    git(root, &["commit", "-m", message.trim()]).map(|_| ())
+    git(root, &["checkout", branch.trim()]).map(|_| ())
 }
 
+/// Create and switch to a new local branch (`git checkout -b <branch>`).
+pub fn create_branch(root: &Path, branch: &str) -> Result<(), String> {
+    if branch.trim().is_empty() {
+        return Err("分支名不能为空".to_string());
+    }
+    git(root, &["checkout", "-b", branch.trim()]).map(|_| ())
+}
+
+/// Pull the upstream changes into the current branch (`git pull`).
+pub fn pull(root: &Path) -> Result<(), String> {
+    git(root, &["pull"]).map(|_| ())
+}
+
+/// Push the current branch to its upstream (`git push`).
+pub fn push(root: &Path) -> Result<(), String> {
+    git(root, &["push"]).map(|_| ())
+}
+ 
+ 
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +340,67 @@ mod tests {
         let repo = repo_status(&root);
         assert!(!repo.in_repo);
         assert_eq!(repo.changes, 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn create_and_switch_branch_updates_status() {
+        let root = temp_repo();
+        fs::write(root.join("a.txt"), "hello").unwrap();
+        stage(&root, "a.txt").unwrap();
+        commit(&root, "initial").unwrap();
+
+        // Create and switch to a new branch.
+        create_branch(&root, "feature").unwrap();
+        let repo = repo_status(&root);
+        assert_eq!(repo.branch, "feature");
+        assert!(branches(&root).contains(&("feature".to_string(), true)));
+
+        // Switch back to master.
+        checkout(&root, "master").unwrap();
+        let repo = repo_status(&root);
+        assert_eq!(repo.branch, "master");
+        assert!(branches(&root).contains(&("master".to_string(), true)));
+
+        // Empty names are rejected.
+        assert!(create_branch(&root, "   ").is_err());
+        assert!(checkout(&root, "").is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pull_and_push_report_errors_honestly() {
+        let root = temp_repo();
+        fs::write(root.join("a.txt"), "hello").unwrap();
+        stage(&root, "a.txt").unwrap();
+        commit(&root, "initial").unwrap();
+
+        // No upstream configured: pull/push fail with an honest error, not a panic.
+        assert!(pull(&root).is_err());
+        assert!(push(&root).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_reports_target_as_changed_path() {
+        let root = temp_repo();
+        fs::write(root.join("old.txt"), "content").unwrap();
+        stage(&root, "old.txt").unwrap();
+        commit(&root, "initial").unwrap();
+
+        // `git mv` stages a rename; porcelain reports `R  old.txt -> new.txt`.
+        let output = Command::new("git")
+            .args(["mv", "old.txt", "new.txt"])
+            .current_dir(&root)
+            .output()
+            .expect("git mv");
+        assert!(output.status.success());
+
+        let repo = repo_status(&root);
+        assert_eq!(repo.changes, 1);
+        // The panel must see the rename target, not `old.txt -> new.txt`.
+        assert!(repo.files.iter().any(|file| file.path == "new.txt"));
+        assert!(!repo.files.iter().any(|file| file.path.contains(" -> ")));
         let _ = fs::remove_dir_all(&root);
     }
 }
