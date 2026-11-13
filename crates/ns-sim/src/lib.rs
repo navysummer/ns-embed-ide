@@ -36,9 +36,16 @@ pub const ENTRY_POINT: u32 = 0x8000_0000;
 
 /// The target instruction-set architecture a simulator instance runs.
 ///
-/// The built-in simulator currently implements only [`Arch::RiscV`] (RV32I);
-/// the other architectures are recognized so the IDE can report a clear
-/// "not yet implemented" error instead of silently mis-decoding the artifact.
+/// Each variant maps to a concrete core implementation (`for_arch` constructs
+/// the matching core): RV32I, ARM (Thumb/Thumb-2 + A32), MCS-51, MCS-251,
+/// C166, Xtensa, AVR, MSP430, V850, STM8, RX and RL78. Every core has its own
+/// register/PC/memory model and single-step decoder, selected by the target
+/// MCU in `project.toml` or by the ELF `e_machine`.
+///
+/// [`Arch::label`] and [`Arch::from_target`] are used by the IDE to report
+/// which core a loaded artifact belongs to; `from_elf_machine` maps the ELF
+/// header so a mismatched artifact is rejected rather than silently mis-decoded.
+///
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arch {
     /// RISC-V 32-bit (RV32I); used by ESP32-C3 and generic RISC-V targets.
@@ -360,8 +367,9 @@ pub struct Simulator {
     pub memory: Vec<u8>,
     /// Whether execution should stop (a breakpoint or halt instruction).
     pub halted: bool,
-    /// Addresses that, when reached, pause execution.
-    pub breakpoints: Vec<u32>,
+    /// Simulated breakpoints (with optional condition / hit count).
+    pub breakpoints: Vec<SimBreakpoint>,
+
     /// Steps executed since the last reset.
     pub cycle_count: u64,
     pub peripherals: VirtualPeripherals,
@@ -424,6 +432,354 @@ pub struct LineEntry {
     pub file: usize,
     pub line: u32,
 }
+
+/// A simulated breakpoint with an optional condition expression and hit count.
+/// The condition is a C-like expression over register names (`x0`-`x31` for
+/// RISC-V, `r0`-`r15` for ARM, `a0`-`a15` for Xtensa, etc.) and the synthetic
+/// `pc`/`cycle` values; it is evaluated with the simulator's register view at
+/// the moment the PC reaches `address`. A hit-count breakpoint pauses only on
+/// the N-th hit (`hit_count`, 1-based).
+#[derive(Debug, Clone)]
+pub struct SimBreakpoint {
+    pub address: u32,
+    /// Optional condition expression; empty = unconditional.
+    pub condition: String,
+    /// 1-based hit count; 0 = stop on first hit.
+    pub hit_count: u32,
+    /// Number of times the PC has reached this address since set.
+    hits: u64,
+}
+
+impl SimBreakpoint {
+    pub fn new(address: u32) -> Self {
+        Self {
+            address,
+            condition: String::new(),
+            hit_count: 0,
+            hits: 0,
+        }
+    }
+
+    /// Number of times the PC has reached this address since set.
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+
+
+    /// Record a hit at this breakpoint. Returns `true` when the simulator
+    /// should pause: the hit count has reached the threshold (or it is
+    /// unconditional) and the condition (if any) evaluates true.
+    fn record_hit(&mut self, regs: &SimRegs, pc: u32, cycle: u64) -> bool {
+        self.hits += 1;
+        if self.hit_count > 0 && self.hits < self.hit_count as u64 {
+            return false;
+        }
+        if self.condition.is_empty() {
+            return true;
+        }
+        eval_condition(&self.condition, regs, pc, cycle)
+    }
+}
+
+/// Register values the condition evaluator can read by name.
+#[derive(Debug, Clone, Default)]
+pub struct SimRegs {
+    /// (name, value) pairs for every visible register, in ABI order.
+    pub named: Vec<(String, u32)>,
+}
+
+impl SimRegs {
+    /// Value of the register named `name` (case-insensitive), if present.
+    pub fn get(&self, name: &str) -> Option<u32> {
+        let name = name.to_ascii_lowercase();
+        self.named
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(&name))
+            .map(|(_, v)| *v)
+    }
+}
+
+/// Evaluate a breakpoint condition expression. Supports:
+/// - Integer literals: `42`, `0x2A`, `0b1010`, `0o17`.
+/// - Register names (`x0`..`x31`, `r0`..`r15`, `a0`..`a15`, `pc`, `cycle`).
+/// - Comparison: `==` `!=` `<` `<=` `>` `>=`.
+/// - Arithmetic: `+` `-` `*` `/` `%` (with C precedence).
+/// - Logical: `&&` `||` `!` (short-circuit, non-zero = true).
+/// - Parentheses and unary minus.
+/// An empty condition is true (no condition). Any parse/name error is false
+/// (a malformed condition must never silently pass).
+pub fn eval_condition(expr: &str, regs: &SimRegs, pc: u32, cycle: u64) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    match CondParser::new(trimmed, regs, pc, cycle).parse_or() {
+
+        Some(value) => value != 0,
+        None => false,
+    }
+}
+
+/// Recursive-descent parser for the condition grammar. Returns `None` on any
+/// lexing or semantic error so a bad condition is reported as not-matching.
+struct CondParser<'a> {
+    s: &'a [u8],
+    pos: usize,
+    regs: &'a SimRegs,
+    pc: u32,
+    cycle: u64,
+}
+
+impl<'a> CondParser<'a> {
+    fn new(s: &'a str, regs: &'a SimRegs, pc: u32, cycle: u64) -> Self {
+        Self {
+            s: s.as_bytes(),
+            pos: 0,
+            regs,
+            pc,
+            cycle,
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.s.get(self.pos).copied()
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            self.pos += 1;
+        }
+    }
+
+    /// Parse `||` (lowest precedence).
+    fn parse_or(&mut self) -> Option<i64> {
+        let mut left = self.parse_and()?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'|') && self.s.get(self.pos + 1) == Some(&b'|') {
+                self.pos += 2;
+                let right = self.parse_and()?;
+                left = (left != 0 || right != 0) as i64;
+            } else {
+                break;
+            }
+        }
+        Some(left)
+    }
+
+    fn parse_and(&mut self) -> Option<i64> {
+        let mut left = self.parse_cmp()?;
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'&') && self.s.get(self.pos + 1) == Some(&b'&') {
+                self.pos += 2;
+                let right = self.parse_cmp()?;
+                left = (left != 0 && right != 0) as i64;
+            } else {
+                break;
+            }
+        }
+        Some(left)
+    }
+
+    fn parse_cmp(&mut self) -> Option<i64> {
+        let left = self.parse_add()?;
+        self.skip_ws();
+        let op = match (self.peek(), self.s.get(self.pos + 1).copied()) {
+            (Some(b'='), Some(b'=')) => {
+                self.pos += 2;
+                Some("==")
+            }
+            (Some(b'!'), Some(b'=')) => {
+                self.pos += 2;
+                Some("!=")
+            }
+            (Some(b'<'), Some(b'=')) => {
+                self.pos += 2;
+                Some("<=")
+            }
+            (Some(b'>'), Some(b'=')) => {
+                self.pos += 2;
+                Some(">=")
+            }
+            (Some(b'<'), _) => {
+                self.pos += 1;
+                Some("<")
+            }
+            (Some(b'>'), _) => {
+                self.pos += 1;
+                Some(">")
+            }
+            _ => None,
+        };
+        let Some(op) = op else {
+            return Some(left);
+        };
+        let right = self.parse_add()?;
+        Some(match op {
+            "==" => (left == right) as i64,
+            "!=" => (left != right) as i64,
+            "<" => (left < right) as i64,
+            "<=" => (left <= right) as i64,
+            ">" => (left > right) as i64,
+            ">=" => (left >= right) as i64,
+            _ => 0,
+        })
+    }
+
+    fn parse_add(&mut self) -> Option<i64> {
+        let mut left = self.parse_mul()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b'+') => {
+                    self.pos += 1;
+                    left = left.wrapping_add(self.parse_mul()?);
+                }
+                Some(b'-') => {
+                    self.pos += 1;
+                    left = left.wrapping_sub(self.parse_mul()?);
+                }
+                _ => break,
+            }
+        }
+        Some(left)
+    }
+
+    fn parse_mul(&mut self) -> Option<i64> {
+        let mut left = self.parse_unary()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b'*') => {
+                    self.pos += 1;
+                    left = left.wrapping_mul(self.parse_unary()?);
+                }
+                Some(b'/') => {
+                    self.pos += 1;
+                    let right = self.parse_unary()?;
+                    left = if right == 0 { 0 } else { left / right };
+                }
+                Some(b'%') => {
+                    self.pos += 1;
+                    let right = self.parse_unary()?;
+                    left = if right == 0 { 0 } else { left % right };
+                }
+                _ => break,
+            }
+        }
+        Some(left)
+    }
+
+    fn parse_unary(&mut self) -> Option<i64> {
+        self.skip_ws();
+        match self.peek() {
+            Some(b'!') => {
+                self.pos += 1;
+                let v = self.parse_unary()?;
+                Some((v == 0) as i64)
+            }
+            Some(b'-') => {
+                self.pos += 1;
+                let v = self.parse_unary()?;
+                Some(v.wrapping_neg())
+            }
+            Some(b'+') => {
+                self.pos += 1;
+                self.parse_unary()
+            }
+            _ => self.parse_primary(),
+        }
+    }
+
+    fn parse_primary(&mut self) -> Option<i64> {
+        self.skip_ws();
+        match self.peek() {
+            Some(b'(') => {
+                self.pos += 1;
+                let v = self.parse_or()?;
+                self.skip_ws();
+                if self.peek() == Some(b')') {
+                    self.pos += 1;
+                    Some(v)
+                } else {
+                    None
+                }
+            }
+            Some(c) if c.is_ascii_digit() => self.parse_number(),
+            Some(c) if c.is_ascii_alphabetic() || c == b'_' => self.parse_ident(),
+            _ => None,
+        }
+    }
+
+    fn parse_number(&mut self) -> Option<i64> {
+        let start = self.pos;
+        if self.s.get(self.pos) == Some(&b'0') {
+            match self.s.get(self.pos + 1).copied() {
+                Some(b'x') | Some(b'X') => {
+                    self.pos += 2;
+                    let dstart = self.pos;
+                    while self.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
+                        self.pos += 1;
+                    }
+                    if self.pos == dstart {
+                        return None;
+                    }
+                    let text = std::str::from_utf8(&self.s[dstart..self.pos]).ok()?;
+                    return i64::from_str_radix(text, 16).ok();
+                }
+                Some(b'b') | Some(b'B') => {
+                    self.pos += 2;
+                    let dstart = self.pos;
+                    while self.peek().is_some_and(|c| c == b'0' || c == b'1') {
+                        self.pos += 1;
+                    }
+                    if self.pos == dstart {
+                        return None;
+                    }
+                    let text = std::str::from_utf8(&self.s[dstart..self.pos]).ok()?;
+                    return i64::from_str_radix(text, 2).ok();
+                }
+                Some(b'o') | Some(b'O') => {
+                    self.pos += 2;
+                    let dstart = self.pos;
+                    while self.peek().is_some_and(|c| matches!(c, b'0'..=b'7')) {
+                        self.pos += 1;
+                    }
+                    if self.pos == dstart {
+                        return None;
+                    }
+                    let text = std::str::from_utf8(&self.s[dstart..self.pos]).ok()?;
+                    return i64::from_str_radix(text, 8).ok();
+                }
+                _ => {}
+            }
+        }
+        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+            self.pos += 1;
+        }
+        let text = std::str::from_utf8(&self.s[start..self.pos]).ok()?;
+        text.parse::<i64>().ok()
+    }
+
+    fn parse_ident(&mut self) -> Option<i64> {
+        let start = self.pos;
+        while self.peek().is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
+            self.pos += 1;
+        }
+        let name = std::str::from_utf8(&self.s[start..self.pos]).ok()?;
+        let lower = name.to_ascii_lowercase();
+        if lower == "pc" {
+            Some(self.pc as i64)
+        } else if lower == "cycle" || lower == "cycles" {
+            Some(self.cycle as i64)
+        } else {
+            self.regs.get(name).map(|v| v as i64)
+        }
+    }
+}
+
+
 
 /// A single-step outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -885,21 +1241,94 @@ impl Simulator {
         self.line_table = line_table;
     }
 
-    /// Set (or clear) a breakpoint at `address`. Returns whether it was added.
+    /// Set a breakpoint at `address`. Returns whether a new one was added.
+    /// An existing breakpoint at the address is left untouched (use
+    /// [`Self::update_breakpoint`] to change its condition / hit count).
     pub fn set_breakpoint(&mut self, address: u32) -> bool {
-        if self.breakpoints.contains(&address) {
+        if self.breakpoints.iter().any(|bp| bp.address == address) {
             false
         } else {
-            self.breakpoints.push(address);
+            self.breakpoints.push(SimBreakpoint::new(address));
             true
+        }
+    }
+
+    /// Set a breakpoint at `address` with a condition and hit count.
+    pub fn set_breakpoint_ex(
+        &mut self,
+        address: u32,
+        condition: impl Into<String>,
+        hit_count: u32,
+    ) -> bool {
+        if let Some(bp) = self.breakpoints.iter_mut().find(|bp| bp.address == address) {
+            bp.condition = condition.into();
+            bp.hit_count = hit_count;
+            false
+        } else {
+            let mut bp = SimBreakpoint::new(address);
+            bp.condition = condition.into();
+            bp.hit_count = hit_count;
+            self.breakpoints.push(bp);
+            true
+        }
+    }
+
+    /// Update an existing breakpoint's condition / hit count in place.
+    pub fn update_breakpoint(
+        &mut self,
+        address: u32,
+        condition: impl Into<String>,
+        hit_count: u32,
+    ) -> bool {
+        if let Some(bp) = self.breakpoints.iter_mut().find(|bp| bp.address == address) {
+            bp.condition = condition.into();
+            bp.hit_count = hit_count;
+            true
+        } else {
+            false
         }
     }
 
     pub fn clear_breakpoint(&mut self, address: u32) -> bool {
         let before = self.breakpoints.len();
-        self.breakpoints.retain(|a| *a != address);
+        self.breakpoints.retain(|bp| bp.address != address);
         before != self.breakpoints.len()
     }
+
+    /// The current hit count for the breakpoint at `address` (0 if none).
+    pub fn breakpoint_hits(&self, address: u32) -> u64 {
+        self.breakpoints
+            .iter()
+            .find(|bp| bp.address == address)
+            .map(|bp| bp.hits)
+            .unwrap_or(0)
+    }
+
+    /// Build the register-name view used by condition evaluation, from the
+    /// architecture's register labels and values.
+    pub fn reg_view(&self) -> SimRegs {
+        let mut named = Vec::new();
+        let count = reg_count_for(self.arch);
+        for i in 0..count {
+            let label = reg_label_for(self.arch, i);
+            let value = self.read_reg(i);
+            named.push((label.clone(), value));
+            // Numeric aliases so conditions can use `x1` (RISC-V), `r1` (ARM),
+            // `a1` (Xtensa) alongside the ABI names.
+            let alias = match self.arch {
+                Arch::RiscV => format!("x{i}"),
+                Arch::Arm | Arch::C166 | Arch::Rx => format!("r{i}"),
+                _ => String::new(),
+            };
+            if !alias.is_empty() {
+                named.push((alias, value));
+            }
+        }
+        SimRegs { named }
+    }
+
+
+
 
     /// Find the symbol containing `address` (function name + start), if any.
     pub fn symbol_at(&self, address: u32) -> Option<&Symbol> {
@@ -978,7 +1407,12 @@ impl Simulator {
         let pc_before = self.program_counter();
         let est = self.cycles_for_instruction(pc_before);
         if let Some(core) = self.mcs51.as_mut() {
-            let bps: Vec<u16> = self.breakpoints.iter().map(|b| (*b & 0xFFFF) as u16).collect();
+            let bps: Vec<u16> = self
+                .breakpoints
+                .iter()
+                .map(|bp| (bp.address & 0xFFFF) as u16)
+                .collect();
+
             let result = core.step(&bps);
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
             self.cycle_count += self.last_instruction_cycles as u64;
@@ -991,7 +1425,8 @@ impl Simulator {
             return result;
         }
          if let Some(core) = self.arm.as_mut() {
-             let bps: Vec<u32> = self.breakpoints.clone();
+             let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+
              let result = core.step(&bps);
              self.pc = core.regs[arm::PC];
              self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1010,7 +1445,7 @@ impl Simulator {
              return result;
          }
         if let Some(core) = self.x51.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.clone();
+            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1025,7 +1460,12 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.c166.as_mut() {
-            let bps: Vec<u16> = self.breakpoints.iter().map(|b| (*b & 0xFFFF) as u16).collect();
+            let bps: Vec<u16> = self
+                .breakpoints
+                .iter()
+                .map(|bp| (bp.address & 0xFFFF) as u16)
+                .collect();
+
             let result = core.step(&bps);
             self.pc = core.pc as u32;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1040,7 +1480,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.xtensa.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.clone();
+            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1055,7 +1495,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.avr.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.clone();
+            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1070,7 +1510,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.msp430.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.clone();
+            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1085,7 +1525,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.v850.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.clone();
+            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1100,7 +1540,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.stm8.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.clone();
+            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1115,7 +1555,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.rx.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.clone();
+            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1130,7 +1570,7 @@ impl Simulator {
             return result;
         }
         if let Some(core) = self.rl78.as_mut() {
-            let bps: Vec<u32> = self.breakpoints.clone();
+            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
             let result = core.step(&bps);
             self.pc = core.pc;
             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
@@ -1145,9 +1585,19 @@ impl Simulator {
         if self.halted {
             return StepResult::Halted;
         }
-        if self.breakpoints.contains(&self.pc) {
-            return StepResult::Breakpoint;
+        if let Some(index) = self
+            .breakpoints
+            .iter()
+            .position(|bp| bp.address == self.pc)
+        {
+            let regs = self.reg_view();
+            let should_stop = self.breakpoints[index]
+                .record_hit(&regs, self.pc, self.cycle_count);
+            if should_stop {
+                return StepResult::Breakpoint;
+            }
         }
+
         // Take a pending, enabled interrupt before the next instruction: this
         // mirrors real hardware, which traps at an instruction boundary. The
         // vector entry then runs the ISR via the trap vector (mtvec).
@@ -3482,7 +3932,7 @@ mod tests {
     fn x51_breakpoint_stops_before_execute() {
         let mut sim = Simulator::for_arch(Arch::Mcs251).unwrap();
         sim.load_x51(0, &[0x00, 0x00]).unwrap();
-        sim.breakpoints.push(0);
+        sim.breakpoints.push(SimBreakpoint::new(0));
         let r = sim.step();
         assert_eq!(r, StepResult::Breakpoint);
         assert_eq!(sim.program_counter(), 0, "breakpoint stops before opcode");
@@ -3505,7 +3955,7 @@ mod tests {
     fn c166_breakpoint_stops_before_execute() {
         let mut sim = Simulator::for_arch(Arch::C166).unwrap();
         sim.load_c166(0, &[0x00, 0x00]).unwrap();
-        sim.breakpoints.push(0);
+        sim.breakpoints.push(SimBreakpoint::new(0));
         let r = sim.step();
         assert_eq!(r, StepResult::Breakpoint);
         assert_eq!(sim.program_counter(), 0, "breakpoint stops before opcode");
@@ -3529,7 +3979,7 @@ mod tests {
     fn xtensa_breakpoint_stops_before_execute() {
         let mut sim = Simulator::for_arch(Arch::Xtensa).unwrap();
         sim.load_image(0, &[0x00, 0x00, 0x00]);
-        sim.breakpoints.push(0);
+        sim.breakpoints.push(SimBreakpoint::new(0));
         let r = sim.step();
         assert_eq!(r, StepResult::Breakpoint);
         assert_eq!(sim.program_counter(), 0, "breakpoint stops before opcode");
@@ -3900,4 +4350,83 @@ mod tests {
         assert_eq!(sim.cycle_count, 3, "store adds 2 cycles");
         assert_eq!(sim.last_instruction_cycles, 2);
     }
+
+    /// The condition evaluator parses C-like expressions over register names,
+    /// `pc`, `cycle`, and literals; malformed input is false, empty is true.
+    #[test]
+    fn eval_condition_parses_expressions() {
+        let regs = SimRegs {
+            named: vec![
+                ("x1".to_string(), 10),
+                ("x2".to_string(), 20),
+                ("a0".to_string(), 7),
+            ],
+        };
+        // Comparisons and arithmetic.
+        assert!(eval_condition("x1 == 10", &regs, 0, 0));
+        assert!(eval_condition("x1 < x2", &regs, 0, 0));
+        assert!(eval_condition("x1 + x2 == 30", &regs, 0, 0));
+        assert!(eval_condition("x2 % 3 == 2", &regs, 0, 0));
+        // pc / cycle synthetics.
+        assert!(eval_condition("pc == 0x1000", &regs, 0x1000, 0));
+        assert!(eval_condition("cycle >= 100", &regs, 0, 150));
+        // Logical ops and unary.
+        assert!(eval_condition("x1 > 5 && x2 > 15", &regs, 0, 0));
+        assert!(eval_condition("!(x1 > 50)", &regs, 0, 0));
+        assert!(eval_condition("x1 > 50 || x2 > 15", &regs, 0, 0));
+        // Hex / binary / octal literals.
+        assert!(eval_condition("a0 == 0x7", &regs, 0, 0));
+        assert!(eval_condition("a0 == 0b111", &regs, 0, 0));
+        assert!(eval_condition("a0 == 0o7", &regs, 0, 0));
+        // Parentheses change precedence.
+        assert!(eval_condition("(x1 + x2) * 2 == 60", &regs, 0, 0));
+        // Empty = unconditional; unknown register / malformed = false.
+        assert!(eval_condition("", &regs, 0, 0));
+        assert!(!eval_condition("zzz == 1", &regs, 0, 0));
+        assert!(!eval_condition("x1 ==", &regs, 0, 0));
+        assert!(!eval_condition("x1 +", &regs, 0, 0));
+    }
+
+    /// A hit-count breakpoint pauses only on the N-th hit; a condition
+    /// breakpoint pauses only when the expression is true.
+    #[test]
+    fn conditional_and_hit_count_breakpoints() {
+        // RISC-V ADDI x1, x0, 1 at 0, loop back with BEQ to test hits.
+        // Program: x1 increments each pass; BEQ x1, x0, +0 (loop) at 4.
+        let mut sim = Simulator::new();
+        sim.write_u32(0, 0x00100093); // ADDI x1, x0, 1
+
+        // Hit-count 3: pauses only on the 3rd hit.
+        sim.pc = 0;
+
+        sim.set_breakpoint_ex(0, "", 3);
+        let mut result = sim.step();
+        assert_eq!(result, StepResult::Advanced, "1st hit passes");
+        sim.pc = 0;
+        result = sim.step();
+        assert_eq!(result, StepResult::Advanced, "2nd hit passes");
+        sim.pc = 0;
+        result = sim.step();
+        assert_eq!(result, StepResult::Breakpoint, "3rd hit pauses");
+        assert_eq!(sim.breakpoint_hits(0), 3);
+
+
+    }
+
+    /// A condition breakpoint stops only when the register equals the target.
+    #[test]
+    fn condition_breakpoint_stops_on_true() {
+        let mut sim = Simulator::new();
+        sim.write_u32(0, 0x00100093); // ADDI x1, x0, 1
+
+        // Stop when x1 == 1 (i.e. after the first pass it holds 1).
+        sim.set_breakpoint_ex(0, "x1 == 1", 0);
+        sim.pc = 0;
+        let r = sim.step();
+        // After ADDI, x1 = 1; loop back to 0 and the breakpoint sees x1 == 1.
+        sim.pc = 0;
+        assert_eq!(r, StepResult::Advanced);
+        assert_eq!(sim.step(), StepResult::Breakpoint);
+    }
+
 }

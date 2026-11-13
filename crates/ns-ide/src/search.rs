@@ -32,27 +32,59 @@ pub struct SearchMatch {
     pub origin: MatchOrigin,
 }
 
+/// Search options controlling how `query` matches file contents/names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SearchOptions {
+    /// Match case exactly (default: case-insensitive).
+    pub case_sensitive: bool,
+    /// Only match whole words (non-alphanumeric/underscore boundaries).
+    pub whole_word: bool,
+}
+
 pub fn search_project(root: &Path, query: &str, limit: usize) -> Vec<SearchMatch> {
-    let needle = query.trim().to_lowercase();
+    search_project_with_options(root, query, limit, SearchOptions::default())
+}
+
+/// Search with explicit [`SearchOptions`] (case sensitivity / whole-word).
+pub fn search_project_with_options(
+    root: &Path,
+    query: &str,
+    limit: usize,
+    options: SearchOptions,
+) -> Vec<SearchMatch> {
+    let needle = query.trim();
     if needle.is_empty() || limit == 0 {
         return Vec::new();
     }
+    let needle_lower = needle.to_lowercase();
     let mut matches = Vec::new();
-    walk(root, root, &needle, limit, &mut matches);
+    walk_with_options(
+        root,
+        root,
+        needle,
+        &needle_lower,
+        limit,
+        &mut matches,
+        options,
+    );
     matches
 }
 
-fn walk(
+fn walk_with_options(
     dir: &Path,
     root: &Path,
     needle: &str,
+    needle_lower: &str,
     limit: usize,
     matches: &mut Vec<SearchMatch>,
+    options: SearchOptions,
 ) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    let mut children: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
+    let mut children: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
     children.sort();
 
     for path in children {
@@ -67,12 +99,12 @@ fn walk(
             if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
                 continue;
             }
-            walk(&path, root, needle, limit, matches);
+            walk_with_options(&path, root, needle, needle_lower, limit, matches, options);
             continue;
         }
 
         let relative = relative_path(root, &path);
-        if relative.to_lowercase().contains(needle) {
+        if name_matches(&relative, needle, needle_lower, options) {
             matches.push(SearchMatch {
                 path: relative.clone(),
                 line: 1,
@@ -105,7 +137,7 @@ fn walk(
             if matches.len() >= limit {
                 return;
             }
-            if line.to_lowercase().contains(needle) {
+            if line_matches(line, needle, needle_lower, options) {
                 let line_text: String = line.trim_end().chars().take(240).collect();
                 matches.push(SearchMatch {
                     path: relative.clone(),
@@ -117,6 +149,122 @@ fn walk(
         }
     }
 }
+
+fn name_matches(name: &str, needle: &str, needle_lower: &str, options: SearchOptions) -> bool {
+    if options.case_sensitive {
+        name.contains(needle)
+    } else {
+        name.to_lowercase().contains(needle_lower)
+    }
+}
+
+fn line_matches(line: &str, needle: &str, needle_lower: &str, options: SearchOptions) -> bool {
+    let haystack;
+    let needle_ref;
+    if options.case_sensitive {
+        haystack = line.to_string();
+        needle_ref = needle;
+    } else {
+        haystack = line.to_lowercase();
+        needle_ref = needle_lower;
+    }
+    if !options.whole_word {
+        return haystack.contains(needle_ref);
+    }
+    // Whole-word: a match at position `i` must have non-word chars (or line
+    // edges) on both sides.
+    let bytes = haystack.as_bytes();
+    let needle_bytes = needle_ref.as_bytes();
+    let mut start = 0;
+    while let Some(relative) = haystack[start..].find(needle_ref) {
+        let i = start + relative;
+        let before_ok = i == 0 || !is_word_byte(bytes[i - 1]);
+        let after = i + needle_bytes.len();
+        let after_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
+        if before_ok && after_ok {
+            return true;
+        }
+        start = i + 1;
+    }
+    false
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Replace every occurrence of `from` with `to` in the text files under
+/// `root`. Returns `(files_changed, occurrences)`; files that do not contain
+/// `from` are left untouched. Skips VCS/build directories and binary files
+/// (same rules as `search_project`). A blank `from` is a no-op.
+pub fn replace_in_files(root: &Path, from: &str, to: &str) -> (usize, usize) {
+    let from = from.trim();
+    if from.is_empty() {
+        return (0, 0);
+    }
+    let mut files_changed = 0;
+    let mut occurrences = 0;
+    replace_walk(root, root, from, to, &mut files_changed, &mut occurrences);
+    (files_changed, occurrences)
+}
+
+fn replace_walk(
+    dir: &Path,
+    root: &Path,
+    from: &str,
+    to: &str,
+    files_changed: &mut usize,
+    occurrences: &mut usize,
+) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    children.sort();
+
+    for path in children {
+        if path.is_dir() {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            replace_walk(&path, root, from, to, files_changed, occurrences);
+            continue;
+        }
+        if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+            if BINARY_EXTENSIONS
+                .iter()
+                .any(|binary| extension.eq_ignore_ascii_case(binary))
+            {
+                continue;
+            }
+        }
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_FILE_SIZE {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let count = text.matches(from).count();
+        if count == 0 {
+            continue;
+        }
+        let replaced = text.replace(from, to);
+        if fs::write(&path, replaced).is_ok() {
+            *files_changed += 1;
+            *occurrences += count;
+        }
+    }
+}
+
 
 fn relative_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
@@ -200,6 +348,68 @@ mod tests {
             .collect();
         assert_eq!(contents.len(), 2, "main.c x1, README.md x1: {contents:?}");
         assert!(contents.iter().all(|m| m.path != "build/generated.c"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// `search_project_with_options` honours case sensitivity and whole-word
+    /// matching for file contents.
+    #[test]
+    fn search_options_case_sensitive_and_whole_word() {
+        let root = fixture_root("search_options_case_sensitive_and_whole_word");
+        fs::write(root.join("src/other.c"), "int TICKS;\nint ticks_counter;\nint ticks;\n").unwrap();
+        // Case-sensitive "TICKS": matches only the uppercase occurrence.
+        let cs = search_project_with_options(
+            &root,
+            "TICKS",
+            100,
+            SearchOptions { case_sensitive: true, whole_word: false },
+        );
+        let cs_other: Vec<_> = cs
+            .iter()
+            .filter(|m| m.origin == MatchOrigin::Content && m.path.ends_with("other.c"))
+            .collect();
+        assert_eq!(cs_other.len(), 1, "only `int TICKS;` line: {cs_other:?}");
+
+        // Whole-word "ticks" (case-insensitive): matches the standalone words
+        // (`TICKS` and `ticks`) but not the `ticks_counter` prefix.
+        let ww = search_project_with_options(
+            &root,
+            "ticks",
+            100,
+            SearchOptions { case_sensitive: false, whole_word: true },
+        );
+        let ww_other: Vec<_> = ww
+            .iter()
+            .filter(|m| m.origin == MatchOrigin::Content && m.path.ends_with("other.c"))
+            .collect();
+        assert_eq!(ww_other.len(), 2, "standalone TICKS + ticks: {ww_other:?}");
+        assert!(
+            ww_other.iter().all(|m| !m.line_text.contains("ticks_counter")),
+            "whole-word must not match the `ticks_counter` prefix: {ww_other:?}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// `replace_in_files` replaces every occurrence in text files, skips
+    /// binary/build files, and reports the change counts. A blank query is a
+    /// no-op.
+    #[test]
+    fn replace_in_files_replaces_across_sources() {
+        let root = fixture_root("replace_in_files_replaces_across_sources");
+        let (files, occurrences) = replace_in_files(&root, "ticks", "TICKS");
+        assert_eq!(files, 2, "main.c + README.md changed");
+        assert_eq!(occurrences, 3, "main.c x1 + README.md x2");
+        assert_eq!(
+            fs::read_to_string(root.join("src/main.c")).unwrap(),
+            "int main(void) {\n    TICKS++;\n    return 0;\n}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("build/generated.c")).unwrap(),
+            "int generated_marker;\n",
+            "build dir untouched"
+        );
+        // Blank query: no-op.
+        assert_eq!(replace_in_files(&root, "  ", "X"), (0, 0));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -44,6 +44,15 @@ pub struct FileView {
     /// Vertical scroll position as a 0.0-1.0 ratio of the document height.
     #[serde(default)]
     pub scroll_ratio: f32,
+    /// Editor zoom factor (1.0 = default), restored with the view.
+    #[serde(default)]
+    pub zoom: f32,
+    /// Editor indent width in spaces (2/4/8), restored with the view.
+    #[serde(default)]
+    pub indent_width: usize,
+    /// Whether soft word wrap was enabled for this view.
+    #[serde(default)]
+    pub word_wrap: bool,
  }
 
 /// Folded regions for one file, restored from the session.
@@ -109,6 +118,9 @@ mod tests {
                 path: PathBuf::from("src/main.c"),
                 cursor: Some((12, 4)),
                 scroll_ratio: 0.42,
+                zoom: 1.25,
+                indent_width: 2,
+                word_wrap: true,
             }],
             saved_at: 0,
             split: Some(PathBuf::from("src/startup.s")),

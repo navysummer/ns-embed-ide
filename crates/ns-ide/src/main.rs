@@ -1,5 +1,7 @@
 mod agent;
 mod app;
+mod diff;
+mod external_tools;
 mod editor;
 mod git;
 mod highlight;

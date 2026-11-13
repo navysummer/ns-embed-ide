@@ -1102,12 +1102,16 @@ fn translate_mi(mi: MiLine, messages: &Sender<DebugMessage>) -> Result<()> {
             let _ = messages.send(DebugMessage::Output {
                 category: "stdout".to_string(),
                 text,
+                source: None,
+                line: None,
             });
         }
         MiLine::Log(text) => {
             let _ = messages.send(DebugMessage::Output {
                 category: "stderr".to_string(),
                 text,
+                source: None,
+                line: None,
             });
         }
         MiLine::Notify => {}

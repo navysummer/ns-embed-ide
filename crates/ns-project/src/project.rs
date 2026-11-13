@@ -92,6 +92,10 @@ pub struct CompilerSection {
     pub opt: String,
     pub defines: Vec<String>,
     pub includes: Vec<String>,
+    /// Extra linker flags appended after the object files on the link step
+    /// (e.g. `-lm`, `-Wl,--gc-sections`). One flag per entry; whitespace is
+    /// preserved so a flag like `-Wl,-Map=out.map` stays a single token.
+    pub link_flags: Vec<String>,
 }
 
 impl Default for CompilerSection {
@@ -102,9 +106,11 @@ impl Default for CompilerSection {
             opt: "-O2".to_string(),
             defines: Vec::new(),
             includes: vec!["include".to_string()],
+            link_flags: Vec::new(),
         }
     }
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -830,6 +836,15 @@ mod tests {
         assert_eq!(reopened.config.compiler.path, "/opt/toolchain/bin/gcc");
         assert_eq!(reopened.config.build.config, "release");
         assert_eq!(reopened.config.build.out_dir, "out");
+        // `[compiler] link_flags` round-trips (quick-fix and settings modal).
+        project.config.compiler.link_flags = vec!["-lm".to_string(), "-Wl,--gc-sections".to_string()];
+        project.save_config().unwrap();
+        let reopened = Project::open(base.join("cfgproj").join(CONFIG_FILE)).unwrap();
+        assert_eq!(
+            reopened.config.compiler.link_flags,
+            vec!["-lm", "-Wl,--gc-sections"]
+        );
+
         assert_eq!(reopened.config.launch.args, vec!["--port", "8080"]);
         assert_eq!(reopened.config.launch.env, vec!["DEBUG=1"]);
         assert_eq!(reopened.config.launch.cwd, "run");

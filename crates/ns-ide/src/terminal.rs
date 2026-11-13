@@ -50,6 +50,9 @@ pub struct TerminalConfig {
     pub kind: TerminalKind,
     /// Shell: the program to spawn. Serial: the device path.
     pub program: String,
+    /// Working directory for the spawned shell. `None` = the IDE's current
+    /// directory. Used by "open terminal in directory" tree actions.
+    pub cwd: Option<String>,
 }
 
 impl Default for TerminalConfig {
@@ -57,6 +60,7 @@ impl Default for TerminalConfig {
         Self {
             kind: TerminalKind::Shell,
             program: default_shell(),
+            cwd: None,
         }
     }
 }
@@ -174,8 +178,11 @@ impl Terminal {
 
     fn spawn_shell(&mut self, cx: &mut Context<Self>) {
         let program = self.config.program.clone();
-        let cwd = std::env::current_dir()
-            .map(|p| p.display().to_string())
+        let cwd = self
+            .config
+            .cwd
+            .clone()
+            .or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()))
             .unwrap_or_default();
         let pty = match rio_vt::teletypewriter::create_pty_with_spawn(
             Some(&program),
@@ -873,6 +880,22 @@ mod tests {
             !text.lines().any(|l| l.trim() == "OUTPUT_BEFORE_NL"),
             "command executed before newline:\n{text}"
         );
+    }
+
+    #[test]
+    fn terminal_config_round_trips_cwd() {
+        // Default has no cwd; a directory-based config preserves it.
+        let default = TerminalConfig::default();
+        assert!(default.cwd.is_none());
+        let with_cwd = TerminalConfig {
+            kind: TerminalKind::Shell,
+            program: "bash".to_string(),
+            cwd: Some("/tmp/project".to_string()),
+        };
+        let json = serde_json::to_string(&with_cwd).unwrap();
+        let back: TerminalConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cwd.as_deref(), Some("/tmp/project"));
+        assert_eq!(back.kind, TerminalKind::Shell);
     }
 }
 

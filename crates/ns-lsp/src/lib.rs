@@ -265,6 +265,25 @@ pub enum LspCommand {
         column: usize,
         reply: mpsc::Sender<Value>,
     },
+    /// Request the `source.organizeImports` code action for a document so the
+    /// UI can offer "整理导入" (rust-analyzer / clangd / zls all support it).
+    OrganizeImports {
+        path: PathBuf,
+        reply: mpsc::Sender<Value>,
+    },
+    PrepareCallHierarchy {
+        path: PathBuf,
+        line: usize,
+        column: usize,
+        reply: mpsc::Sender<Value>,
+    },
+    CallHierarchyCalls {
+        /// `"incoming"` or `"outgoing"`.
+        direction: String,
+        /// The `CallHierarchyItem` JSON from the prepare response.
+        item: Value,
+        reply: mpsc::Sender<Value>,
+    },
     Shutdown,
 }
 
@@ -624,6 +643,54 @@ impl LspServer {
                                 }),
                             );
                         }
+                        LspCommand::OrganizeImports { path, reply } => {
+                            let _ = request(
+                                &mut stdin,
+                                &responses,
+                                &next_id,
+                                reply,
+                                "textDocument/codeAction",
+                                json!({
+                                    "textDocument": { "uri": uri(&path) },
+                                    "range": {
+                                        "start": { "line": 0, "character": 0 },
+                                        "end": { "line": 0, "character": 0 },
+                                    },
+                                    "context": {
+                                        "diagnostics": [],
+                                        "only": ["source.organizeImports"],
+                                    },
+                                }),
+                            );
+                        }
+                        LspCommand::PrepareCallHierarchy { path, line, column, reply } => {
+                            let _ = request(
+                                &mut stdin,
+                                &responses,
+                                &next_id,
+                                reply,
+                                "textDocument/prepareCallHierarchy",
+                                json!({
+                                    "textDocument": { "uri": uri(&path) },
+                                    "position": { "line": line, "character": column },
+                                }),
+                            );
+                        }
+                        LspCommand::CallHierarchyCalls { direction, item, reply } => {
+                            let method = if direction == "incoming" {
+                                "callHierarchy/incomingCalls"
+                            } else {
+                                "callHierarchy/outgoingCalls"
+                            };
+                            let _ = request(
+                                &mut stdin,
+                                &responses,
+                                &next_id,
+                                reply,
+                                method,
+                                json!({ "item": item }),
+                            );
+                        }
                     }
                 }
             });
@@ -799,6 +866,50 @@ impl LspServer {
         Ok(rx)
     }
 
+    /// Request the `source.organizeImports` code action for a document; the
+    /// response is a `CodeAction[]` (usually with one entry whose `edit`
+    /// rewrites the import block).
+    pub fn organize_imports(&self, path: PathBuf) -> Result<Receiver<Value>> {
+        let (reply, rx) = mpsc::channel();
+        self.send(LspCommand::OrganizeImports { path, reply })?;
+        Ok(rx)
+    }
+
+    /// Request the call hierarchy item at a position
+    /// (`textDocument/prepareCallHierarchy`). The response is either a single
+    /// `CallHierarchyItem`, an array, or `null`.
+    pub fn prepare_call_hierarchy(
+        &self,
+        path: PathBuf,
+        line: usize,
+        column: usize,
+    ) -> Result<Receiver<Value>> {
+        let (reply, rx) = mpsc::channel();
+        self.send(LspCommand::PrepareCallHierarchy {
+            path,
+            line,
+            column,
+            reply,
+        })?;
+        Ok(rx)
+    }
+
+    /// Request incoming/outgoing calls for a prepared `CallHierarchyItem`.
+    /// The response is a `CallHierarchyIncomingCall[]`/`CallHierarchyOutgoingCall[]`.
+    pub fn call_hierarchy_calls(
+        &self,
+        direction: &str,
+        item: Value,
+    ) -> Result<Receiver<Value>> {
+        let (reply, rx) = mpsc::channel();
+        self.send(LspCommand::CallHierarchyCalls {
+            direction: direction.to_string(),
+            item,
+            reply,
+        })?;
+        Ok(rx)
+    }
+
     pub fn try_recv_event(&self) -> Option<LspEvent> {
         self.events.try_recv().ok()
     }
@@ -925,6 +1036,119 @@ pub fn parse_workspace_symbols(value: &Value) -> Vec<WorkspaceSymbolInfo> {
                 path,
                 line: start.get("line").and_then(Value::as_u64).unwrap_or(0) as usize,
                 column: start.get("character").and_then(Value::as_u64).unwrap_or(0) as usize,
+            })
+        })
+        .collect()
+}
+
+/// A call hierarchy node (`CallHierarchyItem`), prepared from the symbol at a
+/// position and used to request incoming/outgoing calls.
+#[derive(Debug, Clone, Default)]
+pub struct CallHierarchyEntry {
+    pub name: String,
+    pub detail: String,
+    pub path: PathBuf,
+    pub line: usize,
+    pub column: usize,
+    /// The raw `CallHierarchyItem` JSON, passed back to the server for the
+    /// follow-up `callHierarchy/*Calls` request.
+    pub raw: Value,
+}
+
+/// Parse a `textDocument/prepareCallHierarchy` response. The server returns
+/// either a single `CallHierarchyItem`, an array, or `null`; flatten to a
+/// non-empty list of entries.
+pub fn parse_call_hierarchy(value: &Value) -> Vec<CallHierarchyEntry> {
+    fn entry(item: &Value) -> Option<CallHierarchyEntry> {
+        let name = item.get("name")?.as_str()?.to_string();
+        let detail = item
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let range = item.get("range")?;
+        let start = range.get("start")?;
+        let path = item
+            .get("uri")
+            .and_then(Value::as_str)
+            .and_then(uri_to_path);
+        Some(CallHierarchyEntry {
+            name,
+            detail,
+            path: path.unwrap_or_default(),
+            line: start.get("line").and_then(Value::as_u64).unwrap_or(0) as usize,
+            column: start.get("character").and_then(Value::as_u64).unwrap_or(0) as usize,
+            raw: item.clone(),
+        })
+    }
+    // Unwrap the JSON-RPC `result` envelope (as the server returns).
+    let body = value.get("result").unwrap_or(value);
+    match body {
+        Value::Array(items) => items.iter().filter_map(entry).collect(),
+        Value::Object(_) => entry(body).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A call-hierarchy edge: a caller (incoming) or callee (outgoing) with the
+/// source ranges from which the call is made.
+#[derive(Debug, Clone, Default)]
+pub struct CallHierarchyCall {
+    pub name: String,
+    pub detail: String,
+    pub path: PathBuf,
+    pub line: usize,
+    pub column: usize,
+}
+
+/// Parse a `callHierarchy/incomingCalls` or `callHierarchy/outgoingCalls`
+/// response (`CallHierarchyIncomingCall[]` / `CallHierarchyOutgoingCall[]`),
+/// extracting the related symbol and the first call-site location.
+pub fn parse_call_hierarchy_calls(value: &Value) -> Vec<CallHierarchyCall> {
+    let body = value.get("result").unwrap_or(value);
+    let items = match body.as_array() {
+        Some(items) => items,
+        None => return Vec::new(),
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let symbol = item
+                .get("from")
+                .filter(|v| !v.is_null())
+                .or_else(|| item.get("to").filter(|v| !v.is_null()))?;
+            let name = symbol.get("name")?.as_str()?.to_string();
+            let detail = symbol
+                .get("detail")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let path = symbol
+                .get("uri")
+                .and_then(Value::as_str)
+                .and_then(uri_to_path)
+                .unwrap_or_default();
+            // Prefer the first call-site range for navigation.
+            let site = item
+                .get("fromRanges")
+                .and_then(Value::as_array)
+                .and_then(|arr| arr.first())
+                .or_else(|| item.get("toRanges").and_then(Value::as_array).and_then(|a| a.first()));
+            let (line, column) = site
+                .and_then(|r| r.get("start"))
+                .map(|start| {
+                    (
+                        start.get("line").and_then(Value::as_u64).unwrap_or(0) as usize,
+                        start.get("character").and_then(Value::as_u64).unwrap_or(0) as usize,
+                    )
+                })
+                .unwrap_or((0, 0));
+            Some(CallHierarchyCall {
+                name,
+                detail,
+                path,
+                line,
+                column,
             })
         })
         .collect()
@@ -1614,5 +1838,82 @@ while True:
         // Command-only action: no edits, title still parsed.
         assert_eq!(actions[1].title, "Command-only fix");
         assert!(actions[1].edits.is_empty());
+    }
+
+    /// `parse_call_hierarchy` flattens a single item, an array, or `null`, and
+    /// keeps the raw item for the follow-up calls request.
+    #[test]
+    fn parses_call_hierarchy_item_and_array() {
+        let item = serde_json::json!({
+            "name": "timer_init",
+            "detail": "void timer_init(void)",
+            "uri": "file:///proj/src/driver.c",
+            "range": {
+                "start": { "line": 10, "character": 0 },
+                "end": { "line": 10, "character": 2 }
+            }
+        });
+        // Single object response.
+        let entries = parse_call_hierarchy(&serde_json::json!({ "result": item }));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "timer_init");
+        assert_eq!(entries[0].line, 10);
+        assert_eq!(entries[0].column, 0);
+        assert!(entries[0].raw.get("name").is_some());
+        // Array response.
+        let entries = parse_call_hierarchy(&serde_json::json!({
+            "result": [item]
+        }));
+        assert_eq!(entries.len(), 1);
+        // Null / empty -> no entries.
+        assert!(parse_call_hierarchy(&serde_json::json!({ "result": null })).is_empty());
+        assert!(parse_call_hierarchy(&serde_json::json!({ "result": [] })).is_empty());
+    }
+
+    /// `parse_call_hierarchy_calls` reads incoming/outgoing call edges, using
+    /// the `from` (incoming) or `to` (outgoing) symbol and the first call site.
+    #[test]
+    fn parses_call_hierarchy_calls_incoming_and_outgoing() {
+        let incoming = serde_json::json!({
+            "result": [
+                {
+                    "from": {
+                        "name": "main",
+                        "detail": "int main(void)",
+                        "uri": "file:///proj/src/main.c"
+                    },
+                    "fromRanges": [
+                        { "start": { "line": 3, "character": 5 }, "end": { "line": 3, "character": 9 } }
+                    ]
+                }
+            ]
+        });
+        let calls = parse_call_hierarchy_calls(&incoming);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "main");
+        assert_eq!(calls[0].path, PathBuf::from("/proj/src/main.c"));
+        assert_eq!(calls[0].line, 3);
+        assert_eq!(calls[0].column, 5);
+
+        // Outgoing calls use `to` + `toRanges`.
+        let outgoing = serde_json::json!({
+            "result": [
+                {
+                    "to": {
+                        "name": "delay_ms",
+                        "detail": "void delay_ms(uint32_t)",
+                        "uri": "file:///proj/src/util.c"
+                    },
+                    "toRanges": [
+                        { "start": { "line": 7, "character": 2 }, "end": { "line": 7, "character": 10 } }
+                    ]
+                }
+            ]
+        });
+        let calls = parse_call_hierarchy_calls(&outgoing);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "delay_ms");
+        assert_eq!(calls[0].path, PathBuf::from("/proj/src/util.c"));
+        assert_eq!(calls[0].line, 7);
     }
 }

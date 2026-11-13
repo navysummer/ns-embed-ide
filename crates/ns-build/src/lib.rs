@@ -147,9 +147,16 @@ pub fn suggest_quick_fix(diagnostic: &Diagnostic, source_text: Option<&str>) -> 
     let message = &diagnostic.message;
     let lower = message.to_lowercase();
 
-    // `undefined reference to `foo`` -> linker flag or symbol hint.
+    // `undefined reference to `foo`` -> offer to add the library that
+    // provides the symbol (`sqrt` -> `-lm`, `pthread_create` -> `-lpthread`),
+    // falling back to a hint when the symbol isn't a known libc/libm API.
     if lower.contains("undefined reference") {
         if let Some(symbol) = extract_symbol_after(message, "undefined reference to") {
+            if let Some(lib) = library_for_symbol(&symbol) {
+                return Some(QuickFix::AddLinkFlag {
+                    flag: format!("-l{lib}"),
+                });
+            }
             return Some(QuickFix::Hint(format!(
                 "未定义引用 `{symbol}`：检查是否缺少链接库（如 `-l` 标志）或该符号所在的源文件未参与构建。"
             )));
@@ -158,6 +165,7 @@ pub fn suggest_quick_fix(diagnostic: &Diagnostic, source_text: Option<&str>) -> 
             "未定义引用：检查链接器库标志（`[compiler]` 的链接参数）与源文件是否全部参与构建。".to_string(),
         ));
     }
+
 
     // `fatal error: xxx.h: No such file or directory` -> AddInclude.
     if lower.contains("no such file or directory")
@@ -186,17 +194,35 @@ pub fn suggest_quick_fix(diagnostic: &Diagnostic, source_text: Option<&str>) -> 
     }
 
     // `'foo' undeclared (first use in this function)` -> declaration hint.
-     if lower.contains("undeclared") || lower.contains("was not declared") {
-         let symbol = extract_symbol_after(message, "‘")
-             .or_else(|| extract_symbol_after(message, "'"))
-             .or_else(|| extract_symbol_after(message, "`"))
-             .unwrap_or_default();
+    if lower.contains("undeclared") || lower.contains("was not declared") {
+        let symbol = extract_symbol_after(message, "‘")
+            .or_else(|| extract_symbol_after(message, "'"))
+            .or_else(|| extract_symbol_after(message, "`"))
+            .unwrap_or_default();
         if !symbol.is_empty() {
-             return Some(QuickFix::Hint(format!(
+            // Standard-library identifiers are almost always a missing
+            // `#include`; offer to add the conventional header. This is an
+            // edit (like AddInclude) rather than a hint, so it fixes the
+            // error in one click instead of explaining what to type.
+            if let Some(header) = header_for_symbol(&symbol) {
+                let already = source_text
+                    .map(|text| text.contains(&format!("#include <{header}>")))
+                    .unwrap_or(false);
+                if !already {
+                    return Some(QuickFix::AddInclude {
+                        header: header.to_string(),
+                    });
+                }
+                return Some(QuickFix::Hint(format!(
+                    "标识符 `{symbol}` 未声明：`<{header}>` 已包含但仍报错，检查宏定义或平台头文件。"
+                )));
+            }
+            return Some(QuickFix::Hint(format!(
                 "标识符 `{symbol}` 未声明：检查拼写、是否缺少 `#include`，或需在使用前声明/定义。"
             )));
         }
     }
+
 
     // `expected ';' before ...` -> missing semicolon hint.
     if lower.contains("expected ';'") {
@@ -223,6 +249,117 @@ fn extract_symbol_after(message: &str, marker: &str) -> Option<String> {
     } else {
         Some(symbol)
     }
+}
+
+/// Map a linker symbol to the conventional library that provides it, so an
+/// `undefined reference to 'foo'` can be fixed by adding `-l<lib>` to the
+/// link flags. Returns `None` for symbols with no conventional library (e.g.
+/// project-defined functions, which need their defining source to be built).
+fn library_for_symbol(symbol: &str) -> Option<&'static str> {
+    // libm: math functions (sqrt, sin, cos, pow, log, exp, floor, ceil, …).
+    const LIBM: &[&str] = &[
+        "sqrt", "sqrtf", "sqrtl", "sin", "sinf", "cos", "cosf", "tan", "tanf", "asin", "acos",
+        "atan", "atan2", "pow", "powf", "log", "logf", "log10", "exp", "expf", "floor", "ceil",
+        "fmod", "fmodf", "fabs", "fabsf", "round", "roundf", "trunc", "truncf", "ldexp", "frexp",
+        "modf", "hypot", "hypotf", "cbrt", "erf", "erff", "tanh", "sinh", "cosh", "nan", "nanf",
+    ];
+    if LIBM.contains(&symbol) {
+        return Some("m");
+    }
+    // libpthread: POSIX threads.
+    const LIBPTHREAD: &[&str] = &[
+        "pthread_create", "pthread_join", "pthread_mutex_lock", "pthread_mutex_unlock",
+        "pthread_mutex_init", "pthread_mutex_destroy", "pthread_cond_wait", "pthread_cond_signal",
+        "pthread_cond_broadcast", "pthread_cond_init", "pthread_cond_destroy", "pthread_exit",
+        "pthread_detach", "pthread_self", "pthread_equal", "pthread_once",
+    ];
+    if LIBPTHREAD.contains(&symbol) {
+        return Some("pthread");
+    }
+    // librt: real-time clocks/timers.
+    const LIBRT: &[&str] = &[
+        "clock_gettime", "clock_settime", "timer_create", "timer_settime", "timer_delete",
+        "nanosleep", "clock_nanosleep", "mq_open", "mq_send", "mq_receive", "shm_open", "shm_unlink",
+        "sigqueue", "aio_read", "aio_write", "sched_setparam", "sched_getparam",
+    ];
+    if LIBRT.contains(&symbol) {
+        return Some("rt");
+    }
+    // libdl: dynamic loading.
+    const LIBDL: &[&str] = &[
+        "dlopen", "dlsym", "dlclose", "dlerror", "dladdr", "dlmopen", "dlinfo", "dlvsym",
+    ];
+    if LIBDL.contains(&symbol) {
+        return Some("dl");
+    }
+    // libutil: login/tty helpers.
+    const LIBUTIL: &[&str] = &["openpty", "forkpty", "login_tty", "login", "logout"];
+    if LIBUTIL.contains(&symbol) {
+        return Some("util");
+    }
+    None
+}
+
+/// Map an undeclared standard-library identifier to the conventional header
+/// that declares it, so a `'foo' undeclared` error can be fixed by adding the
+/// missing `#include`. Returns `None` for user-defined symbols.
+fn header_for_symbol(symbol: &str) -> Option<&'static str> {
+    // C standard library: one header per family of identifiers.
+    if matches!(
+        symbol,
+        "printf" | "fprintf" | "sprintf" | "snprintf" | "scanf" | "fscanf" | "sscanf" | "puts"
+            | "putchar" | "getchar" | "fgets" | "fputs" | "fopen" | "fclose" | "fread" | "fwrite"
+            | "fseek" | "ftell" | "rewind" | "fgetc" | "fputc" | "feof" | "ferror" | "perror"
+            | "remove" | "rename" | "tmpfile" | "printf_s" | "vfprintf" | "vprintf"
+            | "stdin" | "stdout" | "stderr" | "FILE" | "fpos_t"
+    ) {
+        return Some("stdio.h");
+    }
+    if matches!(
+        symbol,
+        "malloc" | "calloc" | "realloc" | "free" | "aligned_alloc" | "reallocarray"
+    ) {
+        return Some("stdlib.h");
+    }
+    if matches!(
+        symbol,
+        "strlen" | "strcpy" | "strncpy" | "strcat" | "strncat" | "strcmp" | "strncmp" | "strchr"
+            | "strrchr" | "strstr" | "strtok" | "memcpy" | "memmove" | "memset" | "memcmp"
+            | "memchr" | "strdup" | "strcasecmp" | "strncasecmp" | "strcoll" | "strxfrm"
+    ) {
+        return Some("string.h");
+    }
+    if matches!(
+        symbol,
+        "sqrt" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "pow" | "log"
+            | "log10" | "exp" | "floor" | "ceil" | "fmod" | "fabs" | "round" | "trunc"
+            | "M_PI" | "M_E" | "INFINITY" | "NAN"
+    ) {
+        return Some("math.h");
+    }
+    if matches!(
+        symbol,
+        "assert" | "NDEBUG" | "static_assert" | "assert_hdr"
+    ) {
+        return Some("assert.h");
+    }
+    if matches!(symbol, "errno" | "errno_t" | "EINVAL" | "ERANGE" | "EDOM") {
+        return Some("errno.h");
+    }
+    if matches!(symbol, "time" | "clock" | "difftime" | "mktime" | "asctime" | "ctime" | "gmtime" | "localtime" | "strftime" | "clock_t" | "time_t" | "tm" | "timespec") {
+        return Some("time.h");
+    }
+    if matches!(symbol, "isalpha" | "isdigit" | "isalnum" | "isspace" | "toupper" | "tolower" | "isupper" | "islower" | "ispunct" | "isxdigit") {
+        return Some("ctype.h");
+    }
+    if matches!(symbol, "qsort" | "bsearch" | "abs" | "labs" | "div" | "ldiv" | "atoi" | "atol" | "atof" | "strtol" | "strtoul" | "strtod" | "rand" | "srand" | "EXIT_SUCCESS" | "EXIT_FAILURE" | "RAND_MAX") {
+        return Some("stdlib.h");
+    }
+    // POSIX threads.
+    if symbol.starts_with("pthread_") || matches!(symbol, "pthread_t" | "pthread_mutex_t" | "pthread_cond_t" | "PTHREAD_MUTEX_INITIALIZER" | "PTHREAD_COND_INITIALIZER") {
+        return Some("pthread.h");
+    }
+    None
 }
 
 pub fn plan_build(project: &Project) -> Result<BuildPlan> {
@@ -1029,6 +1166,13 @@ pub fn plan_coverage(project: &Project) -> Option<BuildPlan> {
     for source in &sources {
         args.push(source.display().to_string());
     }
+    for link_flag in &project.config.compiler.link_flags {
+        let link_flag = link_flag.trim();
+        if !link_flag.is_empty() {
+            args.extend(link_flag.split_whitespace().map(str::to_string));
+        }
+    }
+
     args.push("-o".to_string());
     args.push(binary.display().to_string());
     Some(BuildPlan {
@@ -1253,9 +1397,19 @@ pub fn plan_preprocess(project: &Project) -> Option<BuildPlan> {
         args.push(format!("-I{}", path.display()));
     }
 
+
     for source in &sources {
         args.push(source.display().to_string());
     }
+    for link_flag in &project.config.compiler.link_flags {
+        let link_flag = link_flag.trim();
+        if !link_flag.is_empty() {
+            // Split on whitespace so `-Wl,-Map=out.map` stays one flag while
+            // `-lm -lfoo` becomes two; quoted arguments are kept verbatim.
+            args.extend(link_flag.split_whitespace().map(str::to_string));
+        }
+    }
+
     args.push("-o".to_string());
     args.push(artifact.display().to_string());
 
@@ -1311,9 +1465,17 @@ fn plan_xtensa(project: &Project, compiler: &str, artifact: PathBuf) -> Result<B
         };
         args.push(format!("-I{}", path.display()));
     }
+
     for source in &sources {
         args.push(source.display().to_string());
     }
+    for link_flag in &project.config.compiler.link_flags {
+        let link_flag = link_flag.trim();
+        if !link_flag.is_empty() {
+            args.extend(link_flag.split_whitespace().map(str::to_string));
+        }
+    }
+
     args.push("-o".to_string());
     args.push(artifact.display().to_string());
     Ok(BuildPlan {
@@ -1363,9 +1525,17 @@ fn plan_mcs51(project: &Project, compiler: &str, artifact: PathBuf) -> Result<Bu
         };
         args.push(format!("-I{}", path.display()));
     }
+
     for source in &sources {
         args.push(source.display().to_string());
     }
+    for link_flag in &project.config.compiler.link_flags {
+        let link_flag = link_flag.trim();
+        if !link_flag.is_empty() {
+            args.extend(link_flag.split_whitespace().map(str::to_string));
+        }
+    }
+
     // SDCC derives the output name from `-o`; Intel HEX is the default format
     // for MCS-51 targets.
     args.push("-o".to_string());
@@ -1425,9 +1595,17 @@ fn plan_cross(
         };
         args.push(format!("-I{}", path.display()));
     }
+
     for source in &sources {
         args.push(source.display().to_string());
     }
+    for link_flag in &project.config.compiler.link_flags {
+        let link_flag = link_flag.trim();
+        if !link_flag.is_empty() {
+            args.extend(link_flag.split_whitespace().map(str::to_string));
+        }
+    }
+
     args.push("-o".to_string());
     args.push(artifact.display().to_string());
     Ok(BuildPlan {
@@ -2217,7 +2395,8 @@ mod tests {
             Some(QuickFix::Hint(_))
         ));
 
-        let undefined = Diagnostic {
+        // Known libm symbol -> offer `-lm` (AddLinkFlag).
+        let undefined_sqrt = Diagnostic {
             path: None,
             line: None,
             column: None,
@@ -2225,12 +2404,40 @@ mod tests {
             message: "undefined reference to `sqrt`".to_string(),
             raw: String::new(),
         };
+        assert_eq!(
+            suggest_quick_fix(&undefined_sqrt, None),
+            Some(QuickFix::AddLinkFlag { flag: "-lm".to_string() })
+        );
+        // Unknown symbol -> informative hint, not a blind `-l`.
+        let undefined_unknown = Diagnostic {
+            path: None,
+            line: None,
+            column: None,
+            severity: Severity::Error,
+            message: "undefined reference to `my_custom_fn`".to_string(),
+            raw: String::new(),
+        };
         assert!(matches!(
-            suggest_quick_fix(&undefined, None),
-            Some(QuickFix::Hint(msg)) if msg.contains("sqrt")
+            suggest_quick_fix(&undefined_unknown, None),
+            Some(QuickFix::Hint(msg)) if msg.contains("my_custom_fn")
         ));
+        // `pthread_create` -> `-lpthread`.
+        let undefined_pthread = Diagnostic {
+            path: None,
+            line: None,
+            column: None,
+            severity: Severity::Error,
+            message: "undefined reference to `pthread_create`".to_string(),
+            raw: String::new(),
+        };
+        assert_eq!(
+            suggest_quick_fix(&undefined_pthread, None),
+            Some(QuickFix::AddLinkFlag { flag: "-lpthread".to_string() })
+        );
 
-        let undeclared = Diagnostic {
+
+        // `foo` is not a standard-library symbol -> hint.
+        let undeclared_custom = Diagnostic {
             path: None,
             line: None,
             column: None,
@@ -2239,9 +2446,28 @@ mod tests {
             raw: String::new(),
         };
         assert!(matches!(
-            suggest_quick_fix(&undeclared, None),
+            suggest_quick_fix(&undeclared_custom, None),
             Some(QuickFix::Hint(msg)) if msg.contains("foo")
         ));
+        // `printf` is declared in <stdio.h> -> offer the include.
+        let undeclared_printf = Diagnostic {
+            path: None,
+            line: None,
+            column: None,
+            severity: Severity::Error,
+            message: "‘printf’ undeclared (first use in this function)".to_string(),
+            raw: String::new(),
+        };
+        assert_eq!(
+            suggest_quick_fix(&undeclared_printf, None),
+            Some(QuickFix::AddInclude { header: "stdio.h".to_string() })
+        );
+        // Already included -> hint, not a duplicate insert.
+        assert!(matches!(
+            suggest_quick_fix(&undeclared_printf, Some("#include <stdio.h>\n")),
+            Some(QuickFix::Hint(msg)) if msg.contains("printf")
+        ));
+
 
         let unrelated = Diagnostic {
             path: None,
@@ -2782,6 +3008,43 @@ printf '%s\n' "$@"
 
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn direct_build_plan_appends_link_flags() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-embed-ide-linkflags-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"linkflags-test\"\nversion = \"0.1.0\"\nlanguage = \"C\"\ntarget = \"x86_64\"\ncompiler = \"cc\"\nsimulator = \"\"\ndebugger = \"lldb\"\nflasher = \"\"\n\n[compiler]\nstd = \"c11\"\nopt = \"-O0\"\ndefines = []\nincludes = []\nlink_flags = [\"-lm\", \"-Wl,--gc-sections\"]\n\n[debugger]\ninterface = \"swd\"\n\n[flasher]\ninterface = \"swd\"\n\n[build]\nconfig = \"debug\"\nout_dir = \"build\"\nsystem = \"direct\"\n\n[sim]\ncpu = \"\"\nperiod = 0\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
+
+        let project = Project::open(&root).unwrap();
+        let plan = plan_build(&project).unwrap();
+        let command = plan.command_line();
+        // Link flags land after the object files (before `-o`), so the linker
+        // sees them on the final link invocation.
+        let source_pos = plan.args.iter().position(|a| a.ends_with("src/main.c"));
+        let flag_pos = plan
+            .args
+            .iter()
+            .position(|a| a.as_str() == "-lm")
+            .expect("-lm must be present");
+        let out_pos = plan.args.iter().position(|a| a.as_str() == "-o");
+        assert!(
+            source_pos.unwrap() < flag_pos && flag_pos < out_pos.unwrap(),
+            "link flags must follow sources and precede -o: {command}"
+        );
+        assert!(plan.args.iter().any(|a| a == "-Wl,--gc-sections"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
 
     /// End-to-end: a C project with a CMakeLists.txt and a host compiler builds
     /// through the `sh -c` plan, and the artifact appears where

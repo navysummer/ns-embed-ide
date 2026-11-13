@@ -109,6 +109,18 @@ pub trait Flasher: Send + Sync {
     fn run(&self, request: &FlashRequest, on_line: &mut dyn FnMut(&str)) -> Result<FlashOutcome>;
 }
 
+/// Resolve the target device name for a flasher adapter, falling back to the
+/// adapter's historical default when `project.toml` has no target.
+fn device_or(device: &Option<String>, fallback: &str) -> String {
+    device
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+
 /// Choose the adapter from `project.toml`'s `[flasher]`. Empty `kind` selects
 /// `openocd` by default; an unknown kind is an error so the IDE can report it.
 pub fn adapter_for(project: &Project) -> Result<Box<dyn Flasher>> {
@@ -539,10 +551,13 @@ impl Flasher for StLink {
     }
 
     fn run(&self, request: &FlashRequest, on_line: &mut dyn FnMut(&str)) -> Result<FlashOutcome> {
-        let base = match request.interface.as_str() {
-            "jtag" => "0x08000000",
-            _ => "0x08000000",
-        };
+        // ST-Link's `write`/`verify`/`read` take an explicit base address; use
+        // the FLM geometry when present, else the historical STM32 flash base.
+        let base = request
+            .algorithm
+            .as_ref()
+            .map(|flm| format!("{:#x}", flm.base_address))
+            .unwrap_or_else(|| "0x08000000".to_string());
         let args: Vec<String> = match request.action {
             FlashAction::Flash => vec![
                 "write".to_string(),
@@ -592,22 +607,25 @@ impl Flasher for ProbeRs {
     }
 
     fn run(&self, request: &FlashRequest, on_line: &mut dyn FnMut(&str)) -> Result<FlashOutcome> {
+        // Use the project target as the chip, falling back to the historical
+        // STM32F103C8 default when `project.toml` has no target.
+        let chip = device_or(&request.device, "stm32f103c8");
         let args: Vec<String> = match request.action {
             FlashAction::Flash => vec![
                 "download".to_string(),
                 "--chip".to_string(),
-                "stm32f103c8".to_string(),
+                chip.clone(),
                 request.firmware.to_string_lossy().into_owned(),
             ],
             FlashAction::Erase => vec![
                 "erase".to_string(),
                 "--chip".to_string(),
-                "stm32f103c8".to_string(),
+                chip.clone(),
             ],
             FlashAction::Verify => vec![
                 "verify".to_string(),
                 "--chip".to_string(),
-                "stm32f103c8".to_string(),
+                chip.clone(),
                 request.firmware.to_string_lossy().into_owned(),
             ],
             FlashAction::Read => {
@@ -617,7 +635,7 @@ impl Flasher for ProbeRs {
                 vec![
                     "dump".to_string(),
                     "--chip".to_string(),
-                    "stm32f103c8".to_string(),
+                    chip.clone(),
                     out.to_string_lossy().into_owned(),
                 ]
             }
@@ -777,7 +795,23 @@ fn openocd_target_cfg_maps_device_and_falls_back() {
     // Unknown / explicit device strings use the historical default.
     assert_eq!(openocd_target_cfg(""), "target/stm32f1x.cfg");
     assert_eq!(openocd_target_cfg("custom-mcu"), "target/stm32f1x.cfg");
- }
+}
+
+/// `probe-rs` passes the project target as `--chip` (no hardcoded device),
+/// and falls back to the historical STM32F103C8 when no target is set.
+#[test]
+fn probe_rs_uses_request_device_as_chip() {
+    assert_eq!(device_or(&None, "stm32f103c8"), "stm32f103c8");
+    assert_eq!(
+        device_or(&Some("nrf52840".to_string()), "stm32f103c8"),
+        "nrf52840"
+    );
+    // Empty / whitespace-only device falls back too.
+    assert_eq!(
+        device_or(&Some("  ".to_string()), "stm32f103c8"),
+        "stm32f103c8"
+    );
+}
 
 /// A pre-set cancel flag aborts the subprocess and reports failure rather
 /// than a spurious success.

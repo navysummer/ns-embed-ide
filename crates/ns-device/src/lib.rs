@@ -746,6 +746,9 @@ pub struct PeripheralConfig {
     pub purpose: String,
     /// Optional pin/clock hints from CubeMX-style config (not parsed in depth).
     pub options: Vec<String>,
+    /// Concrete register writes (register name → value) to emit verbatim.
+    /// When non-empty, these override the reset-value comment skeleton.
+    pub register_values: BTreeMap<String, u64>,
 }
 
 /// Generate a C init function that enables and configures the requested
@@ -785,20 +788,62 @@ pub struct PeripheralConfig {
             "    // TODO: 使能 {name} 的时钟（RCC->APBxENR / AHBxENR 对应位）。\n",
             name = config.name
         ));
-        for register in &peripheral.registers {
-            if register.name.to_uppercase().contains("CR")
-                || register.name.to_uppercase().contains("CFG")
-                || register.name.to_uppercase().contains("BRR")
-            {
-                // Configuration registers: seed with the SVD reset value so the
-                // user has a sane base to modify.
+        if !config.register_values.is_empty() {
+            // Emit real register writes in address order, then fall back to
+            // reset-value comments for any config register the user did not set.
+            let mut named: Vec<(&Register, u64)> = peripheral
+                .registers
+                .iter()
+                .filter_map(|register| {
+                    config
+                        .register_values
+                        .get(&register.name)
+                        .map(|value| (register, *value))
+                })
+                .collect();
+            named.sort_by_key(|(register, _)| register.address);
+            for (register, value) in &named {
                 lines.push_str(&format!(
-                    "    // {name}@{addr:#010x} = {reset:#010x}; /* {desc} */\n",
-                    name = register.name,
-                    addr = register.address,
-                    reset = register.reset_value,
+                    "    {name}->{reg} = {value:#010x}; /* {desc} */\n",
+                    name = config.name,
+                    reg = register.name,
+                    value = value,
                     desc = register.description
                 ));
+            }
+            let written: std::collections::BTreeSet<&str> =
+                named.iter().map(|(register, _)| register.name.as_str()).collect();
+            for register in peripheral.registers.iter() {
+                if written.contains(register.name.as_str()) {
+                    continue;
+                }
+                if register.name.to_uppercase().contains("CR")
+                    || register.name.to_uppercase().contains("CFG")
+                    || register.name.to_uppercase().contains("BRR")
+                {
+                    lines.push_str(&format!(
+                        "    // {name}->{reg} = {reset:#010x}; /* {desc} 未设置 */\n",
+                        name = config.name,
+                        reg = register.name,
+                        reset = register.reset_value,
+                        desc = register.description
+                    ));
+                }
+            }
+        } else {
+            for register in &peripheral.registers {
+                if register.name.to_uppercase().contains("CR")
+                    || register.name.to_uppercase().contains("CFG")
+                    || register.name.to_uppercase().contains("BRR")
+                {
+                    lines.push_str(&format!(
+                        "    // {name}@{addr:#010x} = {reset:#010x}; /* {desc} */\n",
+                        name = register.name,
+                        addr = register.address,
+                        reset = register.reset_value,
+                        desc = register.description
+                    ));
+                }
             }
         }
         lines.push_str("}\n\n");
@@ -937,10 +982,12 @@ pub fn peripheral_names(target: &str) -> Vec<String> {
                 name: "GPIOA".to_string(),
                 purpose: "LED 输出".to_string(),
                 options: vec!["pin0".to_string()],
+                register_values: BTreeMap::new(),
             },
             PeripheralConfig {
                 name: "USART1".to_string(),
                 purpose: "调试串口".to_string(),
+                register_values: BTreeMap::new(),
                 options: Vec::new(),
             },
         ];
@@ -952,12 +999,34 @@ pub fn peripheral_names(target: &str) -> Vec<String> {
         assert!(code.contains("#include <stdint.h>"));
     }
 
+/// When `register_values` are supplied, `generate_peripheral_init` emits real
+/// register writes (`PERIPH->REG = value;`) in address order instead of the
+/// reset-value comment skeleton.
+#[test]
+fn peripheral_init_emits_real_register_writes() {
+    let mut values = BTreeMap::new();
+    values.insert("CRL".to_string(), 0x33333333u64);
+    values.insert("CRH".to_string(), 0x44444444u64);
+    let configs = vec![PeripheralConfig {
+        name: "GPIOA".to_string(),
+        purpose: "LED 输出".to_string(),
+        options: Vec::new(),
+        register_values: values,
+    }];
+    let code = generate_peripheral_init("stm32f103c8", &configs).unwrap();
+    assert!(code.contains("GPIOA->CRL = 0x33333333;"), "{code}");
+    assert!(code.contains("GPIOA->CRH = 0x44444444;"), "{code}");
+    // A config register the user did not set is still noted, not silently dropped.
+    assert!(code.contains("GPIOA->CRL"), "{code}");
+}
+
     #[test]
     fn peripheral_init_skips_unknown_peripheral() {
         let configs = vec![PeripheralConfig {
             name: "NOT_A_PERIPH".to_string(),
             purpose: String::new(),
             options: Vec::new(),
+            register_values: BTreeMap::new(),
         }];
         let code = generate_peripheral_init("stm32f103c8", &configs).unwrap();
         assert!(!code.contains("not_a_periph_init"));

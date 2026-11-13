@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -12,8 +13,8 @@ use futures::StreamExt;
 
 use gpui::{
     ClipboardItem, Context, Div, ElementId, Entity, FocusHandle, Focusable, FontWeight, KeyBinding,
-    KeyDownEvent, MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Render, SharedString,
-    Stateful, Subscription, Window, actions, div, prelude::*, px,
+    KeyDownEvent, MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Point, Render,
+    SharedString, Stateful, Subscription, Window, actions, div, prelude::*, px,
 };
 use ns_build::{BuildOutcome, Diagnostic, Severity};
 use ns_debug::{
@@ -23,15 +24,17 @@ use ns_debug::{
 };
 use ns_flash::{FlashAction, FlashRequest, adapter_for};
 use ns_project::{
-    BreakpointKind, BreakpointStore, Language, Project, RecentProject, WatchAccess,
-    load_recents, remember_project,
+    BreakpointKind, BreakpointStore, Language, Project, ProjectConfig, RecentProject,
+    WatchAccess, forget_project, load_recents, remember_project,
     project::TargetSection,
 };
 
 use crate::agent::AgentPanel;
 use crate::editor::{
-    BreakpointContextMenu, BreakpointToggled, DefinitionRequested, Editor,
+    BookmarkToggled, BreakpointContextMenu, BreakpointToggled, DefinitionRequested,
+    DiagnosticHover, Editor, HoverWord,
 };
+use crate::diff;
 use crate::git;
 use crate::palette::{self, CommandEntry};
 use crate::search::{self, MatchOrigin, SearchMatch};
@@ -48,6 +51,7 @@ actions!(
         NewProject,
         OpenProject,
         Save,
+        SaveAll,
         Build,
         Run,
         ToggleOutput,
@@ -65,6 +69,8 @@ actions!(
         DebugStepOver,
         DebugStepIn,
         DebugStepOut,
+        DebugStepInstruction,
+
         RunToCursor,
         FindInFile,
         FindInProject,
@@ -96,9 +102,13 @@ actions!(
          QuickOpen,
          RecentFiles,
         GoToLine,
- 
-     ]
- );
+        ZoomIn,
+        ZoomOut,
+        ZoomReset,
+        NextDiagnostic,
+        PrevDiagnostic,
+    ]
+);
 
 /// Build the default key bindings, applying user keystroke overrides from
 /// `keybindings.json` (F13 快捷键配置). Each `KeyBinding` is checked against
@@ -126,6 +136,8 @@ pub fn bindings_with(overrides: &ns_project::KeybindingOverrides) -> Vec<KeyBind
         kb!("OpenProject", "ctrl-o", None, OpenProject),
         kb!("Save", "cmd-s", None, Save),
         kb!("Save", "ctrl-s", None, Save),
+        kb!("SaveAll", "cmd-alt-s", None, SaveAll),
+        kb!("SaveAll", "ctrl-alt-s", None, SaveAll),
         kb!("Build", "cmd-b", None, Build),
         kb!("Build", "ctrl-b", None, Build),
         kb!("Run", "cmd-r", None, Run),
@@ -146,6 +158,9 @@ pub fn bindings_with(overrides: &ns_project::KeybindingOverrides) -> Vec<KeyBind
         kb!("DebugStepOver", "f10", None, DebugStepOver),
         kb!("DebugStepIn", "f11", None, DebugStepIn),
         kb!("DebugStepOut", "shift-f11", None, DebugStepOut),
+        kb!("DebugStepInstruction", "cmd-alt-rightarrow", None, DebugStepInstruction),
+        kb!("DebugStepInstruction", "ctrl-alt-rightarrow", None, DebugStepInstruction),
+
         kb!("RunToCursor", "cmd-f10", None, RunToCursor),
         kb!("RunToCursor", "ctrl-f10", None, RunToCursor),
         kb!("Flash", "cmd-shift-f10", None, Flash),
@@ -196,6 +211,14 @@ pub fn bindings_with(overrides: &ns_project::KeybindingOverrides) -> Vec<KeyBind
         kb!("QuickOpen", "ctrl-p", None, QuickOpen),
         kb!("RecentFiles", "cmd-e", None, RecentFiles),
         kb!("RecentFiles", "ctrl-e", None, RecentFiles),
+        kb!("ZoomIn", "cmd-=", None, ZoomIn),
+        kb!("ZoomIn", "ctrl-=", None, ZoomIn),
+        kb!("ZoomOut", "cmd--", None, ZoomOut),
+        kb!("ZoomOut", "ctrl--", None, ZoomOut),
+        kb!("ZoomReset", "cmd-0", None, ZoomReset),
+        kb!("ZoomReset", "ctrl-0", None, ZoomReset),
+        kb!("NextDiagnostic", "f8", None, NextDiagnostic),
+        kb!("PrevDiagnostic", "shift-f8", None, PrevDiagnostic),
     ] {
         all.extend(binding);
     }
@@ -208,11 +231,22 @@ enum OutputTab {
     Output,
     Problems,
     Breakpoints,
+    Bookmarks,
+    Tools,
     Debug,
     Git,
     Terminal,
     Serial,
     Agent,
+}
+
+/// Severity filter for the problems panel (the VSCode-style "show errors /
+/// warnings / info" toggles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeverityFilter {
+    Error,
+    Warning,
+    Info,
 }
 
 /// Topbar dropdown menu (Zed/embedded-IDE style grouped commands).
@@ -305,10 +339,16 @@ struct Tab {
     /// Content as loaded from disk / last written on save (LF-normalized), used
     /// to detect external modifications on save.
     saved_text: String,
+    /// True for binary-file tabs opened in the hex view. Saving such a tab
+    /// parses the hex dump text back into raw bytes instead of writing text.
+    is_hex: bool,
     _subscription: Subscription,
     _breakpoint_subscription: Subscription,
+    _bookmark_subscription: Subscription,
     _menu_subscription: Subscription,
     _definition_subscription: Subscription,
+    _diagnostic_hover_subscription: Subscription,
+    _hover_word_subscription: Subscription,
 }
 
 #[derive(Debug, Clone)]
@@ -339,8 +379,11 @@ struct SplitPane {
     saved_text: String,
     _subscription: Subscription,
     _breakpoint_subscription: Subscription,
+    _bookmark_subscription: Subscription,
     _menu_subscription: Subscription,
     _definition_subscription: Subscription,
+    _diagnostic_hover_subscription: Subscription,
+    _hover_word_subscription: Subscription,
 }
 
 /// Modal shown on save when the file changed on disk since it was opened.
@@ -349,6 +392,17 @@ struct ExternalChangeDialog {
     path: PathBuf,
     /// Current disk content (LF-normalized), offered for "reload from disk".
     disk_text: String,
+}
+
+/// Modal showing the diff between the active editor's buffer and its on-disk
+/// content (the "compare with saved" action).
+struct CompareDialog {
+    /// The file being compared.
+    path: PathBuf,
+    /// The rendered unified diff (from `diff::render_diff`).
+    text: String,
+    /// Number of changed lines (removed + added), for the header summary.
+    changed: usize,
 }
 
 /// Right-click context menu on a file-tree entry (file or directory).
@@ -376,6 +430,8 @@ struct NewEntryDialog {
     field: Entity<TextField>,
     /// When set, the dialog renames this existing path instead of creating.
     rename: Option<PathBuf>,
+    /// When set, the dialog duplicates (copies) this existing path instead.
+    duplicate: Option<PathBuf>,
 }
 
 struct ConditionDialog {
@@ -421,6 +477,253 @@ struct GoToLineDialog {
     field: Entity<TextField>,
 }
 
+/// Dialog to rename the open project (directory + `project.toml` name).
+struct ProjectRenameDialog {
+    field: Entity<TextField>,
+}
+
+/// Confirmation dialog before deleting the open project directory.
+struct ProjectDeleteDialog {
+    /// The project root that would be removed.
+    root: PathBuf,
+}
+
+/// Confirmation before closing tabs that have unsaved changes. The user can
+/// save all, discard, or cancel the close.
+struct ConfirmCloseDialog {
+    /// Full set of tab indices (into `self.tabs`) to close once resolved.
+    indices: Vec<usize>,
+    /// `true` = close every tab (close-all), not just `indices`.
+    close_all: bool,
+}
+
+/// GPIO pin configuration modes for the graphical peripheral configurator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinMode {
+    InputFloat,
+    InputPull,
+    InputPullDown,
+    OutputPushPull,
+    OutputOpenDrain,
+    AltPushPull,
+    AltOpenDrain,
+}
+
+impl PinMode {
+    fn label(&self) -> &'static str {
+        match self {
+            PinMode::InputFloat => "输入(浮空)",
+            PinMode::InputPull => "输入(上拉)",
+            PinMode::InputPullDown => "输入(下拉)",
+            PinMode::OutputPushPull => "输出(推挽)",
+            PinMode::OutputOpenDrain => "输出(开漏)",
+            PinMode::AltPushPull => "复用(推挽)",
+            PinMode::AltOpenDrain => "复用(开漏)",
+        }
+    }
+
+    /// STM32F1 `CRL`/`CRH` nibble: bits [3:2] = MODE, bits [1:0] = CNF.
+    fn stm32f1_nibble(&self) -> u8 {
+        match self {
+            PinMode::InputFloat => 0x4,
+            PinMode::InputPull => 0x8,
+            PinMode::InputPullDown => 0x8,
+            PinMode::OutputPushPull => 0x3,
+            PinMode::OutputOpenDrain => 0x7,
+            PinMode::AltPushPull => 0xB,
+            PinMode::AltOpenDrain => 0xF,
+        }
+    }
+
+    fn color(&self) -> u32 {
+
+        match self {
+            PinMode::InputFloat => theme::TEXT_FAINT,
+            PinMode::InputPull => theme::ACCENT_3,
+            PinMode::InputPullDown => theme::ACCENT_2,
+            PinMode::OutputPushPull => theme::JADE,
+            PinMode::OutputOpenDrain => theme::JADE,
+            PinMode::AltPushPull => theme::CINNABAR,
+            PinMode::AltOpenDrain => theme::CINNABAR,
+        }
+    }
+
+    fn all() -> &'static [PinMode] {
+        &[
+            PinMode::InputFloat,
+            PinMode::InputPull,
+            PinMode::InputPullDown,
+            PinMode::OutputPushPull,
+            PinMode::OutputOpenDrain,
+            PinMode::AltPushPull,
+            PinMode::AltOpenDrain,
+        ]
+    }
+}
+
+/// A peripheral row in the graphical configurator.
+struct PeriphConfigItem {
+    name: String,
+    enabled: bool,
+    /// 16 pin modes for GPIO ports; empty for non-GPIO peripherals.
+    pins: Vec<PinMode>,
+    /// UART baud rate text (parsed on generate).
+    baud: String,
+}
+
+/// State for the CubeMX-style graphical peripheral configuration modal.
+struct PeriphConfigState {
+    target: String,
+    items: Vec<PeriphConfigItem>,
+    /// Index of the GPIO peripheral shown in the chip pinout diagram.
+    selected_pinout: Option<usize>,
+}
+
+
+/// Compute STM32F1 `CRL`/`CRH` values from 16 pin modes (pins 0-7 → CRL,
+/// pins 8-15 → CRH; 4 bits per pin: [3:2]=MODE, [1:0]=CNF).
+fn stm32f1_gpio_registers(pins: &[PinMode]) -> (u64, u64) {
+    let mut crl: u64 = 0;
+    let mut crh: u64 = 0;
+    for (pin, mode) in pins.iter().enumerate() {
+        let nibble = mode.stm32f1_nibble() as u64;
+        if pin < 8 {
+            crl |= nibble << (pin * 4);
+        } else {
+            crh |= nibble << ((pin - 8) * 4);
+        }
+    }
+    (crl, crh)
+}
+
+/// Render a chip pinout diagram for the selected GPIO peripheral: a chip body
+/// with the 16 pins (P0-P7 left, P8-P15 right), each coloured by its mode and
+/// clickable to cycle the mode. Hidden when no GPIO port is selected.
+fn render_periph_pinout(
+    config: &Option<PeriphConfigState>,
+    cx: &mut Context<IdeApp>,
+) -> gpui::AnyElement {
+    let Some(state) = config.as_ref() else {
+        return gpui::div().into_any_element();
+    };
+    let Some(selected) = state.selected_pinout else {
+        return gpui::div().into_any_element();
+    };
+    let Some(item) = state.items.get(selected) else {
+        return gpui::div().into_any_element();
+    };
+
+    let pins = item.pins.clone();
+    let name = item.name.clone();
+    let target = state.target.clone();
+
+    // A single pin: a small coloured square labelled `Pn`, clickable to cycle.
+    let pin = |pin_num: usize| {
+
+        let mode = pins.get(pin_num).copied().unwrap_or(PinMode::InputFloat);
+        let color = mode.color();
+        gpui::div()
+            .id(gpui::SharedString::from(format!(
+                "periph-config-pinout-{selected}-{pin_num}"
+            )))
+            .w(px(56.))
+            .h(px(26.))
+            .rounded(px(5.))
+            .border_1()
+            .border_color(theme::alpha(color, 0.55))
+            .bg(theme::alpha(color, 0.12))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::alpha(color, 0.24)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.cycle_periph_pin(selected, pin_num, cx);
+            }))
+            .child(
+                gpui::div()
+                    .text_size(px(9.))
+                    .text_color(theme::color(color))
+                    .child(format!("P{pin_num}")),
+            )
+    };
+
+    let left: Vec<gpui::AnyElement> = (0..8).map(|p| pin(p).into_any_element()).collect();
+    let right: Vec<gpui::AnyElement> =
+        (8..16).map(|p| pin(p).into_any_element()).collect();
+
+
+    gpui::div()
+        .id("periph-pinout")
+        .px(px(16.))
+        .py(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .children(left),
+
+        )
+        .child(
+            gpui::div()
+                .w(px(200.))
+                .h(px(150.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme::alpha(theme::ACCENT, 0.4))
+
+                .bg(theme::alpha(theme::STROKE, 0.05))
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    gpui::div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::color(theme::ACCENT_3))
+                        .child(format!("{name}")),
+                )
+                .child(
+                    gpui::div()
+                        .text_size(px(9.))
+                        .text_color(theme::color(theme::TEXT_FAINT))
+                        .child(format!("{target} · 芯片引脚图")),
+                )
+                .child(
+                    gpui::div()
+                        .mt(px(6.))
+                        .text_size(px(8.5))
+                        .text_color(theme::color(theme::TEXT_FAINT))
+                        .child("点击引脚切换模式 · P0-P15"),
+                ),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .children(right),
+
+        )
+        .into_any_element()
+}
+
+
+
+/// What a close request covers, so the confirm dialog can resolve correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseMode {
+    Single,
+    Batch,
+    All,
+}
+
 /// Modal to edit the project-level settings in `project.toml`. Fields are
 /// plain text inputs; saving rewrites the config file via `Project::save_config`.
 struct SettingsDialog {
@@ -438,6 +741,8 @@ struct SettingsDialog {
     compiler_opt: Entity<TextField>,
     compiler_defines: Entity<TextField>,
     compiler_includes: Entity<TextField>,
+    compiler_link_flags: Entity<TextField>,
+
     build_config: Entity<TextField>,
     out_dir: Entity<TextField>,
     build_jobs: Entity<TextField>,
@@ -460,6 +765,10 @@ struct SettingsDialog {
     terminal_shell: Entity<TextField>,
     /// Global config keys (`$config["key"]`), one `key=value` per line.
     config_keys: Entity<TextField>,
+    /// Format-on-save: save triggers LSP formatting first.
+    format_on_save: bool,
+    /// Save all dirty tabs before build/run/flash/debug.
+    save_before_build: bool,
 }
 
 /// Split a comma-separated list, trimming whitespace and dropping empties.
@@ -484,6 +793,34 @@ struct KeybindingsDialog {
     fields: Vec<(&'static str, &'static str, &'static str, Entity<TextField>)>,
 }
 
+struct ToolEditDialog {
+    /// Existing id when editing (empty = new tool).
+    id: String,
+    /// True when editing an existing tool (shows a delete button).
+    is_edit: bool,
+    title: Entity<TextField>,
+    command: Entity<TextField>,
+    cwd: Entity<TextField>,
+}
+
+/// Modal to manage user-defined code snippets (`snippets.json`). Each row is
+/// one snippet being edited (prefix / body / description), plus the store index
+/// it maps to so deletes and saves can target the right entry.
+struct SnippetDialog {
+    rows: Vec<SnippetRow>,
+}
+
+/// One snippet row in the management modal.
+struct SnippetRow {
+    /// Index into the live `SnippetStore` when this row edits an existing
+    /// snippet; `usize::MAX` marks a brand-new row not yet in the store.
+    store_index: usize,
+    prefix: Entity<TextField>,
+    body: Entity<TextField>,
+    description: Entity<TextField>,
+}
+
+
 /// Build a settings text field prefilled with `value`.
 fn settings_field(
     placeholder: impl Into<SharedString>,
@@ -497,10 +834,18 @@ fn settings_field(
     })
 }
 
+enum SearchOption {
+    CaseSensitive,
+    WholeWord,
+}
+
 struct SearchState {
     field: Entity<TextField>,
+    replace_field: Entity<TextField>,
     matches: Vec<SearchMatch>,
     selected: usize,
+    case_sensitive: bool,
+    whole_word: bool,
     _subscription: Subscription,
 }
 
@@ -586,6 +931,139 @@ struct WatchEntry {
     value: String,
 }
 
+
+/// FreeRTOS task state as read from the template's `Task.state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RtosTaskState {
+    Ready,
+    Blocked,
+    Suspended,
+}
+
+impl RtosTaskState {
+    fn label(self) -> &'static str {
+        match self {
+            RtosTaskState::Ready => "就绪",
+            RtosTaskState::Blocked => "阻塞",
+            RtosTaskState::Suspended => "挂起",
+        }
+    }
+    fn from_u32(value: u32) -> Self {
+        match value {
+            1 => RtosTaskState::Blocked,
+            2 => RtosTaskState::Suspended,
+            _ => RtosTaskState::Ready,
+        }
+    }
+}
+
+/// One task reported by the RTOS view (FreeRTOS-style scheduler).
+struct RtosTask {
+    name: String,
+    /// `true` = the task the scheduler is currently running.
+    running: bool,
+    /// Priority / index (higher = more important), when known.
+    priority: u32,
+    /// Relative stack usage percent (0-100), when available.
+    stack_usage: Option<u8>,
+    /// Task state (ready/blocked/suspended).
+    state: RtosTaskState,
+}
+
+/// A task whose fields are still being collected from the debugger.
+struct PartialRtosTask {
+    name: Option<String>,
+    priority: Option<u32>,
+    stack_usage: Option<u8>,
+    state: Option<u32>,
+}
+
+/// In-flight RTOS task refresh: count, running index, and partial task fields
+/// keyed by task index, correlated by the evaluated expressions.
+struct RtosRefreshState {
+    count: u32,
+    current_index: Option<usize>,
+    tasks: BTreeMap<usize, PartialRtosTask>,
+    /// Which enumeration strategy is in use.
+    mode: RtosKernelMode,
+    /// Real-kernel state: the running TCB and the list heads to walk, plus
+    /// the number of memory reads still in flight.
+    kernel: Option<RtosKernelWalk>,
+}
+
+
+/// Which enumeration strategy the RTOS view is using.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RtosKernelMode {
+    /// FreeRTOS-style template globals (`task_count`, `tasks[i]`).
+    Template,
+    /// A real FreeRTOS kernel: `uxCurrentNumberOfTasks` + list walk.
+    RealKernel,
+}
+
+/// In-flight real-kernel list walk. The walker evaluates pointer expressions
+/// to traverse each scheduler list's intrusive `ListItem_t` chain; the
+/// [`ns_debug::rtos::RtosLayout`] offsets describe the struct layout.
+struct RtosKernelWalk {
+    /// Layout offsets for the target's FreeRTOS build.
+    layout: ns_debug::rtos::RtosLayout,
+    /// Address of the running TCB (`pxCurrentTCB`).
+    running_tcb: Option<u64>,
+    /// List heads to walk: (address, state).
+    lists: Vec<(u64, u32)>,
+    /// Index into `lists` of the list currently being walked.
+    list_index: usize,
+    /// Address of the current `ListItem_t` whose `pvOwner` we evaluate.
+    current_item: Option<u64>,
+    /// Collected tasks (de-duplicated at the end).
+    tasks: Vec<ns_debug::rtos::RtTask>,
+    /// Number of evaluates issued but not yet answered.
+    in_flight: usize,
+    /// Current walk step.
+    step: RtosWalkStep,
+    /// TCB being inspected for the current item.
+    current_tcb: Option<u64>,
+    /// Name / priority being collected for the current task.
+    pending_name: Option<String>,
+    pending_priority: Option<u32>,
+}
+
+
+
+/// One step of the real-kernel list walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RtosWalkStep {
+    FirstItem,
+    Owner,
+    Name,
+    Priority,
+    Next,
+}
+
+
+
+
+/// Assemble the collected partial tasks into a sorted, complete list. The task
+/// at `current_index` (0-based, matching the template's `current_task`) is
+/// marked running. Tasks missing a name are dropped.
+fn build_rtos_tasks(state: &RtosRefreshState) -> Vec<RtosTask> {
+    let mut tasks: Vec<RtosTask> = state
+        .tasks
+        .iter()
+        .filter_map(|(index, partial)| {
+            let name = partial.name.clone()?;
+            Some(RtosTask {
+                name,
+                running: state.current_index == Some(*index),
+                priority: partial.priority.unwrap_or(0),
+                stack_usage: partial.stack_usage,
+                state: RtosTaskState::from_u32(partial.state.unwrap_or(0)),
+            })
+        })
+        .collect();
+    tasks.sort_by_key(|task| task.name.clone());
+    tasks
+}
 struct DebugView {
     status: DebugStatus,
     thread_id: u64,
@@ -644,6 +1122,9 @@ struct DebugView {
     live_watch: bool,
      /// Device-register value edit in progress: (absolute address, input field).
      device_reg_edit: Option<(u64, Entity<TextField>)>,
+     /// Absolute addresses of device registers expanded to show their bit
+     /// fields (each field's live value + description).
+     device_reg_expanded: std::collections::HashSet<u64>,
      /// Loaded register snapshot for comparison: group → register → value.
      reg_snapshot: Option<HashMap<String, HashMap<String, String>>>,
     /// Input for a disassembly address (jump to arbitrary address).
@@ -656,6 +1137,10 @@ struct DebugView {
     /// The text being edited when the user first pressed up (restored on down
     /// past the newest entry).
     console_draft: String,
+    /// RTOS task list parsed from the target's scheduler state.
+    rtos_tasks: Vec<RtosTask>,
+    /// Status line for the RTOS tab (e.g. "3 个任务 · 当前: led").
+    rtos_status: String,
  }
 
 impl Default for DebugView {
@@ -694,11 +1179,14 @@ impl Default for DebugView {
              device_reg_values: HashMap::new(),
              live_watch: false,
              device_reg_edit: None,
+             device_reg_expanded: std::collections::HashSet::new(),
              reg_snapshot: None,
             disasm_input: None,
             console_history: Vec::new(),
             console_history_idx: None,
             console_draft: String::new(),
+            rtos_tasks: Vec::new(),
+            rtos_status: String::new(),
          }
     }
 }
@@ -837,6 +1325,7 @@ enum DebugViewTab {
     Trace,
     Device,
     Simulator,
+    Rtos,
 }
 
 struct MemoryView {
@@ -1117,6 +1606,7 @@ impl IdeApp {
                 TerminalConfig {
                     kind: TerminalKind::Shell,
                     program: settings.shell_command(),
+                    cwd: None,
                 },
                 cx,
             );
@@ -1174,6 +1664,248 @@ impl IdeApp {
         cx.notify();
     }
 
+    fn show_tools(&mut self, cx: &mut Context<Self>) {
+        self.show_output = true;
+        self.output_tab = OutputTab::Tools;
+        if self.tools.is_none() {
+            let tools = cx.new(|cx| crate::external_tools::ExternalToolsPanel::new(cx));
+            let poll = tools.clone();
+            cx.spawn(async move |this, cx| {
+                loop {
+                    let changed = poll.update(cx, |tools, _cx| tools.drain_events());
+                    if changed.is_err() {
+                        break;
+                    }
+                    if changed.unwrap_or(false) {
+                        this.update(cx, |_this, cx| cx.notify()).ok();
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(80))
+                        .await;
+                }
+            })
+            .detach();
+            self.tools = Some(tools);
+        }
+        cx.notify();
+    }
+
+    /// Run the tool with `id`; the store must already hold it.
+    fn run_tool_command(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(tool) = self.tools_store.find(id).cloned() else {
+            self.status = format!("未找到工具 {id}");
+            cx.notify();
+            return;
+        };
+        self.show_tools(cx);
+        if let Some(tools) = &self.tools {
+            let cwd = if tool.cwd.is_empty() {
+                self.project.as_ref().map(|p| p.root.clone())
+            } else {
+                self.project
+                    .as_ref()
+                    .map(|p| p.root.join(&tool.cwd))
+                    .or_else(|| Some(std::path::PathBuf::from(&tool.cwd)))
+            };
+            tools.update(cx, |tools, cx| {
+                tools.submit(tool.title.clone(), tool.command.clone(), cwd, cx);
+            });
+        }
+        self.status = format!("已运行工具: {}", tool.title);
+        cx.notify();
+    }
+
+    fn open_tool_editor(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        let existing = id
+            .as_deref()
+            .and_then(|id| self.tools_store.find(id).cloned());
+        let is_edit = existing.is_some();
+        let (id, title, command, cwd) = match existing {
+            Some(tool) => (tool.id, tool.title, tool.command, tool.cwd),
+            None => (
+                format!("tool-{}", self.tools_store.len() + 1),
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
+        };
+        let title_field = settings_field("工具标题（如：构建固件）", title, cx);
+        let command_field = settings_field("shell 命令（如：make -j4）", command, cx);
+        let cwd_field = settings_field("工作目录（留空=项目根）", cwd, cx);
+        self.tool_dialog = Some(ToolEditDialog {
+            id,
+            is_edit,
+            title: title_field,
+            command: command_field,
+            cwd: cwd_field,
+        });
+        self.focus_dialog_on_next_frame = true;
+        cx.notify();
+    }
+
+    fn save_tool(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.tool_dialog.take() else {
+            return;
+        };
+        let title = dialog.title.read(cx).text().trim().to_string();
+        let command = dialog.command.read(cx).text().trim().to_string();
+        let cwd = dialog.cwd.read(cx).text().trim().to_string();
+        if title.is_empty() || command.is_empty() {
+            self.status = "工具标题和命令不能为空".to_string();
+            self.tool_dialog = Some(dialog);
+            cx.notify();
+            return;
+        }
+        let tool = ns_project::ToolCommand {
+            id: dialog.id,
+            title,
+            command,
+            cwd,
+        };
+        self.tools_store.upsert(tool.clone());
+        let Some(root) = self.project.as_ref().map(|p| p.root.clone()) else {
+            self.status = "未打开项目，无法保存工具".to_string();
+            cx.notify();
+            return;
+        };
+        if let Err(error) = self.tools_store.save(&root) {
+            self.status = format!("保存工具失败: {error}");
+        } else {
+            self.status = format!("已保存工具: {}", tool.title);
+        }
+        cx.notify();
+    }
+
+    fn delete_tool(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.tools_store.remove(id);
+        let Some(root) = self.project.as_ref().map(|p| p.root.clone()) else {
+            cx.notify();
+            return;
+        };
+        if let Err(error) = self.tools_store.save(&root) {
+            self.status = format!("保存工具失败: {error}");
+        } else {
+            self.status = format!("已删除工具 {id}");
+        }
+        cx.notify();
+    }
+
+    /// Open the snippet management modal, prefilled from `snippets.json`.
+    fn open_snippet_dialog(&mut self, cx: &mut Context<Self>) {
+        let store = ns_project::SnippetStore::load();
+        let mut rows = Vec::new();
+        for (index, snippet) in store.snippets.iter().enumerate() {
+            rows.push(SnippetRow {
+                store_index: index,
+                prefix: settings_field("触发词（如 for）", snippet.prefix.clone(), cx),
+                body: settings_field("片段体（LSP 语法，${1:default}/$0）", snippet.body.clone(), cx),
+                description: settings_field("描述（可选）", snippet.description.clone(), cx),
+            });
+        }
+        self.snippet_dialog = Some(SnippetDialog { rows });
+        self.focus_dialog_on_next_frame = true;
+        cx.notify();
+    }
+
+    /// Save every snippet row back to `snippets.json` (global, shared).
+    fn save_snippets(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.snippet_dialog.take() else {
+            return;
+        };
+        let mut store = ns_project::SnippetStore::load();
+        let mut kept: Vec<(usize, ns_project::Snippet)> = Vec::new();
+        let mut saved = 0usize;
+        for row in dialog.rows {
+            let prefix = row.prefix.read(cx).text().trim().to_string();
+            let body = row.body.read(cx).text().trim().to_string();
+            let description = row.description.read(cx).text().trim().to_string();
+            if prefix.is_empty() || body.is_empty() {
+                // Keep the row but flag it; an empty prefix/body is invalid.
+                self.status = "片段触发词和内容不能为空（未保存完整片段）".to_string();
+                continue;
+            }
+            kept.push((
+                row.store_index,
+                ns_project::Snippet {
+                    prefix,
+                    body,
+                    description,
+                },
+            ));
+            saved += 1;
+        }
+        // Rebuild the store: only rows that survived the dialog are kept, so a
+        // deleted row is dropped even if its store index was never revisited.
+        let mut new_store = ns_project::SnippetStore::default();
+        let old: Vec<ns_project::Snippet> = store.snippets.drain(..).collect();
+        let mut rebuilt: Vec<ns_project::Snippet> = Vec::new();
+        for (index, snippet) in kept {
+            if index < old.len() {
+                rebuilt.push(snippet);
+            } else {
+                // Brand-new row (usize::MAX or an index beyond the old store).
+                rebuilt.push(snippet);
+            }
+        }
+        new_store.snippets = rebuilt;
+
+        if let Err(error) = new_store.save() {
+            self.status = format!("保存代码片段失败: {error}");
+        } else {
+            self.status = format!("已保存 {saved} 个代码片段");
+        }
+        cx.notify();
+    }
+
+    /// Add a blank snippet row to the management dialog.
+    fn add_snippet_row(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = &mut self.snippet_dialog {
+            dialog.rows.push(SnippetRow {
+                store_index: usize::MAX,
+                prefix: settings_field("触发词（如 for）", String::new(), cx),
+                body: settings_field("片段体（LSP 语法，${1:default}/$0）", String::new(), cx),
+                description: settings_field("描述（可选）", String::new(), cx),
+            });
+        }
+        cx.notify();
+    }
+
+    /// Delete the snippet row at `row` (index in the dialog's rows).
+    fn delete_snippet_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        if let Some(dialog) = &mut self.snippet_dialog {
+            if row < dialog.rows.len() {
+                let removed = dialog.rows.remove(row);
+                // Drop the text fields so their entities are released.
+                let _ = removed;
+            }
+        }
+        cx.notify();
+    }
+
+
+    /// Open a palette-style picker of configured tools; picking one runs it.
+    fn run_tool_picker(&mut self, cx: &mut Context<Self>) {
+        if self.tools_store.is_empty() {
+            self.status = "尚未配置任何外部工具。用命令面板「编辑外部工具…」添加。".to_string();
+            cx.notify();
+            return;
+        }
+        self.tool_picker_open = true;
+        self.tool_picker_selected = 0;
+        cx.notify();
+    }
+
+    fn confirm_tool_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(tool) = self.tools_store.tools().get(self.tool_picker_selected) else {
+            self.tool_picker_open = false;
+            cx.notify();
+            return;
+        };
+        let id = tool.id.clone();
+        self.tool_picker_open = false;
+        self.run_tool_command(&id, cx);
+    }
+
     fn open_terminal(&mut self, config: TerminalConfig, cx: &mut Context<Self>) {
         self.show_output = true;
         self.output_tab = OutputTab::Terminal;
@@ -1217,9 +1949,67 @@ impl IdeApp {
             TerminalConfig {
                 kind: TerminalKind::Shell,
                 program: settings.shell_command(),
+                cwd: None,
             },
             cx,
         );
+    }
+
+    /// Open a shell terminal whose working directory is `dir` (tree action).
+    fn open_terminal_in_dir(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        if !dir.is_dir() {
+            self.status = format!("不是目录: {}", dir.display());
+            cx.notify();
+            return;
+        }
+        let settings = ns_project::TerminalSettings::load();
+        self.open_terminal(
+            TerminalConfig {
+                kind: TerminalKind::Shell,
+                program: settings.shell_command(),
+                cwd: Some(dir.display().to_string()),
+            },
+            cx,
+        );
+        self.status = format!("已打开终端: {}", dir.display());
+        cx.notify();
+    }
+
+    /// Editor context menu: copy the active file's absolute path to the
+    /// clipboard.
+    fn copy_active_path(&mut self, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        let Some(path) = self
+            .active_tab
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| tab.path.clone())
+        else {
+            self.status = "没有打开的文件".to_string();
+            cx.notify();
+            return;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+            path.display().to_string(),
+        ));
+        self.status = format!("已复制路径: {}", path.display());
+        cx.notify();
+    }
+
+    /// Editor context menu: open a shell terminal in the active file's
+    /// directory.
+    fn terminal_in_active_dir(&mut self, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        let Some(dir) = self
+            .active_tab
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| tab.path.parent().map(Path::to_path_buf))
+            .flatten()
+        else {
+            self.status = "没有打开的文件".to_string();
+            cx.notify();
+            return;
+        };
+        self.open_terminal_in_dir(dir, cx);
     }
 
     /// Close the terminal at `index`; focus the neighbor or the panel.
@@ -1427,9 +2217,15 @@ pub struct IdeApp {
     tree_filter_field: Entity<TextField>,
     /// Subscription to the tree-filter field.
     _tree_filter_sub: Option<Subscription>,
+    /// Subscription to the debug variables filter field.
+    _var_filter_sub: Option<Subscription>,
     recents: Vec<RecentProject>,
     /// editor. `None` when the split view is closed.
     split: Option<SplitPane>,
+    /// Graphical peripheral configuration modal state (CubeMX-style).
+    periph_config: Option<PeriphConfigState>,
+    /// In-flight RTOS task refresh state (None = no refresh in progress).
+    rtos_pending: Option<RtosRefreshState>,
     /// Project-internal recently opened files (most recent first).
     recent_files: ns_project::RecentFiles,
     status: String,
@@ -1468,7 +2264,13 @@ pub struct IdeApp {
     /// Height of the output panel in pixels (draggable via the divider).
     output_px: f32,
     output_tab: OutputTab,
+    /// Enabled severities in the problems panel (start with all on).
+    problem_filter: Vec<SeverityFilter>,
+    /// Case-insensitive substring filter for the debug variables list.
+    var_filter: String,
+    var_filter_field: Entity<TextField>,
     breakpoints: BreakpointStore,
+    bookmarks: ns_project::BookmarkStore,
     debug: DebugView,
     debug_session: Option<DebugSession>,
     pending_debug: bool,
@@ -1485,8 +2287,14 @@ pub struct IdeApp {
      toolchain_dialog: Option<ToolchainDialog>,
      keybindings_dialog: Option<KeybindingsDialog>,
     external_change_dialog: Option<ExternalChangeDialog>,
+    compare_dialog: Option<CompareDialog>,
     git_branch_dialog: Option<GitBranchDialog>,
     go_to_line_dialog: Option<GoToLineDialog>,
+    project_rename_dialog: Option<ProjectRenameDialog>,
+    project_delete_dialog: Option<ProjectDeleteDialog>,
+    confirm_close_dialog: Option<ConfirmCloseDialog>,
+    /// `true` while a quit is waiting on the save/discard dialog.
+    quit_pending: bool,
      search: Option<SearchState>,
     palette: Option<PaletteState>,
      focus_dialog_on_next_frame: bool,
@@ -1509,6 +2317,13 @@ pub struct IdeApp {
     _serial_sub: Option<Subscription>,
     /// Agent panel (任务/子代理管理), modeled after Zed's agent panel.
     agent: Option<Entity<AgentPanel>>,
+    tools: Option<Entity<crate::external_tools::ExternalToolsPanel>>,
+    tools_store: ns_project::ToolStore,
+    tool_dialog: Option<ToolEditDialog>,
+    snippet_dialog: Option<SnippetDialog>,
+
+    tool_picker_open: bool,
+    tool_picker_selected: usize,
     _agent_sub: Option<Subscription>,
     /// Active language server, if connected.
     lsp: Option<ns_lsp::LspServer>,
@@ -1526,6 +2341,17 @@ pub struct IdeApp {
     references_open: bool,
     /// Index of the highlighted reference.
      references_selected: usize,
+    /// Call-hierarchy popup state: entries (incoming/outgoing calls) for the
+    /// symbol under the cursor, plus the current direction and selection.
+    call_hierarchy_open: bool,
+    call_hierarchy_calls: Vec<ns_lsp::CallHierarchyCall>,
+    call_hierarchy_selected: usize,
+    /// `"incoming"` or `"outgoing"` — the direction currently shown.
+    call_hierarchy_direction: String,
+    /// The raw prepared `CallHierarchyItem`, kept to re-query the other
+    /// direction without re-preparing.
+    call_hierarchy_item: Option<serde_json::Value>,
+    call_hierarchy_root: Option<ns_lsp::CallHierarchyEntry>,
       workspace_symbols: Vec<ns_lsp::WorkspaceSymbolInfo>,
     /// Whether the workspace-symbol popup is visible.
     workspace_symbol_open: bool,
@@ -1566,6 +2392,16 @@ pub struct IdeApp {
     /// tooltip was last shown. Moving away clears the popup (mirrors the
     /// signature-help anchor behaviour).
     hover_anchor: Option<(PathBuf, usize, usize)>,
+    /// Diagnostic hover: message + window-relative anchor position, set when
+    /// the mouse is over an error/warning squiggle and cleared on leave.
+    diagnostic_hover: Option<(String, Point<Pixels>)>,
+    /// Debug variable hover: pending expression + anchor position. Set when
+    /// the mouse is over an identifier while debug is stopped; the value
+    /// arrives via `DebugMessage::Evaluated` and is shown as a tooltip.
+    debug_hover: Option<(String, Point<Pixels>)>,
+    /// Resolved value/type for the current `debug_hover` expression, shown in
+    /// the hover tooltip once `Evaluated` returns.
+    debug_hover_value: Option<String>,
     /// Semantic token deltas from the last `semanticTokens/full` request.
     semantic_tokens: Vec<SemanticToken>,
     /// Document outline symbols (LSP `documentSymbol`), for the outline/breadcrumb.
@@ -1756,6 +2592,12 @@ struct SimulatorState {
     pc_edit_input: Option<gpui::Entity<crate::text_field::TextField>>,
     /// The text field used to add a breakpoint by address (hex, as typed).
     bp_input: Option<gpui::Entity<crate::text_field::TextField>>,
+    /// The text field used to edit a breakpoint's condition (address, as typed
+    /// in the row); `None` when no row is being edited.
+    bp_condition_input: Option<(u32, gpui::Entity<crate::text_field::TextField>)>,
+    /// The text field used to edit a breakpoint's hit count (address, as typed).
+    bp_hitcount_input: Option<(u32, gpui::Entity<crate::text_field::TextField>)>,
+
 }
 
 impl IdeApp {
@@ -1769,10 +2611,13 @@ impl IdeApp {
             tabs: Vec::new(),
             active_tab: None,
             split: None,
+            periph_config: None,
+            rtos_pending: None,
             expanded: HashSet::new(),
             tree_filter: String::new(),
             tree_filter_field: cx.new(|cx| TextField::new("过滤文件…", cx)),
             _tree_filter_sub: None,
+            _var_filter_sub: None,
             recents,
             recent_files: ns_project::RecentFiles::default(),
             status: "就绪".to_string(),
@@ -1794,7 +2639,15 @@ impl IdeApp {
             show_output: false,
             output_px: 260.0,
             output_tab: OutputTab::Output,
+            problem_filter: vec![
+                SeverityFilter::Error,
+                SeverityFilter::Warning,
+                SeverityFilter::Info,
+            ],
+            var_filter_field: cx.new(|cx| TextField::new("过滤变量…", cx)),
+            var_filter: String::new(),
             breakpoints: BreakpointStore::default(),
+            bookmarks: ns_project::BookmarkStore::default(),
             debug: DebugView::default(),
             debug_session: None,
             pending_debug: false,
@@ -1811,8 +2664,13 @@ impl IdeApp {
              toolchain_dialog: None,
             keybindings_dialog: None,
              external_change_dialog: None,
+             compare_dialog: None,
             git_branch_dialog: None,
             go_to_line_dialog: None,
+            project_rename_dialog: None,
+            project_delete_dialog: None,
+            confirm_close_dialog: None,
+            quit_pending: false,
              search: None,
              palette: None,
              focus_dialog_on_next_frame: false,
@@ -1833,12 +2691,25 @@ impl IdeApp {
              lsp_generation: 0,
             lsp_refresh_generation: 0,
             agent: None,
+            tools: None,
+            tools_store: ns_project::ToolStore::default(),
+            tool_dialog: None,
+            snippet_dialog: None,
+
+            tool_picker_open: false,
+            tool_picker_selected: 0,
             _agent_sub: None,
             lsp: None,
             lsp_diagnostics: HashMap::new(),
              references: Vec::new(),
             references_open: false,
              references_selected: 0,
+            call_hierarchy_open: false,
+            call_hierarchy_calls: Vec::new(),
+            call_hierarchy_selected: 0,
+            call_hierarchy_direction: "incoming".to_string(),
+            call_hierarchy_item: None,
+            call_hierarchy_root: None,
             workspace_symbols: Vec::new(),
              workspace_symbol_open: false,
             workspace_symbol_selected: 0,
@@ -1859,6 +2730,9 @@ impl IdeApp {
             signature_help: None,
             hover_tooltip: None,
             hover_anchor: None,
+            diagnostic_hover: None,
+            debug_hover: None,
+            debug_hover_value: None,
             semantic_tokens: Vec::new(),
              outline: Vec::new(),
              outline_open: false,
@@ -1888,6 +2762,11 @@ impl IdeApp {
             }
             let _ = field;
         }));
+        // Re-filter the debug variables list as the filter query changes.
+        app._var_filter_sub = Some(cx.observe(&app.var_filter_field.clone(), |this, field, cx| {
+            this.var_filter = field.read(cx).text().trim().to_string();
+            cx.notify();
+        }));
         // Re-filter the file tree as the sidebar filter query changes.
         app._tree_filter_sub = Some(cx.observe(&app.tree_filter_field.clone(), |this, field, cx| {
             this.tree_filter = field.read(cx).text().trim().to_string();
@@ -1909,6 +2788,177 @@ impl IdeApp {
         }
     }
 
+    /// Close the open project and return to the welcome screen.
+    fn close_project(&mut self, cx: &mut Context<Self>) {
+        if self.project.is_none() {
+            self.status = "没有打开的项目".to_string();
+            cx.notify();
+            return;
+        }
+        // Stop any active debug/simulation/build before discarding state.
+        if let Some(session) = self.debug_session.take() {
+            let _ = session.commands.send(DebugCommand::Stop);
+        }
+        if let Some(mut child) = self.run.child.lock().unwrap().take() {
+            let _ = child.kill();
+        }
+        self.project = None;
+        self.tabs.clear();
+        self.active_tab = None;
+        self.split = None;
+        self.diagnostics.clear();
+        self.output.clear();
+        self.show_output = false;
+        self.output_tab = OutputTab::Output;
+        self.build_state = BuildState::Idle;
+        self.debug = DebugView::default();
+        self.run = RunState::default();
+        self.context_menu = None;
+        self.tree_menu = None;
+        self.settings_dialog = None;
+        self.project_rename_dialog = None;
+        self.project_delete_dialog = None;
+        self.confirm_close_dialog = None;
+        self.palette = None;
+        self.search = None;
+        self.status = "已关闭项目".to_string();
+        cx.notify();
+    }
+
+    /// Open the "rename project" dialog (directory + `project.toml` name).
+    fn open_project_rename_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            self.status = "没有打开的项目".to_string();
+            cx.notify();
+            return;
+        };
+        let current = project.config.project.name.clone();
+        let field = cx.new(|cx| {
+            let mut field = TextField::new("新项目名称…", cx);
+            field.set_text(current, cx);
+            field
+        });
+        self.project_rename_dialog = Some(ProjectRenameDialog { field });
+        self.focus_dialog_on_next_frame = true;
+        cx.notify();
+    }
+
+    /// Apply a project rename: move the root directory and update `project.toml`.
+    fn save_project_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.project_rename_dialog.take() else {
+            return;
+        };
+        let new_name = dialog.field.read(cx).text().trim().to_string();
+        if new_name.is_empty() {
+            self.status = "项目名称不能为空".to_string();
+            cx.notify();
+            return;
+        }
+        if new_name
+            .chars()
+            .any(|ch| matches!(ch, '/' | '\\' | ':' | '\0'))
+        {
+            self.status = "项目名称不能包含路径分隔符".to_string();
+            cx.notify();
+            return;
+        }
+        let Some(project) = &self.project else {
+            return;
+        };
+        let root = project.root.clone();
+        let parent = root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let target = parent.join(&new_name);
+        if target == root {
+            cx.notify();
+            return;
+        }
+        if target.exists() {
+            self.status = format!("目标已存在: {}", target.display());
+            cx.notify();
+            return;
+        }
+        match std::fs::rename(&root, &target) {
+            Ok(()) => {}
+            Err(error) => {
+                self.status = format!("重命名目录失败: {error}");
+                cx.notify();
+                return;
+            }
+        }
+        // Update `project.toml` name field to match the new directory name.
+        let config_path = target.join("project.toml");
+        if let Ok(text) = std::fs::read_to_string(&config_path)
+            && let Ok(mut config) = toml::from_str::<ProjectConfig>(&text)
+        {
+            config.project.name = new_name.clone();
+            if let Ok(text) = toml::to_string_pretty(&config) {
+                let _ = std::fs::write(&config_path, text);
+            }
+        }
+        // Reopen at the new location so relative paths/recents stay correct.
+        if let Ok(project) = Project::open(&target) {
+            let _ = forget_project(&root);
+            let _ = remember_project(&target, &new_name);
+            self.load_project(project, cx);
+            self.status = format!("已重命名项目为 {new_name}");
+        } else {
+            self.status = format!("已重命名目录，但重新打开失败: {}", target.display());
+        }
+        cx.notify();
+    }
+
+    /// Open a confirmation dialog before deleting the project directory.
+    fn open_project_delete_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            self.status = "没有打开的项目".to_string();
+            cx.notify();
+            return;
+        };
+        self.project_delete_dialog = Some(ProjectDeleteDialog {
+            root: project.root.clone(),
+        });
+        cx.notify();
+    }
+
+    /// Confirm and delete the project directory (recursively), then close it.
+    fn confirm_project_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.project_delete_dialog.take() else {
+            return;
+        };
+        let root = dialog.root.clone();
+        // Recursively remove the project directory.
+        if let Err(error) = std::fs::remove_dir_all(&root) {
+            self.status = format!("删除项目目录失败: {error}");
+            cx.notify();
+            return;
+        }
+        let _ = forget_project(&root);
+        self.close_project(cx);
+        self.status = format!("已删除项目 {}", root.display());
+        cx.notify();
+    }
+
+    /// Regenerate `compile_commands.json` (clangd database) for the open project.
+    fn generate_compile_commands(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        match ns_build::generate_compile_commands(project) {
+            Ok(count) => {
+                self.status = format!("已生成 compile_commands.json（{count} 条编译命令）");
+            }
+            Err(error) => {
+                self.status = format!("compile_commands.json 更新失败: {error}");
+            }
+        }
+        cx.notify();
+    }
+
     fn load_project(&mut self, project: Project, cx: &mut Context<Self>) {
         let root = project.root.clone();
         let name = project.config.project.name.clone();
@@ -1917,7 +2967,9 @@ impl IdeApp {
         }
         self.recents = load_recents();
         self.breakpoints = BreakpointStore::load(&root);
-        self.recent_files = ns_project::RecentFiles::load(&root);
+        self.bookmarks = ns_project::BookmarkStore::load(&root);
+        self.bookmarks.prune_missing(&root);
+        self.tools_store = ns_project::ToolStore::load(&root);
         self.recent_files.retain_existing(&root);
 
         let entry = project.entry_file();
@@ -1941,6 +2993,9 @@ impl IdeApp {
         self.settings_dialog = None;
         self.toolchain_dialog = None;
         self.external_change_dialog = None;
+        self.project_rename_dialog = None;
+        self.project_delete_dialog = None;
+        self.confirm_close_dialog = None;
         self.search = None;
         self.palette = None;
         self.expanded.clear();
@@ -2023,6 +3078,15 @@ impl IdeApp {
                     if view.scroll_ratio > 0.0 {
                         editor.scroll_to_ratio(view.scroll_ratio, cx);
                     }
+                    if view.zoom > 0.0 {
+                        editor.set_zoom(view.zoom, cx);
+                    }
+                    if view.indent_width > 0 {
+                        editor.set_indent_width(view.indent_width, cx);
+                    }
+                    if view.word_wrap {
+                        editor.set_word_wrap(true, cx);
+                    }
                 });
             }
         }
@@ -2057,6 +3121,17 @@ impl IdeApp {
                     this.save_session(cx);
                 })
                 .ok();
+            }
+        })
+        .detach();
+        // Watch files: periodically reload clean buffers that changed on disk
+        // (and surface dirty ones via the external-change dialog). Polls every
+        // 2s; the read is cheap for the handful of open tabs.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                this.update(cx, |this, cx| this.check_external_changes(cx))
+                    .ok();
             }
         })
         .detach();
@@ -2220,11 +3295,7 @@ impl IdeApp {
                 match fs::read(&path) {
                     Ok(bytes) => {
                         let dump = hex_dump_text(&bytes);
-                        let editor = cx.new(|cx| {
-                            let mut editor = Editor::new(dump, None, cx);
-                            editor.set_read_only(true);
-                            editor
-                        });
+                        let editor = cx.new(|cx| Editor::new(dump, None, cx));
                         let breakpoint_key = self.breakpoint_key(&path);
                         // Clone the entity for subscriptions; the original is
                         // moved into the tab.
@@ -2233,6 +3304,7 @@ impl IdeApp {
                             editor,
                             path: path.clone(),
                             saved_text: String::new(),
+                            is_hex: true,
                             _subscription: cx.observe(&editor_ref, |_, _, _| {}),
                             _breakpoint_subscription: cx.subscribe(
                                 &editor_ref,
@@ -2245,6 +3317,10 @@ impl IdeApp {
                                     );
                                 },
                             ),
+                            _bookmark_subscription: cx.subscribe(
+                                &editor_ref,
+                                |_, _, _: &BookmarkToggled, _| {},
+                            ),
                             _menu_subscription: cx.subscribe(
                                 &editor_ref,
                                 |_, _, _: &BreakpointContextMenu, _| {},
@@ -2252,6 +3328,14 @@ impl IdeApp {
                             _definition_subscription: cx.subscribe(
                                 &editor_ref,
                                 |_, _, _: &DefinitionRequested, _| {},
+                            ),
+                            _diagnostic_hover_subscription: cx.subscribe(
+                                &editor_ref,
+                                |_, _, _: &DiagnosticHover, _| {},
+                            ),
+                            _hover_word_subscription: cx.subscribe(
+                                &editor_ref,
+                                |_, _, _: &HoverWord, _| {},
                             ),
                         });
                         self.active_tab = Some(self.tabs.len() - 1);
@@ -2374,9 +3458,16 @@ impl IdeApp {
         let language = Language::from_path(&path);
         let breakpoint_key = self.breakpoint_key(&path);
         let breakpoint_lines = self.breakpoints.lines(&breakpoint_key);
+        let bookmark_lines = self
+            .bookmarks
+            .for_path(&breakpoint_key)
+            .into_iter()
+            .map(|b| b.line)
+            .collect::<Vec<_>>();
         let editor = cx.new(|cx| {
             let mut editor = Editor::new(text, language, cx);
             editor.set_breakpoints(breakpoint_lines, cx);
+            editor.set_bookmarks(bookmark_lines, cx);
             editor
         });
         let version = std::cell::Cell::new(1i32);
@@ -2408,10 +3499,17 @@ impl IdeApp {
             }
             cx.notify();
         });
+        let bookmark_key = breakpoint_key.clone();
         let breakpoint_subscription = cx.subscribe(
             &editor,
             move |this, _editor, event: &BreakpointToggled, cx| {
                 this.on_breakpoint_toggled(&breakpoint_key, event.line, event.enabled, cx);
+            },
+        );
+        let bookmark_subscription = cx.subscribe(
+            &editor,
+            move |this, _editor, event: &BookmarkToggled, cx| {
+                this.on_bookmark_toggled(&bookmark_key, event.line, event.added, cx);
             },
         );
         let menu_key = self.breakpoint_key(&path);
@@ -2434,14 +3532,38 @@ impl IdeApp {
                 this.on_definition_requested(event.line, event.column, cx);
             },
         );
+        let diagnostic_hover_subscription = cx.subscribe(
+            &editor,
+            move |this, _editor, event: &DiagnosticHover, cx| {
+                match &event.message {
+                    Some(message) => {
+                        this.diagnostic_hover = Some((message.clone(), event.position));
+                    }
+                    None => {
+                        this.diagnostic_hover = None;
+                    }
+                }
+                cx.notify();
+            },
+        );
+        let hover_word_subscription = cx.subscribe(
+            &editor,
+            move |this, _editor, event: &HoverWord, cx| {
+                this.on_hover_word(event.word.clone(), event.position, cx);
+            },
+        );
         self.tabs.push(Tab {
             editor,
             path: path.clone(),
             saved_text,
+            is_hex: false,
             _subscription: subscription,
             _breakpoint_subscription: breakpoint_subscription,
+            _bookmark_subscription: bookmark_subscription,
             _menu_subscription: menu_subscription,
             _definition_subscription: definition_subscription,
+            _diagnostic_hover_subscription: diagnostic_hover_subscription,
+            _hover_word_subscription: hover_word_subscription,
         });
         self.active_tab = Some(self.tabs.len() - 1);
         if let Some(server) = &self.lsp {
@@ -2501,7 +3623,66 @@ impl IdeApp {
         if let Err(error) = self.breakpoints.save(&root) {
             self.status = format!("{}（断点保存失败: {error}）", self.status);
         }
-     }
+    }
+
+    fn on_bookmark_toggled(
+        &mut self,
+        path: &str,
+        line: usize,
+        added: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if added {
+            self.bookmarks.add(path, line, "");
+        } else {
+            self.bookmarks.remove(path, line);
+        }
+        self.status = if added {
+            format!("已添加书签 {path}:{line}")
+        } else {
+            format!("已删除书签 {path}:{line}")
+        };
+        self.persist_bookmarks();
+        cx.notify();
+    }
+
+    fn persist_bookmarks(&mut self) {
+        let Some(root) = self.project.as_ref().map(|project| project.root.clone()) else {
+            return;
+        };
+        if let Err(error) = self.bookmarks.save(&root) {
+            self.status = format!("{}（书签保存失败: {error}）", self.status);
+        }
+    }
+
+    /// Mark the breakpoint at `(path, line)` as hit when a log breakpoint's
+    /// `output` event carries the source location. Log breakpoints don't
+    /// pause, so without this the hit count would never advance; the state is
+    /// persisted so the「命中 N」badge survives a reload.
+    fn mark_log_breakpoint_hit(&mut self, path: &str, line: usize, cx: &mut Context<Self>) {
+        let relative = self
+            .project
+            .as_ref()
+            .map(|project| project.relative(Path::new(path)))
+            .filter(|relative| !relative.is_empty())
+            .unwrap_or_else(|| path.to_string());
+        let hit_before = self
+            .breakpoints
+            .find(&relative, line)
+            .map(|breakpoint| breakpoint.hits)
+            .unwrap_or(0);
+        self.breakpoints.mark_hit(&relative, line);
+        let hit_after = self
+            .breakpoints
+            .find(&relative, line)
+            .map(|breakpoint| breakpoint.hits)
+            .unwrap_or(0);
+        if hit_after != hit_before {
+            self.persist_breakpoints();
+            self.status = format!("日志断点命中: {}:{}", relative, line);
+            cx.notify();
+        }
+    }
  
     /// Persist the debug watch expressions (not their runtime values) to
     /// `.ns-ide/watch.json` so they survive a project reload.
@@ -2546,7 +3727,7 @@ impl IdeApp {
             .collect();
     }
 
-     fn save_active(&mut self, cx: &mut Context<Self>) {
+    fn save_active(&mut self, cx: &mut Context<Self>) {
         let Some(index) = self.active_tab else {
             self.status = "没有可保存的文件".to_string();
             cx.notify();
@@ -2556,37 +3737,274 @@ impl IdeApp {
             return;
         };
         let path = tab.path.clone();
+        let is_hex = tab.is_hex;
+        let buffer_text: String = tab.editor.read(cx).text().to_string();
+        // Hex-view tabs save the parsed bytes, not the dump text.
+        if is_hex {
+            self.write_hex_tab(index, &path, &buffer_text, cx);
+            return;
+        }
+        // Format-on-save: when enabled and an LSP is active for this file,
+        // request formatting, apply the edits to the buffer, then write. The
+        // LSP round-trip is async; `format_and_save_tab` resumes the write.
+        if ns_project::IdeSettings::load().format_on_save
+            && self.lsp.is_some()
+            && !buffer_text.trim().is_empty()
+        {
+            self.format_and_save_tab(index, &path, cx);
+            return;
+        }
+        self.write_text_tab(index, &path, &buffer_text, cx);
+        self.save_split_pane(cx);
+    }
+
+    /// Write a hex-view tab's parsed bytes to disk and mark it saved.
+    fn write_hex_tab(&mut self, index: usize, path: &Path, buffer_text: &str, cx: &mut Context<Self>) {
+        match parse_hex_dump_bytes(buffer_text) {
+            Ok(bytes) => match fs::write(path, &bytes) {
+                Ok(()) => {
+                    let tab = self.tabs.get_mut(index).expect("tab checked above");
+                    tab.saved_text = buffer_text.to_string();
+                    tab.editor.update(cx, |editor, _cx| editor.mark_saved());
+                    self.status = format!(
+                        "已保存 {}（{} 字节）",
+                        self.display_path(path),
+                        bytes.len()
+                    );
+                }
+                Err(error) => {
+                    self.status = format!("保存失败: {error}");
+                }
+            },
+            Err(error) => {
+                self.status = format!("hex 内容无效，未保存: {error}");
+            }
+        }
+        cx.notify();
+    }
+
+    /// Write a text tab to disk, detecting external modification first.
+    fn write_text_tab(&mut self, index: usize, path: &Path, buffer_text: &str, cx: &mut Context<Self>) {
         // Detect external modification: compare the on-disk content against the
         // content as loaded/last saved. When it differs, ask before overwriting.
-        let buffer_text: String = tab.editor.read(cx).text().to_string();
         let normalized = buffer_text.replace("\r\n", "\n").replace('\r', "\n");
-        let disk_text = fs::read_to_string(&path)
+        let disk_text = fs::read_to_string(path)
             .ok()
             .map(|text| text.replace("\r\n", "\n").replace('\r', "\n"));
-        if let Some(disk) = &disk_text
+        if let Some(tab) = self.tabs.get(index)
+            && let Some(disk) = &disk_text
             && *disk != tab.saved_text
         {
             self.external_change_dialog = Some(ExternalChangeDialog {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 disk_text: disk.clone(),
             });
             self.status = "文件已在磁盘上被外部修改".to_string();
             cx.notify();
             return;
         }
-        match fs::write(&path, buffer_text) {
+        match fs::write(path, buffer_text) {
             Ok(()) => {
                 let tab = self.tabs.get_mut(index).expect("tab checked above");
                 tab.saved_text = normalized;
                 tab.editor.update(cx, |editor, _cx| editor.mark_saved());
-                self.status = format!("已保存 {}", self.display_path(&path));
+                self.status = format!("已保存 {}", self.display_path(path));
             }
             Err(error) => {
                 self.status = format!("保存失败: {error}");
             }
         }
         cx.notify();
-        self.save_split_pane(cx);
+    }
+
+    /// Format-on-save: request LSP formatting, apply the edits to the buffer,
+    /// then write to disk (re-checking external modification). The write is
+    /// deferred until the LSP responds so the disk gets the formatted text.
+    fn format_and_save_tab(&mut self, index: usize, path: &Path, cx: &mut Context<Self>) {
+        let path = path.to_path_buf();
+        let text = self
+            .tabs
+            .get(index)
+            .map(|t| t.editor.read(cx).text().to_string())
+            .unwrap_or_default();
+        let Some(server) = self.lsp.as_ref() else {
+            self.write_text_tab(index, &path, &text, cx);
+            self.save_split_pane(cx);
+            return;
+        };
+        let Ok(rx) = server.formatting(path.clone()) else {
+            self.status = "格式化请求失败，未保存".to_string();
+            cx.notify();
+            return;
+        };
+        self.status = "格式化后保存…".to_string();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
+            this.update(cx, |this, cx| {
+                if let Some(response) = response {
+                    let edits = ns_lsp::parse_format_edits(&response, &path);
+                    if !edits.is_empty() {
+                        if let Some(editor) = this.active_editor_for_path(&path) {
+                            editor.update(cx, |editor, cx| {
+                                for edit in edits {
+                                    editor.apply_text_edit(
+                                        edit.start_line,
+                                        edit.start_char,
+                                        edit.end_line,
+                                        edit.end_char,
+                                        &edit.new_text,
+                                    );
+                                }
+                                cx.notify();
+                            });
+                        }
+                    }
+                }
+                // Re-read the (now formatted) buffer and write it.
+                let text = this
+                    .tabs
+                    .get(index)
+                    .map(|t| t.editor.read(cx).text().to_string())
+                    .unwrap_or_default();
+                this.write_text_tab(index, &path, &text, cx);
+                this.save_split_pane(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Find the active editor entity for a path (the main or split pane editor).
+    fn active_editor_for_path(&self, path: &Path) -> Option<gpui::Entity<Editor>> {
+        if let Some(tab) = self.tabs.iter().find(|tab| tab.path == path) {
+            return Some(tab.editor.clone());
+        }
+        None
+    }
+
+
+    /// Save every dirty editor tab, honoring the save-before-build preference.
+    /// When disabled, skips saving (the build reads the on-disk source) and
+    /// warns in the status bar instead of forcing a save.
+    fn save_before_operation(&mut self, cx: &mut Context<Self>) -> bool {
+        let dirty = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.editor.read(cx).is_dirty())
+            .count();
+        if dirty == 0 {
+            return true;
+        }
+        if ns_project::IdeSettings::load().save_before_build {
+            return self.save_all_editors(cx);
+        }
+        self.status = format!("有 {dirty} 个未保存文件（保存前构建已关闭，将使用磁盘内容）");
+        cx.notify();
+        true
+    }
+
+
+    /// Save every dirty editor tab (and the split pane) before an operation
+    /// that reads sources from disk (build/run/flash/debug/tests/analysis).
+    /// Returns `false` when any file failed to save (hex parse error, write
+    /// error, or an external modification conflict), so the caller can abort
+    /// the operation instead of silently building stale code.
+    fn save_all_editors(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut saved = 0usize;
+        let mut failed = false;
+        let dirty: Vec<usize> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| tab.editor.read(cx).is_dirty())
+            .map(|(index, _)| index)
+            .collect();
+        for index in dirty {
+            let (path, is_hex, buffer_text) = {
+                let tab = &self.tabs[index];
+                (
+                    tab.path.clone(),
+                    tab.is_hex,
+                    tab.editor.read(cx).text().to_string(),
+                )
+            };
+            if is_hex {
+                match parse_hex_dump_bytes(&buffer_text) {
+                    Ok(bytes) => match fs::write(&path, &bytes) {
+                        Ok(()) => {
+                            let tab = &mut self.tabs[index];
+                            tab.saved_text = buffer_text.clone();
+                            tab.editor.update(cx, |editor, _cx| editor.mark_saved());
+                            saved += 1;
+                        }
+                        Err(error) => {
+                            self.status = format!("保存 {} 失败: {error}", path.display());
+                            failed = true;
+                        }
+                    },
+                    Err(error) => {
+                        self.status = format!("hex 内容无效，未保存 {}: {error}", path.display());
+                        failed = true;
+                    }
+                }
+                continue;
+            }
+            let normalized = buffer_text.replace("\r\n", "\n").replace('\r', "\n");
+            let disk_text = fs::read_to_string(&path)
+                .ok()
+                .map(|text| text.replace("\r\n", "\n").replace('\r', "\n"));
+            if let Some(disk) = &disk_text
+                && *disk != self.tabs[index].saved_text
+            {
+                // External modification: keep the buffer dirty and surface it.
+                self.external_change_dialog = Some(ExternalChangeDialog {
+                    path: path.clone(),
+                    disk_text: disk.clone(),
+                });
+                self.status = format!("文件已在磁盘上被外部修改: {}", path.display());
+                failed = true;
+                continue;
+            }
+            match fs::write(&path, &buffer_text) {
+                Ok(()) => {
+                    let tab = &mut self.tabs[index];
+                    tab.saved_text = normalized;
+                    tab.editor.update(cx, |editor, _cx| editor.mark_saved());
+                    saved += 1;
+                }
+                Err(error) => {
+                    self.status = format!("保存 {} 失败: {error}", path.display());
+                    failed = true;
+                }
+            }
+        }
+        // The split pane is part of the project's sources too.
+        if let Some(split) = &self.split
+            && split.editor.read(cx).is_dirty()
+        {
+            let path = split.path.clone();
+            let buffer_text = split.editor.read(cx).text().to_string();
+            let normalized = buffer_text.replace("\r\n", "\n").replace('\r', "\n");
+            match fs::write(&path, &buffer_text) {
+                Ok(()) => {
+                    if let Some(split) = &mut self.split {
+                        split.saved_text = normalized;
+                        split.editor.update(cx, |editor, _cx| editor.mark_saved());
+                    }
+                    saved += 1;
+                }
+                Err(error) => {
+                    self.status = format!("保存 {} 失败: {error}", path.display());
+                    failed = true;
+                }
+            }
+        }
+        if saved > 0 && !failed {
+            self.status = format!("已保存 {saved} 个文件");
+        }
+        cx.notify();
+        !failed
     }
 
     /// Save the split editor pane if it is dirty (and not externally changed).
@@ -2640,6 +4058,43 @@ impl IdeApp {
             });
         }
         self.lsp_go_to_definition(cx);
+    }
+
+    /// Handle an identifier hover from the editor. When a debug session is
+    /// stopped, request the variable's current value (`Evaluate`); otherwise
+    /// clear any stale debug hover so the LSP hover takes over.
+    fn on_hover_word(&mut self, word: Option<String>, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(word) = word else {
+            self.debug_hover = None;
+            self.debug_hover_value = None;
+            cx.notify();
+            return;
+        };
+        if !matches!(self.debug.status, DebugStatus::Stopped { .. }) {
+            // No stopped session: the LSP hover handles symbol docs.
+            self.debug_hover = None;
+            self.debug_hover_value = None;
+            cx.notify();
+            return;
+        }
+        if self
+            .debug_hover
+            .as_ref()
+            .map(|(expr, _)| expr == &word)
+            .unwrap_or(false)
+        {
+            // Already hovering this word; keep the current value.
+            return;
+        }
+        self.debug_hover = Some((word.clone(), position));
+        self.debug_hover_value = None;
+        if let Some(session) = &self.debug_session {
+            let _ = session.commands.send(DebugCommand::Evaluate {
+                expression: word,
+                scope_name: "hover".to_string(),
+            });
+        }
+        cx.notify();
     }
 
     /// Keep the file's disk content and reload it into the editor, discarding
@@ -2702,6 +4157,252 @@ impl IdeApp {
         cx.notify();
     }
 
+    /// Scan every open editor tab (and the split pane) for files that changed
+    /// on disk since they were loaded or last saved. Clean buffers are
+    /// reloaded silently (this is the "watch files / autoreload on external
+    /// change" behaviour every desktop IDE has). Dirty buffers are left
+    /// untouched and the external-change dialog is opened once, so the user
+    /// decides whether to reload or keep their edits.
+    fn check_external_changes(&mut self, cx: &mut Context<Self>) {
+        if self.external_change_dialog.is_some() {
+            return;
+        }
+        // Snapshot the tabs to avoid holding a borrow across the reload.
+        let mut changed_dirty: Option<PathBuf> = None;
+        let mut reloads: Vec<(usize, String)> = Vec::new();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if tab.is_hex {
+                continue;
+            }
+            let disk = fs::read_to_string(&tab.path)
+                .ok()
+                .map(|text| text.replace("\r\n", "\n").replace('\r', "\n"));
+            let Some(disk) = disk else {
+                continue;
+            };
+            if disk == tab.saved_text {
+                continue;
+            }
+            if tab.editor.read(cx).is_dirty() {
+                if changed_dirty.is_none() {
+                    changed_dirty = Some(tab.path.clone());
+                }
+            } else {
+                reloads.push((index, disk));
+            }
+        }
+        let reloaded = !reloads.is_empty();
+        for (index, disk) in reloads {
+            let Some(tab) = self.tabs.get_mut(index) else {
+                continue;
+            };
+            let path = tab.path.clone();
+            tab.saved_text = disk.clone();
+            tab.editor.update(cx, |editor, cx| {
+                editor.reload_text(&disk, cx);
+                editor.mark_saved();
+            });
+            self.status = format!("已从磁盘重新加载（外部变更）: {}", self.display_path(&path));
+        }
+        if let Some(path) = changed_dirty {
+            let disk_text = fs::read_to_string(&path)
+                .ok()
+                .map(|text| text.replace("\r\n", "\n").replace('\r', "\n"))
+                .unwrap_or_default();
+            self.external_change_dialog = Some(ExternalChangeDialog { path, disk_text });
+            self.status = "文件已在磁盘上被外部修改".to_string();
+            cx.notify();
+        } else if reloaded {
+            cx.notify();
+        }
+    }
+
+    /// Compare the active editor's buffer against the on-disk content and show
+    /// the result in a modal. Reports honestly when there is no active editor,
+    /// the file cannot be read, or the two versions are identical.
+    fn compare_active_with_disk(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.active_tab else {
+            self.status = "没有活动的编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(tab) = self.tabs.get(index) else {
+            self.status = "没有活动的编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        let path = tab.path.clone();
+        let buffer = tab.editor.read(cx).text().to_string();
+        let Ok(disk) = std::fs::read_to_string(&path) else {
+            self.status = format!("无法读取磁盘内容: {}", path.display());
+            cx.notify();
+            return;
+        };
+        let ops = diff::diff_lines(&disk, &buffer);
+        if ops.is_empty() {
+            self.status = format!("{} 与磁盘内容一致", self.display_path(&path));
+            cx.notify();
+            return;
+        }
+        let changed = ops
+            .iter()
+            .filter(|op| !matches!(op, diff::DiffOp::Context(_)))
+            .count();
+        self.compare_dialog = Some(CompareDialog {
+            path,
+            text: diff::render_diff(&ops),
+            changed,
+        });
+        cx.notify();
+    }
+
+    /// Close the compare dialog.
+    fn close_compare_dialog(&mut self, cx: &mut Context<Self>) {
+        self.compare_dialog = None;
+        cx.notify();
+    }
+
+    /// Toggle a problem severity in the panel filter. When toggling off the
+    /// last enabled severity, all are re-enabled (a panel can never show
+    /// nothing); when toggling on one that is already the only one, it is left
+    /// on so at least one severity always shows.
+    fn toggle_problem_filter(&mut self, severity: SeverityFilter, cx: &mut Context<Self>) {
+        if let Some(position) = self.problem_filter.iter().position(|s| *s == severity) {
+            if self.problem_filter.len() > 1 {
+                self.problem_filter.remove(position);
+            }
+        } else {
+            self.problem_filter.push(severity);
+        }
+        cx.notify();
+    }
+
+    /// Whether a problem severity is currently shown in the panel.
+    fn problem_severity_shown(&self, severity: SeverityFilter) -> bool {
+        self.problem_filter.contains(&severity)
+    }
+
+    /// Filter a build diagnostic by the active severity filter.
+    fn build_problem_shown(&self, severity: Severity) -> bool {
+        match severity {
+            Severity::Error => self.problem_severity_shown(SeverityFilter::Error),
+            Severity::Warning => self.problem_severity_shown(SeverityFilter::Warning),
+            Severity::Info => self.problem_severity_shown(SeverityFilter::Info),
+        }
+    }
+
+    /// Filter an LSP diagnostic by the active severity filter.
+    fn lsp_problem_shown(&self, severity: ns_lsp::LspSeverity) -> bool {
+        match severity {
+            ns_lsp::LspSeverity::Error => self.problem_severity_shown(SeverityFilter::Error),
+            ns_lsp::LspSeverity::Warning => self.problem_severity_shown(SeverityFilter::Warning),
+            ns_lsp::LspSeverity::Information | ns_lsp::LspSeverity::Hint => {
+                self.problem_severity_shown(SeverityFilter::Info)
+            }
+        }
+    }
+
+    /// Render the severity filter pills for the problems panel header. Each
+    /// pill toggles one severity; the count of diagnostics for that severity is
+    /// shown as a badge.
+    fn render_problem_filter_bar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let counts = (
+            self.diagnostics.iter().filter(|d| d.severity == Severity::Error).count()
+                + self
+                    .lsp_diagnostics
+                    .values()
+                    .flatten()
+                    .filter(|d| d.severity == ns_lsp::LspSeverity::Error)
+                    .count(),
+            self.diagnostics.iter().filter(|d| d.severity == Severity::Warning).count()
+                + self
+                    .lsp_diagnostics
+                    .values()
+                    .flatten()
+                    .filter(|d| d.severity == ns_lsp::LspSeverity::Warning)
+                    .count(),
+            self.diagnostics.iter().filter(|d| d.severity == Severity::Info).count()
+                + self
+                    .lsp_diagnostics
+                    .values()
+                    .flatten()
+                    .filter(|d| {
+                        matches!(
+                            d.severity,
+                            ns_lsp::LspSeverity::Information | ns_lsp::LspSeverity::Hint
+                        )
+                    })
+                    .count(),
+        );
+        let pill = |id: &'static str,
+                    label: &str,
+                    active: bool,
+                    count: usize,
+                    severity: SeverityFilter| {
+            let color = if active {
+                theme::color(theme::TEXT)
+            } else {
+                theme::color(theme::TEXT_FAINT)
+            };
+            let bg = if active {
+                theme::alpha(theme::ACCENT, 0.16)
+            } else {
+                theme::alpha(theme::STROKE, 0.06)
+            };
+            div()
+                .id(id)
+                .px(px(8.))
+                .py(px(2.))
+                .rounded_full()
+                .text_size(px(9.5))
+                .cursor_pointer()
+                .bg(bg)
+                .text_color(color)
+                .hover(|style| style.bg(theme::alpha(theme::STROKE, 0.14)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_problem_filter(severity, cx);
+                }))
+                .child(format!("{label} {count}"))
+                .into_any_element()
+        };
+        let error_active = self.problem_severity_shown(SeverityFilter::Error);
+        let warning_active = self.problem_severity_shown(SeverityFilter::Warning);
+        let info_active = self.problem_severity_shown(SeverityFilter::Info);
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .px(px(10.))
+            .py(px(6.))
+            .border_b_1()
+            .border_color(theme::alpha(theme::STROKE, 0.08))
+            .child(
+                pill("prob-filter-error", "错误", error_active, counts.0, SeverityFilter::Error)
+                    .into_any_element(),
+            )
+            .child(
+                pill("prob-filter-warning", "警告", warning_active, counts.1, SeverityFilter::Warning)
+                    .into_any_element(),
+            )
+            .child(
+                pill("prob-filter-info", "信息", info_active, counts.2, SeverityFilter::Info)
+                    .into_any_element(),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .into_any_element(),
+            )
+            .child(
+                div()
+                    .text_size(px(9.5))
+                    .text_color(theme::color(theme::TEXT_FAINT))
+                    .child("严重级别过滤")
+                    .into_any_element(),
+            )
+            .into_any_element()
+    }
+
     /// One-line summary of the divergence shown in the external-change dialog.
     fn file_changed_dialog_diff(&self, cx: &gpui::App, dialog: &ExternalChangeDialog) -> gpui::AnyElement {
         let buffer = self
@@ -2732,6 +4433,12 @@ impl IdeApp {
     }
 
     fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.request_close_tabs(vec![index], CloseMode::Single, cx);
+    }
+
+    /// Remove a tab immediately (no dirty check); callers must have resolved
+    /// unsaved changes first. Bookkeeping matches the tab's disappearance.
+    fn close_tab_raw(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.tabs.len() {
             return;
         }
@@ -2754,10 +4461,81 @@ impl IdeApp {
             }
              _ => {}
          }
-        // Remove the tab from the list; the `active_tab` bookkeeping above
-        // already accounts for the shift (it assumed the tab disappears).
         self.tabs.remove(index);
          self.focus_on_next_frame = true;
+        cx.notify();
+    }
+
+    /// Request closing `indices`. Dirty tabs trigger a save/discard/cancel
+    /// dialog (one for the whole batch); clean tabs close immediately.
+    fn request_close_tabs(&mut self, indices: Vec<usize>, mode: CloseMode, cx: &mut Context<Self>) {
+        if indices.is_empty() {
+            return;
+        }
+        let dirty: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|&i| i < self.tabs.len() && self.tabs[i].editor.read(cx).is_dirty())
+            .collect();
+        if dirty.is_empty() {
+            self.perform_close(indices, cx);
+            return;
+        }
+        self.confirm_close_dialog = Some(ConfirmCloseDialog {
+            indices,
+            close_all: mode == CloseMode::All,
+        });
+        self.focus_dialog_on_next_frame = true;
+        cx.notify();
+    }
+
+    /// Actually remove the given tab indices (descending so earlier removals
+    /// do not shift later indices).
+    fn perform_close(&mut self, indices: Vec<usize>, cx: &mut Context<Self>) {
+        let mut sorted: Vec<usize> = indices.into_iter().filter(|&i| i < self.tabs.len()).collect();
+        sorted.sort_by(|a, b| b.cmp(a));
+        sorted.dedup();
+        for i in sorted {
+            self.close_tab_raw(i, cx);
+        }
+    }
+    /// Resolve the close dialog: `save` writes all dirty buffers first and
+    /// aborts if any file cannot be saved; `discard` drops the edits.
+    fn resolve_close_dialog(&mut self, save: bool, cx: &mut Context<Self>) {
+        let Some(dialog) = self.confirm_close_dialog.take() else {
+            return;
+        };
+        if save && !self.save_all_editors(cx) {
+            self.status = format!("已取消关闭：{}", self.status);
+            cx.notify();
+            return;
+        }
+        if dialog.close_all {
+            self.close_all_tabs_raw(cx);
+        } else {
+            self.perform_close(dialog.indices, cx);
+        }
+        if self.quit_pending {
+            self.quit_pending = false;
+            cx.quit();
+        }
+    }
+
+    /// Quit the app, first prompting to save/discard any unsaved edits.
+    fn request_quit(&mut self, cx: &mut Context<Self>) {
+        let dirty: Vec<usize> = (0..self.tabs.len())
+            .filter(|&i| self.tabs[i].editor.read(cx).is_dirty())
+            .collect();
+        if dirty.is_empty() {
+            cx.quit();
+            return;
+        }
+        self.quit_pending = true;
+        self.confirm_close_dialog = Some(ConfirmCloseDialog {
+            indices: (0..self.tabs.len()).collect(),
+            close_all: true,
+        });
+        self.focus_dialog_on_next_frame = true;
         cx.notify();
     }
 
@@ -2773,7 +4551,7 @@ impl IdeApp {
             cx.notify();
          }
      }
- 
+
     /// Close every tab except `keep`. The active tab is re-selected from the
     /// survivors (prefer the kept tab, then the nearest remaining).
     fn close_other_tabs(&mut self, keep: usize, cx: &mut Context<Self>) {
@@ -2783,50 +4561,52 @@ impl IdeApp {
         }
          let keep_path = self.tabs.get(keep).map(|tab| tab.path.clone());
         // Close by path so index shifts from each removal don't skip tabs.
-        let to_close: Vec<PathBuf> = self
+        let to_close: Vec<usize> = self
             .tabs
             .iter()
             .enumerate()
             .filter(|(index, _)| *index != keep)
-            .map(|(_, tab)| tab.path.clone())
+            .map(|(index, _)| index)
             .collect();
-        for path in to_close {
-            if let Some(index) = self.tabs.iter().position(|tab| tab.path == path) {
-                self.close_tab(index, cx);
+        self.tab_menu = None;
+        self.request_close_tabs(to_close, CloseMode::Batch, cx);
+        // Re-select the kept tab (its index may have shifted). Only when the
+        // close resolved immediately; a pending dirty dialog defers this to
+        // `perform_close`, which recomputes the active tab as tabs disappear.
+        if self.confirm_close_dialog.is_none() {
+            if let Some(path) = keep_path {
+                if let Some(new_index) = self.tabs.iter().position(|tab| tab.path == path) {
+                    self.active_tab = Some(new_index);
+                }
             }
         }
-         // Re-select the kept tab (its index may have shifted).
-         if let Some(path) = keep_path {
-             if let Some(new_index) = self.tabs.iter().position(|tab| tab.path == path) {
-                 self.active_tab = Some(new_index);
-             }
-         }
-        self.tab_menu = None;
-        cx.notify();
     }
 
     /// Close every tab to the right of `index` (inclusive).
     fn close_tabs_to_right(&mut self, index: usize, cx: &mut Context<Self>) {
-        let mut to_close: Vec<usize> = (index..self.tabs.len()).collect();
-        to_close.sort_by(|a, b| b.cmp(a));
-        for i in to_close {
-            self.close_tab(i, cx);
-        }
+        let to_close: Vec<usize> = (index..self.tabs.len()).collect();
         self.tab_menu = None;
-        cx.notify();
+        self.request_close_tabs(to_close, CloseMode::Batch, cx);
     }
 
-    /// Close every tab.
-    fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
+    /// Close every tab (raw; used after the save/discard decision).
+    fn close_all_tabs_raw(&mut self, cx: &mut Context<Self>) {
         let count = self.tabs.len();
         for i in (0..count).rev() {
-            self.close_tab(i, cx);
+            self.close_tab_raw(i, cx);
         }
         self.tab_menu = None;
         cx.notify();
     }
 
-     /// Persist the current set of open files and active tab to
+    /// Close every tab, prompting once for any unsaved changes.
+    fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
+        let indices: Vec<usize> = (0..self.tabs.len()).collect();
+        self.tab_menu = None;
+        self.request_close_tabs(indices, CloseMode::All, cx);
+    }
+
+    /// Persist the current set of open files and active tab to
     /// `.ns-ide/session.json`. Best-effort; failures are reported to the
     /// status bar so the user knows the session may not restore.
     fn save_session(&mut self, cx: &mut Context<Self>) {
@@ -2860,6 +4640,9 @@ impl IdeApp {
                     path,
                     cursor: Some(editor.cursor_line_col()),
                     scroll_ratio: editor.scroll_ratio(),
+                    zoom: editor.zoom(),
+                    indent_width: editor.indent_width(),
+                    word_wrap: editor.word_wrap(),
                 })
             })
             .collect();
@@ -2879,6 +4662,7 @@ impl IdeApp {
             cx.notify();
         }
     }
+
 
     fn next_tab(&mut self, forward: bool, cx: &mut Context<Self>) {
         if self.tabs.is_empty() {
@@ -2913,6 +4697,34 @@ impl IdeApp {
     fn close_find_in_file(&mut self, cx: &mut Context<Self>) {
         if let Some(editor) = self.active_editor() {
             editor.update(cx, |editor, cx| editor.close_find(cx));
+        }
+    }
+
+    /// Adjust the active editor's zoom by `delta` (0.1 per step), clamped to
+    /// 0.5..=2.0 by the editor itself. `Cmd/Ctrl+=` / `Cmd/Ctrl+-` zoom in and
+    /// out; `Cmd/Ctrl+0` resets to 100%.
+    fn set_editor_zoom(&mut self, delta: f32, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            let zoom = editor.read(cx).zoom();
+            let target = if delta == 0.0 { 1.0 } else { zoom + delta };
+            editor.update(cx, |editor, cx| editor.set_zoom(target, cx));
+        }
+    }
+
+    /// Set the active editor's indent width (2/4/8 spaces). Only affects new
+    /// Tab/auto-indent steps; existing text is left as-is.
+    fn set_editor_indent_width(&mut self, width: usize, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| editor.set_indent_width(width, cx));
+        }
+    }
+
+    /// Toggle soft word wrap on the active editor.
+    fn toggle_editor_word_wrap(&mut self, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| {
+                editor.set_word_wrap(!editor.word_wrap(), cx);
+            });
         }
     }
 
@@ -3219,9 +5031,22 @@ impl IdeApp {
     }
 
     fn start_build(&mut self, run_after: bool, cx: &mut Context<Self>) {
-        let Some(project) = self.project.as_ref() else {
+        if self.project.is_none() {
             self.status = "请先打开项目".to_string();
             cx.notify();
+            return;
+        }
+        // Save unsaved buffers before the build unless the user disabled
+        // save-before-build; the build reads sources from disk, so stale edits
+        // must not be silently compiled (or silently skipped — the setting
+        // warns in the status bar when dirty buffers remain).
+        if !self.save_before_operation(cx) {
+            self.status = format!("已取消构建：{}", self.status);
+            cx.notify();
+            return;
+        }
+
+        let Some(project) = self.project.as_ref() else {
             return;
         };
         // Refresh the clangd `compile_commands.json` so the C/C++ language
@@ -3538,12 +5363,14 @@ impl IdeApp {
                     name: name.clone(),
                     purpose: "GPIO 端口配置".to_string(),
                     options: Vec::new(),
+                    register_values: BTreeMap::new(),
                 });
             } else if is_uart && !configs.iter().any(|c| c.name.to_ascii_uppercase().contains("UART")) {
                 configs.push(ns_device::PeripheralConfig {
                     name: name.clone(),
                     purpose: "调试串口".to_string(),
                     options: Vec::new(),
+                    register_values: BTreeMap::new(),
                 });
             }
         }
@@ -3553,12 +5380,197 @@ impl IdeApp {
                 configs.push(ns_device::PeripheralConfig {
                     name: name.clone(),
                     purpose: String::new(),
+                    register_values: BTreeMap::new(),
                     options: Vec::new(),
                 });
             }
         }
         let Some(code) = ns_device::generate_peripheral_init(&target, &configs) else {
             self.status = format!("生成外设初始化代码失败（{target}）。");
+            cx.notify();
+            return;
+        };
+        let root = project.root.clone();
+        let path = root.join("src").join("peripheral_init.c");
+        let _ = std::fs::create_dir_all(root.join("src"));
+        if let Err(error) = std::fs::write(&path, &code) {
+            self.status = format!("写入 {} 失败: {error}", path.display());
+            cx.notify();
+            return;
+        }
+        self.open_file(path.clone(), cx);
+        self.status = format!(
+            "已生成外设初始化代码：{}（{} 个外设）",
+            path.display(),
+            configs.len()
+        );
+        self.show_output = true;
+        self.output_tab = OutputTab::Output;
+        self.output.push_str(&format!(
+            "已生成外设初始化代码：{}（{} 个外设：{}）\n",
+            path.display(),
+            configs.len(),
+            configs
+                .iter()
+                .map(|c| c.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        cx.notify();
+    }
+
+    /// Open the CubeMX-style graphical peripheral configuration modal. Items
+    /// are seeded from the target's SVD peripheral list; GPIO ports get 16
+    /// pins, UARTs get a baud field.
+    fn open_peripheral_config(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let target = project.config.project.target.trim().to_string();
+        if target.is_empty() {
+            self.status = "项目未设置目标设备；请先在「设备」页或「项目设置」中选择 MCU。".to_string();
+            cx.notify();
+            return;
+        }
+        let names = ns_device::peripheral_names(&target);
+        if names.is_empty() {
+            self.status = format!("目标设备「{target}」没有可用的 SVD 外设列表。");
+            cx.notify();
+            return;
+        }
+        let items = names
+            .into_iter()
+            .map(|name| {
+                let upper = name.to_ascii_uppercase();
+                let is_gpio = upper.starts_with("GPIO");
+                let is_uart = upper.contains("USART") || upper.contains("UART");
+                PeriphConfigItem {
+                    name,
+                    enabled: false,
+                    pins: if is_gpio {
+                        vec![PinMode::InputFloat; 16]
+                    } else {
+                        Vec::new()
+                    },
+                    baud: if is_uart { "115200".to_string() } else { String::new() },
+                }
+            })
+            .collect();
+        self.periph_config = Some(PeriphConfigState {
+            target,
+            items,
+            selected_pinout: None,
+        });
+
+        cx.notify();
+    }
+
+    fn close_peripheral_config(&mut self, cx: &mut Context<Self>) {
+        self.periph_config = None;
+        cx.notify();
+    }
+
+    /// Toggle a peripheral row's enabled flag.
+    fn toggle_periph_enabled(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(state) = self.periph_config.as_mut() {
+            if let Some(item) = state.items.get_mut(index) {
+                item.enabled = !item.enabled;
+                // Auto-select GPIO ports for the pinout diagram.
+                if item.enabled && item.name.to_ascii_uppercase().starts_with("GPIO") {
+                    state.selected_pinout = Some(index);
+                }
+                cx.notify();
+            }
+        }
+
+    }
+
+    /// Select a GPIO peripheral to show in the chip pinout diagram.
+    fn select_pinout_periph(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(state) = self.periph_config.as_mut() {
+            let is_gpio = state
+                .items
+                .get(index)
+                .map(|item| item.name.to_ascii_uppercase().starts_with("GPIO"))
+                .unwrap_or(false);
+            if is_gpio {
+                state.selected_pinout = Some(index);
+                cx.notify();
+            }
+        }
+    }
+
+
+    /// Cycle a GPIO pin's mode through the available modes.
+    fn cycle_periph_pin(&mut self, index: usize, pin: usize, cx: &mut Context<Self>) {
+        if let Some(state) = self.periph_config.as_mut() {
+            if let Some(item) = state.items.get_mut(index) {
+                if let Some(current) = item.pins.get_mut(pin) {
+                    let modes = PinMode::all();
+                    let next = modes
+                        .iter()
+                        .position(|mode| mode == current)
+                        .map(|position| modes[(position + 1) % modes.len()])
+                        .unwrap_or(PinMode::InputFloat);
+                    *current = next;
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Build `PeripheralConfig`s from the modal state and generate real init
+    /// code. GPIO ports map their pin modes to STM32F1 `CRL`/`CRH` nibbles;
+    /// UARTs emit a `BRR` write (best-effort at 72 MHz).
+    fn generate_peripheral_config_code(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.periph_config.take() else {
+            return;
+        };
+        let target = state.target.clone();
+        let mut configs: Vec<ns_device::PeripheralConfig> = Vec::new();
+        for item in state.items.iter().filter(|item| item.enabled) {
+            let upper = item.name.to_ascii_uppercase();
+            let mut register_values = BTreeMap::new();
+            if !item.pins.is_empty() {
+                let (crl, crh) = stm32f1_gpio_registers(&item.pins);
+                register_values.insert("CRL".to_string(), crl);
+                register_values.insert("CRH".to_string(), crh);
+            } else if upper.contains("USART") || upper.contains("UART") {
+                if let Ok(baud) = item.baud.trim().parse::<u64>() {
+                    if baud > 0 {
+                        // 72 MHz / baud, rounded; emitted as a starting point.
+                        let brr = (72_000_000u64 / baud).clamp(1, 0xFFFF);
+                        register_values.insert("BRR".to_string(), brr);
+                    }
+                }
+            }
+            configs.push(ns_device::PeripheralConfig {
+                name: item.name.clone(),
+                purpose: if !item.pins.is_empty() {
+                    "GPIO 端口配置".to_string()
+                } else if upper.contains("USART") || upper.contains("UART") {
+                    format!("串口 {} baud", item.baud)
+                } else {
+                    String::new()
+                },
+                options: Vec::new(),
+                register_values,
+            });
+        }
+        if configs.is_empty() {
+            self.status = "未选择任何外设；请先勾选要配置的外设。".to_string();
+            cx.notify();
+            return;
+        }
+        let Some(code) = ns_device::generate_peripheral_init(&target, &configs) else {
+            self.status = format!("生成外设初始化代码失败（{target}）。");
+            cx.notify();
+            return;
+        };
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
             cx.notify();
             return;
         };
@@ -3609,9 +5621,18 @@ impl IdeApp {
     }
 
     fn start_static_analysis(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = self.project.as_ref() else {
+        if self.project.is_none() {
             self.status = "请先打开项目".to_string();
             cx.notify();
+            return;
+        }
+        if !self.save_before_operation(cx) {
+            self.status = format!("已取消静态分析：{}", self.status);
+            cx.notify();
+            return;
+        }
+
+        let Some(project) = self.project.as_ref() else {
             return;
         };
         let Some(plan) = ns_build::plan_static_analysis(project) else {
@@ -3922,9 +5943,18 @@ impl IdeApp {
     /// Run the project's unit tests (F4.1 单测集成) via the language's test
     /// runner (`cargo test` / `ctest` / `make test` / `zig build test`).
     fn start_tests(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = self.project.as_ref() else {
+        if self.project.is_none() {
             self.status = "请先打开项目".to_string();
             cx.notify();
+            return;
+        }
+        if !self.save_before_operation(cx) {
+            self.status = format!("已取消测试：{}", self.status);
+            cx.notify();
+            return;
+        }
+
+        let Some(project) = self.project.as_ref() else {
             return;
         };
         let Some(plan) = ns_build::plan_tests(project) else {
@@ -4004,9 +6034,18 @@ impl IdeApp {
     /// Run `-fstack-usage` analysis (C/C++): compile each source with the flag,
     /// then parse the emitted `.su` files into the stack-usage panel.
     fn start_stack_usage(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = self.project.as_ref() else {
+        if self.project.is_none() {
             self.status = "请先打开项目".to_string();
             cx.notify();
+            return;
+        }
+        if !self.save_before_operation(cx) {
+            self.status = format!("已取消栈使用分析：{}", self.status);
+            cx.notify();
+            return;
+        }
+
+        let Some(project) = self.project.as_ref() else {
             return;
         };
         let Some(plan) = ns_build::plan_stack_usage(project) else {
@@ -4113,9 +6152,18 @@ impl IdeApp {
     /// into the output panel. Non-C/C++ projects or missing compilers report a
     /// clear message instead of silently doing nothing.
     fn start_preprocess(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = self.project.as_ref() else {
+        if self.project.is_none() {
             self.status = "请先打开项目".to_string();
             cx.notify();
+            return;
+        }
+        if !self.save_before_operation(cx) {
+            self.status = format!("已取消预处理：{}", self.status);
+            cx.notify();
+            return;
+        }
+
+        let Some(project) = self.project.as_ref() else {
             return;
         };
         let Some(plan) = ns_build::plan_preprocess(project) else {
@@ -4172,9 +6220,18 @@ impl IdeApp {
      /// Run gcov line-coverage analysis (C/C++): build with `--coverage`, run
     /// the instrumented binary, then summarize per-file coverage via gcov.
     fn start_coverage(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = self.project.as_ref() else {
+        if self.project.is_none() {
             self.status = "请先打开项目".to_string();
             cx.notify();
+            return;
+        }
+        if !self.save_before_operation(cx) {
+            self.status = format!("已取消覆盖率分析：{}", self.status);
+            cx.notify();
+            return;
+        }
+
+        let Some(project) = self.project.as_ref() else {
             return;
         };
         let root = project.root.clone();
@@ -4415,6 +6472,11 @@ impl IdeApp {
             }
         }
         self.refresh_diagnostics(cx);
+        // On a failed build, jump the editor to the first source-located error
+        // (or warning) so the user lands on the root cause immediately.
+        if !outcome.success && !should_run {
+            self.jump_to_first_build_diagnostic(cx);
+        }
         cx.notify();
     }
 
@@ -4593,9 +6655,19 @@ impl IdeApp {
             self.continue_debug(cx);
             return;
         }
-        let Some(project) = self.project.as_ref() else {
+        if self.project.is_none() {
             self.status = "请先打开项目".to_string();
             cx.notify();
+            return;
+        }
+        // Save unsaved buffers before the debug build unless disabled.
+        if !self.save_before_operation(cx) {
+            self.status = format!("已取消调试：{}", self.status);
+            cx.notify();
+            return;
+        }
+
+        let Some(project) = self.project.as_ref() else {
             return;
         };
         let plan = match ns_build::plan_build(project) {
@@ -5297,16 +7369,26 @@ impl IdeApp {
             DebugMessage::Disassembly { instructions } => {
                 self.debug.disassembly = instructions;
             }
-            DebugMessage::Output { category, text } => {
+            DebugMessage::Output {
+                category,
+                text,
+                source,
+                line,
+            } => {
                 let prefix = match category.as_str() {
                     "stdout" | "console" => "",
                     "stderr" => "! ",
                     _ => "",
                 };
-                for line in text.lines() {
-                    if !line.is_empty() {
-                        self.debug.push_console(format!("{prefix}{line}"));
+                for out_line in text.lines() {
+                    if !out_line.is_empty() {
+                        self.debug.push_console(format!("{prefix}{out_line}"));
                     }
+                }
+                // Log breakpoints don't pause; the adapter tags their output
+                // with source/line so the matching breakpoint is marked hit.
+                if let (Some(path), Some(line)) = (source, line) {
+                    self.mark_log_breakpoint_hit(&path, line, cx);
                 }
             }
             DebugMessage::BreakpointResults { file, results } => {
@@ -5416,21 +7498,40 @@ impl IdeApp {
                 result,
                 type_name,
             } => {
-                // Watch evaluation updates the watch list; everything else
-                // (console, completion) goes to the console log.
-                let is_watch = self
-                    .debug
-                    .watches
-                    .iter()
-                    .any(|watch| watch.expression == expression);
-                if is_watch {
-                    self.debug.update_watch(&expression, &result);
-                } else {
-                    let line = match type_name {
-                        Some(type_name) => format!("({type_name}) {expression} = {result}"),
-                        None => format!("{expression} = {result}"),
-                    };
-                    self.debug.push_console(line);
+                // RTOS task-list refresh results are routed first; they must
+                // not leak into the console log.
+                let rtos_consumed = self.handle_rtos_evaluated(&expression, &result, cx);
+                if !rtos_consumed {
+                    // A hover evaluation updates the debug hover tooltip; watch
+                    // evaluations update the watch list; everything else
+                    // (console, completion) goes to the console log.
+                    let is_hover = self
+                        .debug_hover
+                        .as_ref()
+                        .map(|(expr, _)| expr == &expression)
+                        .unwrap_or(false);
+                    if is_hover {
+                        let text = match type_name {
+                            Some(type_name) => format!("({type_name}) {expression} = {result}"),
+                            None => format!("{expression} = {result}"),
+                        };
+                        self.debug_hover_value = Some(text);
+                    } else {
+                        let is_watch = self
+                            .debug
+                            .watches
+                            .iter()
+                            .any(|watch| watch.expression == expression);
+                        if is_watch {
+                            self.debug.update_watch(&expression, &result);
+                        } else {
+                            let line = match type_name {
+                                Some(type_name) => format!("({type_name}) {expression} = {result}"),
+                                None => format!("{expression} = {result}"),
+                            };
+                            self.debug.push_console(line);
+                        }
+                    }
                 }
             }
             DebugMessage::VariableSet {
@@ -5541,6 +7642,479 @@ impl IdeApp {
         self.status = "已刷新变量".to_string();
          cx.notify();
      }
+
+    /// Re-request the adapter's register groups. Clears the cached groups so
+    /// the register column shows the current target state after the user
+    /// edited memory, changed a register value, or continued and re-stopped.
+    fn refresh_registers(&mut self, cx: &mut Context<Self>) {
+        if self.debug.registers_scope == 0 {
+            self.status = "无寄存器作用域；启动调试并命中断点后刷新。".to_string();
+            cx.notify();
+            return;
+        }
+        self.debug.register_groups.clear();
+        self.debug.register_group_refs.clear();
+        self.load_register_groups(cx);
+        self.status = "已刷新寄存器".to_string();
+        cx.notify();
+    }
+
+
+    /// Refresh the RTOS task list. Without a live session this reports an
+    /// honest status; otherwise it evaluates the scheduler's task count, then
+    /// the running index and each task name (FreeRTOS-style globals), and
+    /// finalizes the list as the `Evaluated` responses arrive.
+    fn refresh_rtos_tasks(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.debug_session else {
+            self.debug.rtos_status =
+                "无调试会话；启动调试并命中断点后刷新任务列表。".to_string();
+            self.debug.rtos_tasks.clear();
+            cx.notify();
+            return;
+        };
+        self.rtos_pending = Some(RtosRefreshState {
+            count: 0,
+            current_index: None,
+            tasks: BTreeMap::new(),
+            mode: RtosKernelMode::RealKernel,
+            kernel: None,
+        });
+        self.debug.rtos_status = "正在读取任务列表…".to_string();
+        // Try the real FreeRTOS kernel first: `uxCurrentNumberOfTasks` is a
+        // real-kernel symbol. If it errors, we fall back to the FreeRTOS-style
+        // template globals below.
+        let _ = session.commands.send(DebugCommand::Evaluate {
+            expression: "uxCurrentNumberOfTasks".to_string(),
+            scope_name: "console".to_string(),
+        });
+        cx.notify();
+    }
+
+    /// Route an `Evaluated` result that belongs to the in-flight RTOS refresh.
+    /// Returns `true` if the result was consumed. Correlates by expression:
+    /// `task_count` → count + dispatch name evaluates, `current_task` → running
+    /// index, `tasks[i].name` → collect; finalizes when all names arrive.
+    fn handle_rtos_evaluated(
+        &mut self,
+        expression: &str,
+        result: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let trimmed = expression.trim().to_string();
+        // Real-kernel walk responses carry a `__rtos_` comment tag.
+        if trimmed.contains("__rtos_") {
+            return self.handle_rtos_kernel_evaluated(&trimmed, result, cx);
+        }
+
+        let is_rtos = self.rtos_pending.is_some()
+            && (trimmed == "task_count"
+                || trimmed == "uxCurrentNumberOfTasks"
+                || trimmed == "current_task"
+                || trimmed.starts_with("tasks["));
+        if !is_rtos {
+            return false;
+        }
+        // The first response decides the mode: `uxCurrentNumberOfTasks` means a
+        // real kernel; `task_count` means the template.
+        if trimmed == "uxCurrentNumberOfTasks" {
+            let count = result.trim().parse::<u32>().unwrap_or(0);
+            if count == 0 {
+                self.rtos_pending = None;
+                self.debug.rtos_tasks.clear();
+                self.debug.rtos_status = "0 个任务".to_string();
+                cx.notify();
+                return true;
+            }
+            if let Some(pending) = self.rtos_pending.as_mut() {
+                pending.mode = RtosKernelMode::RealKernel;
+                pending.count = count;
+                pending.kernel = Some(RtosKernelWalk {
+                    layout: ns_debug::rtos::RtosLayout::default(),
+                    running_tcb: None,
+                    lists: Vec::new(),
+                    list_index: 0,
+                    current_item: None,
+                    tasks: Vec::new(),
+                    in_flight: 0,
+                    step: RtosWalkStep::FirstItem,
+                    current_tcb: None,
+                    pending_name: None,
+                    pending_priority: None,
+                });
+
+            }
+            // Request the running TCB and the scheduler list heads (symbol
+            // addresses), each tagged so the response routes to the walker.
+            self.evaluate_rtos_symbol("(unsigned int)pxCurrentTCB", "running");
+            self.evaluate_rtos_symbol("(unsigned int)&xReadyTasksLists", "ready");
+            self.evaluate_rtos_symbol("(unsigned int)&xDelayedTaskList1", "delayed1");
+            self.evaluate_rtos_symbol("(unsigned int)&xDelayedTaskList2", "delayed2");
+            self.evaluate_rtos_symbol("(unsigned int)&xPendingReadyList", "pending");
+            self.evaluate_rtos_symbol("(unsigned int)&xSuspendedTaskList", "suspended");
+            self.evaluate_rtos_symbol("(unsigned int)&xTasksWaitingTermination", "termination");
+
+            return true;
+        }
+        if trimmed == "task_count" {
+            let count = result.trim().parse::<u32>().unwrap_or(0);
+            if count == 0 {
+                self.rtos_pending = None;
+                self.debug.rtos_tasks.clear();
+                self.debug.rtos_status = "0 个任务".to_string();
+                cx.notify();
+                return true;
+            }
+            if let Some(pending) = self.rtos_pending.as_mut() {
+                pending.mode = RtosKernelMode::Template;
+                pending.count = count;
+            }
+            if let Some(session) = &self.debug_session {
+                let _ = session.commands.send(DebugCommand::Evaluate {
+                    expression: "current_task".to_string(),
+                    scope_name: "console".to_string(),
+                });
+                for i in 0..count {
+                    for field in ["name", "priority", "stack_usage", "state"] {
+                        let _ = session.commands.send(DebugCommand::Evaluate {
+                            expression: format!("tasks[{i}].{field}"),
+                            scope_name: "console".to_string(),
+                        });
+                    }
+                }
+            }
+            return true;
+        }
+        if trimmed == "current_task" {
+            if let Some(pending) = self.rtos_pending.as_mut() {
+                pending.current_index = result.trim().parse::<usize>().ok();
+            }
+            return true;
+        }
+        if let Some(rest) = trimmed.strip_prefix("tasks[") {
+            if let Some(end) = rest.find(']') {
+                if let Ok(index) = rest[..end].parse::<usize>() {
+                    let field = rest[end + 1..].trim_start_matches('.').trim();
+                    let value = result.trim().trim_matches('"');
+                    if let Some(pending) = self.rtos_pending.as_mut() {
+                        let entry = pending
+                            .tasks
+                            .entry(index)
+                            .or_insert_with(|| PartialRtosTask {
+                                name: None,
+                                priority: None,
+                                stack_usage: None,
+                                state: None,
+                            });
+                        match field {
+                            "name" => entry.name = Some(value.to_string()),
+                            "priority" => entry.priority = value.parse::<u32>().ok(),
+                            "stack_usage" => entry.stack_usage = value
+                                .parse::<u8>()
+                                .ok()
+                                .filter(|usage| *usage <= 100),
+                            "state" => entry.state = value.parse::<u32>().ok(),
+                            _ => {}
+                        }
+                    }
+                    // Finalize once every task 0..count has a name.
+                    let complete = self.rtos_pending.as_ref().is_some_and(|pending| {
+                        pending.count > 0
+                            && (0..pending.count).all(|i| {
+                                pending
+                                    .tasks
+                                    .get(&(i as usize))
+                                    .and_then(|task| task.name.as_ref())
+                                    .is_some()
+                            })
+                    });
+                    if complete {
+                        if let Some(pending) = self.rtos_pending.take() {
+                            let tasks = build_rtos_tasks(&pending);
+                            self.debug.rtos_tasks = tasks;
+                            self.debug.rtos_status = format!("{} 个任务", pending.count);
+                            cx.notify();
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+
+    /// Evaluate a symbol expression and tag the response with a `__rtos_` kind.
+    /// Used to fetch the running TCB and the scheduler list head addresses.
+    fn evaluate_rtos_symbol(&mut self, expr: &str, kind: &str) {
+        if let Some(session) = &self.debug_session {
+            let _ = session.commands.send(DebugCommand::Evaluate {
+                expression: format!("{expr} /* __rtos_{kind}_0 */"),
+                scope_name: "console".to_string(),
+            });
+        }
+    }
+
+
+    /// Handle a real-kernel walk response (`__rtos_` prefixed). The walker
+    /// evaluates raw memory-deref expressions to traverse the scheduler lists.
+    fn handle_rtos_kernel_evaluated(
+        &mut self,
+        expression: &str,
+        result: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Compute the next action while holding the kernel borrow; the borrow
+        // must end before any `self` method re-borrows `rtos_pending`.
+        enum Next {
+            Send(String),
+            Kick,
+            Advance,
+            None,
+        }
+        let action = {
+            let Some(pending) = self.rtos_pending.as_mut() else {
+                return true;
+            };
+            if pending.mode != RtosKernelMode::RealKernel {
+                return true;
+            }
+            let Some(kernel) = pending.kernel.as_mut() else {
+                return true;
+            };
+            if kernel.in_flight > 0 {
+                kernel.in_flight -= 1;
+            }
+            let (kind, _addr) = parse_rtos_tag(expression);
+            let layout = kernel.layout;
+            let list_state = |kernel: &RtosKernelWalk| {
+                kernel.lists.get(kernel.list_index).copied().map(|(_, s)| s).unwrap_or(0)
+            };
+            match kind.as_str() {
+                "running" => {
+                    let value = parse_u64_loose(result).unwrap_or(0);
+                    kernel.running_tcb = (value != 0).then_some(value);
+                    Next::Kick
+                }
+                "ready" => {
+                    kernel.lists.push((parse_u64_loose(result).unwrap_or(0), 0));
+                    Next::Kick
+                }
+                "delayed1" => {
+                    kernel.lists.push((parse_u64_loose(result).unwrap_or(0), 1));
+                    Next::Kick
+                }
+                "delayed2" => {
+                    kernel.lists.push((parse_u64_loose(result).unwrap_or(0), 1));
+                    Next::Kick
+                }
+                "pending" => {
+                    kernel.lists.push((parse_u64_loose(result).unwrap_or(0), 0));
+                    Next::Kick
+                }
+                "suspended" => {
+                    kernel.lists.push((parse_u64_loose(result).unwrap_or(0), 2));
+                    Next::Kick
+                }
+                "termination" => {
+                    kernel.lists.push((parse_u64_loose(result).unwrap_or(0), 3));
+                    Next::Kick
+                }
+                "first" => {
+                    let first = parse_u64_loose(result).unwrap_or(0);
+                    let (head, _) = kernel.lists.get(kernel.list_index).copied().unwrap_or((0, 0));
+                    let embedded = head + layout.list_x_list_end as u64;
+                    if first == 0 || first == embedded {
+                        Next::Advance
+                    } else {
+                        kernel.current_item = Some(first);
+                        kernel.current_tcb = None;
+                        kernel.pending_name = None;
+                        kernel.pending_priority = None;
+                        kernel.step = RtosWalkStep::Owner;
+                        Next::Send(kernel_walk_expr(kernel, "owner"))
+                    }
+                }
+                "owner" => {
+                    let tcb = parse_u64_loose(result).unwrap_or(0);
+                    if tcb != 0 {
+                        kernel.current_tcb = Some(tcb);
+                        kernel.step = RtosWalkStep::Name;
+                        Next::Send(kernel_walk_expr(kernel, "name"))
+                    } else {
+                        kernel.step = RtosWalkStep::Next;
+                        Next::Send(kernel_walk_expr(kernel, "next"))
+                    }
+                }
+                "name" => {
+                    kernel.pending_name = Some(result.trim().trim_matches('"').to_string());
+                    kernel.step = RtosWalkStep::Priority;
+                    Next::Send(kernel_walk_expr(kernel, "priority"))
+                }
+                "priority" => {
+                    kernel.pending_priority = Some(parse_u64_loose(result).unwrap_or(0) as u32);
+                    let state = list_state(kernel);
+                    if let Some(tcb) = kernel.current_tcb {
+                        let name = kernel.pending_name.clone().unwrap_or_default();
+                        if !name.is_empty() {
+                            kernel.tasks.push(ns_debug::rtos::RtTask {
+                                name,
+                                priority: kernel.pending_priority.unwrap_or(0),
+                                running: Some(tcb) == kernel.running_tcb,
+                                state,
+                                tcb,
+                            });
+                        }
+                    }
+                    kernel.step = RtosWalkStep::Next;
+                    Next::Send(kernel_walk_expr(kernel, "next"))
+                }
+                "next" => {
+                    let next = parse_u64_loose(result).unwrap_or(0);
+                    let (head, _) = kernel.lists.get(kernel.list_index).copied().unwrap_or((0, 0));
+                    let embedded = head + layout.list_x_list_end as u64;
+                    if next == 0 || next == embedded {
+                        Next::Advance
+                    } else {
+                        kernel.current_item = Some(next);
+                        kernel.current_tcb = None;
+                        kernel.pending_name = None;
+                        kernel.pending_priority = None;
+                        kernel.step = RtosWalkStep::Owner;
+                        Next::Send(kernel_walk_expr(kernel, "owner"))
+                    }
+                }
+                _ => Next::None,
+            }
+        };
+        match action {
+            Next::Send(expr) => self.rtos_kernel_send(&expr),
+            Next::Kick => self.rtos_kernel_maybe_kick(cx),
+            Next::Advance => self.rtos_kernel_advance(cx),
+            Next::None => {}
+        }
+        cx.notify();
+        true
+    }
+
+    /// Send a tagged kernel-walk evaluate expression to the debugger. The
+    /// expression was built by [`kernel_walk_expr`] and carries a
+    /// `__rtos_<kind>_<addr>` tag so the response routes back to
+    /// [`IdeApp::handle_rtos_kernel_evaluated`].
+    fn rtos_kernel_send(&mut self, expression: &str) {
+        if let Some(session) = &self.debug_session {
+            let _ = session.commands.send(DebugCommand::Evaluate {
+                expression: expression.to_string(),
+                scope_name: "console".to_string(),
+            });
+        }
+    }
+
+    /// Advance the real-kernel walk to the next scheduler list (or finalize
+    /// when every list has been walked).
+    fn rtos_kernel_advance(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.rtos_pending.as_mut() else {
+            return;
+        };
+        let Some(kernel) = pending.kernel.as_mut() else {
+            return;
+        };
+        kernel.list_index += 1;
+        if kernel.list_index >= kernel.lists.len() {
+            self.rtos_kernel_finish(cx);
+        } else {
+            kernel.step = RtosWalkStep::FirstItem;
+            self.rtos_kernel_eval_first(cx);
+        }
+    }
+
+
+    /// Issue the first-item evaluate for the current list, or advance to the
+    /// next list when the current one is exhausted.
+    fn rtos_kernel_eval_first(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.rtos_pending.as_mut() else {
+            return;
+        };
+        let Some(kernel) = pending.kernel.as_mut() else {
+            return;
+        };
+        let Some((head, _)) = kernel.lists.get(kernel.list_index).copied() else {
+            self.rtos_kernel_finish(cx);
+            return;
+        };
+        let addr = head + kernel.layout.list_x_list_end as u64 + kernel.layout.list_item_px_next as u64;
+        kernel.in_flight += 1;
+        self.evaluate_rtos_deref("first", addr);
+    }
+
+
+    /// Finalize the real-kernel walk: de-duplicate and publish the tasks.
+    fn rtos_kernel_finish(&mut self, cx: &mut Context<Self>) {
+        if let Some(pending) = self.rtos_pending.take() {
+            let tasks: Vec<RtosTask> = pending
+                .kernel
+                .as_ref()
+                .map(|kernel| {
+                    // De-duplicate by TCB; a task is in exactly one list.
+                    let mut seen = std::collections::HashSet::new();
+                    kernel
+                        .tasks
+                        .iter()
+                        .filter(|task| seen.insert(task.tcb))
+                        .map(|task| RtosTask {
+                            name: task.name.clone(),
+                            running: task.running,
+                            priority: task.priority,
+                            stack_usage: None,
+                            state: RtosTaskState::from_u32(task.state),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut tasks = tasks;
+            tasks.sort_by_key(|task| task.name.clone());
+            self.debug.rtos_tasks = tasks;
+            self.debug.rtos_status = format!("{} 个任务（内核遍历）", self.debug.rtos_tasks.len());
+            cx.notify();
+        }
+    }
+
+    /// Kick off the walk once all list heads and the running TCB are known.
+    fn rtos_kernel_maybe_kick(&mut self, cx: &mut Context<Self>) {
+        let ready = self.rtos_pending.as_ref().is_some_and(|pending| {
+            pending.mode == RtosKernelMode::RealKernel
+                && pending
+                    .kernel
+                    .as_ref()
+                    .is_some_and(|kernel| kernel.running_tcb.is_some() && kernel.lists.len() >= 7)
+        });
+        if ready {
+            self.rtos_kernel_eval_first(cx);
+        }
+    }
+
+    /// Evaluate `(unsigned)*(unsigned*)(addr)` and tag the response.
+    fn evaluate_rtos_deref(&mut self, kind: &str, addr: u64) {
+        let expr = format!("(unsigned int)*(unsigned int*)0x{addr:x}");
+        self.evaluate_rtos_tagged(kind, addr, &expr);
+    }
+
+
+
+    /// Send an evaluate expression with a `__rtos_<kind>_<addr>` tag so the
+    /// response routes back to the kernel walker.
+    fn evaluate_rtos_tagged(&mut self, kind: &str, addr: u64, expr: &str) {
+        if let Some(session) = &self.debug_session {
+            let _ = session.commands.send(DebugCommand::Evaluate {
+                expression: format!("{expr} /* __rtos_{kind}_{addr:#x} */"),
+                scope_name: "console".to_string(),
+            });
+        }
+    }
+
+
+
+
+
      /// Switch the debugger's active thread; the call stack / scopes / variables
     fn select_debug_thread(&mut self, thread_id: u64, cx: &mut Context<Self>) {
         if self.debug.active_thread == thread_id {
@@ -6026,6 +8600,77 @@ impl IdeApp {
         cx.notify();
     }
 
+    /// Run the simulator until the source line under the editor cursor.
+    /// The cursor's line is mapped to an address via the ELF line table, a
+    /// temporary breakpoint is set, `run` executes to it (or halt/timeout),
+    /// then the breakpoint is removed and the hit line is opened/focused.
+    fn sim_run_to_cursor(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else {
+            self.sim.status = "没有活动编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        // `cursor_line_col()` is 0-based; the ELF line table is 1-based.
+        let line = editor.read(cx).cursor_line_col().0 + 1;
+        let Some(core) = self.sim.core.as_mut() else {
+            self.sim.status = "仿真器未加载".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(address) = core.address_for_line(0, line as u32) else {
+            self.sim.status = format!("当前行没有可映射的指令地址（第 {line} 行）");
+            cx.notify();
+            return;
+        };
+        // Temporarily run to the cursor line, then restore the user's own
+        // breakpoints so the transient target does not persist.
+        let saved = core.breakpoints.clone();
+        if !core.breakpoints.iter().any(|bp| bp.address == address) {
+            core.set_breakpoint(address);
+        }
+        let result = core.run(1_000_000);
+        core.breakpoints = saved;
+
+        let pc = core.program_counter();
+        let status = match result {
+            ns_sim::StepResult::Halted => format!(
+                "仿真结束: {} 周期, UART 输出 {} 字节",
+                core.cycle_count,
+                core.peripherals.outputs.len()
+            ),
+            ns_sim::StepResult::Breakpoint => {
+                let hit_line = core
+                    .line_for_address(pc)
+                    .map(|(_file, l)| format!("（源码第 {} 行）", l + 1))
+                    .unwrap_or_default();
+                format!("已运行到光标 @ 0x{pc:x} {hit_line}")
+            }
+            ns_sim::StepResult::Advanced => {
+                format!("已运行 {} 周期（超时上限）", core.cycle_count)
+            }
+        };
+        self.sim.status = status;
+        // Open and focus the source line where the PC stopped.
+        let hit_location: Option<(std::path::PathBuf, usize)> =
+            if result == ns_sim::StepResult::Breakpoint {
+                core.line_for_address(pc).and_then(|(file, l)| {
+                    core.source_files.get(file).map(|source| {
+                        (std::path::PathBuf::from(source), l as usize)
+                    })
+                })
+            } else {
+                None
+            };
+        if let Some((path, hit_line)) = hit_location {
+            self.open_file(path, cx);
+            if let Some(editor) = self.active_editor() {
+                editor.update(cx, |editor, cx| {
+                    editor.set_cursor_line(hit_line, cx);
+                });
+            }
+        }
+        cx.notify();
+    }
     /// Dump 256 bytes from `self.sim.mem_address` into `self.sim.mem_bytes`.
     /// Rejects malformed addresses and out-of-range reads honestly.
     fn sim_read_memory(&mut self, cx: &mut Context<Self>) {
@@ -6067,7 +8712,21 @@ impl IdeApp {
         cx.notify();
     }
 
-    /// Write hex bytes into the simulator's memory at `self.sim.mem_address`.
+    /// Point the simulator memory view at the current PC and re-read the
+    /// window. Reports honestly when the simulator is not loaded.
+    fn sim_jump_memory_to_pc(&mut self, cx: &mut Context<Self>) {
+        let Some(core) = self.sim.core.as_ref() else {
+            self.sim.mem_error = Some("仿真器未加载".to_string());
+            cx.notify();
+            return;
+        };
+        let pc = core.program_counter();
+        self.sim.mem_address = format!("0x{pc:x}");
+        self.sim_read_memory(cx);
+        self.status = format!("仿真内存视图已跳转到 PC {pc:#x}");
+        cx.notify();
+    }
+
     /// `data` is whitespace-separated hex like `de ad be ef`; re-reads the
     /// window afterwards so the dump reflects the write.
     fn sim_write_memory(&mut self, data: &str, cx: &mut Context<Self>) {
@@ -6164,6 +8823,18 @@ impl IdeApp {
         cx.notify();
     }
 
+    /// Copy a simulator register's `name = value` to the clipboard.
+    fn sim_copy_reg(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(core) = self.sim.core.as_ref() else {
+            return;
+        };
+        let name = ns_sim::reg_label_for(core.arch, index);
+        let value = core.read_reg(index);
+        let text = format!("{name} = 0x{value:x}");
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        self.sim.status = format!("已复制: {text}");
+        cx.notify();
+    }
     /// Begin editing the program counter: create (or reuse) the field.
     fn begin_pc_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(core) = self.sim.core.as_ref() else {
@@ -6263,6 +8934,109 @@ impl IdeApp {
         self.sim_add_breakpoint(&text, cx);
     }
 
+    /// Open a text field to edit a breakpoint's condition expression.
+    fn begin_sim_bp_condition_edit(
+        &mut self,
+        address: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .sim
+            .core
+            .as_ref()
+            .and_then(|core| {
+                core.breakpoints
+                    .iter()
+                    .find(|bp| bp.address == address)
+                    .map(|bp| bp.condition.clone())
+            })
+            .unwrap_or_default();
+        let field = cx.new(|cx| TextField::new("条件（如 x1 == 10 或 t0 > 5）", cx));
+        let app = cx.entity();
+        field.update(cx, |field, _cx| {
+            field.set_text(current, _cx);
+            field.set_on_submit(move |text, _window, _cx| {
+                app.update(_cx, |this, cx| {
+                    this.commit_sim_bp_condition(address, text, cx);
+                });
+            });
+        });
+        self.sim.bp_condition_input = Some((address, field.clone()));
+        self.sim.bp_hitcount_input = None;
+        window.focus(&field.read(cx).focus_handle(cx));
+        cx.notify();
+    }
+
+    /// Commit a breakpoint condition (from the row's edit field).
+    fn commit_sim_bp_condition(&mut self, address: u32, text: &str, cx: &mut Context<Self>) {
+        if let Some(core) = self.sim.core.as_mut() {
+            let hit_count = core
+                .breakpoints
+                .iter()
+                .find(|bp| bp.address == address)
+                .map(|bp| bp.hit_count)
+                .unwrap_or(0);
+            core.update_breakpoint(address, text.trim(), hit_count);
+            self.sim.status = format!("断点条件已更新 @ 0x{address:x}");
+        }
+        self.sim.bp_condition_input = None;
+        cx.notify();
+    }
+
+    /// Open a text field to edit a breakpoint's hit count (N-th hit to pause).
+    fn begin_sim_bp_hitcount_edit(
+        &mut self,
+        address: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .sim
+            .core
+            .as_ref()
+            .and_then(|core| {
+                core.breakpoints
+                    .iter()
+                    .find(|bp| bp.address == address)
+                    .map(|bp| bp.hit_count.to_string())
+            })
+            .unwrap_or_default();
+        let field = cx.new(|cx| TextField::new("命中次数（0=首次）", cx));
+        let app = cx.entity();
+        field.update(cx, |field, _cx| {
+            field.set_text(current, _cx);
+            field.set_on_submit(move |text, _window, _cx| {
+                app.update(_cx, |this, cx| {
+                    this.commit_sim_bp_hitcount(address, text, cx);
+                });
+            });
+        });
+        self.sim.bp_hitcount_input = Some((address, field.clone()));
+        self.sim.bp_condition_input = None;
+        window.focus(&field.read(cx).focus_handle(cx));
+        cx.notify();
+    }
+
+    /// Commit a breakpoint hit count (from the row's edit field).
+    fn commit_sim_bp_hitcount(&mut self, address: u32, text: &str, cx: &mut Context<Self>) {
+        let hit_count = text.trim().parse::<u32>().unwrap_or(0);
+        if let Some(core) = self.sim.core.as_mut() {
+            let condition = core
+                .breakpoints
+                .iter()
+                .find(|bp| bp.address == address)
+                .map(|bp| bp.condition.clone())
+                .unwrap_or_default();
+            core.update_breakpoint(address, condition, hit_count);
+            self.sim.status = format!("断点命中次数已更新 @ 0x{address:x}");
+        }
+        self.sim.bp_hitcount_input = None;
+        cx.notify();
+    }
+
+
+
     /// Read the hex-edit field's text and write it into simulator memory.
     fn sim_write_memory_from_field(&mut self, cx: &mut Context<Self>) {
         let text = self
@@ -6285,15 +9059,25 @@ impl IdeApp {
         let Some(core) = self.sim.core.as_mut() else {
             return;
         };
-        let mut addresses = Vec::new();
         for line in lines {
             // The line table maps each source line to its instruction address;
             // source line N maps to line N in the coarse table.
             if let Some(address) = core.address_for_line(0, line as u32) {
-                addresses.push(address);
+                // Keep existing condition/hit-count for a matching address.
+                let existing = core
+                    .breakpoints
+                    .iter()
+                    .find(|bp| bp.address == address)
+                    .map(|bp| (bp.condition.clone(), bp.hit_count))
+                    .unwrap_or_default();
+                if !core.breakpoints.iter().any(|bp| bp.address == address) {
+                    core.set_breakpoint(address);
+                } else {
+                    core.update_breakpoint(address, existing.0, existing.1);
+                }
             }
         }
-        core.breakpoints = addresses;
+
     }
 
 
@@ -6591,6 +9375,29 @@ impl IdeApp {
 
     }
 
+    /// Set the memory view's address to the current PC and read the region.
+    /// Reports honestly when there is no PC (session stopped/never ran).
+    fn jump_memory_to_pc(&mut self, cx: &mut Context<Self>) {
+        let Some(pc) = self.debug.pc else {
+            self.debug.memory.error =
+                Some("无 PC（调试会话未停止或未启动）".to_string());
+            cx.notify();
+            return;
+        };
+        self.jump_memory_to_address(pc, cx);
+    }
+
+    /// Jump the memory view to a specific address and re-read the region.
+    fn jump_memory_to_address(&mut self, address: u64, cx: &mut Context<Self>) {
+        self.ensure_memory_input(cx);
+        if let Some(field) = &self.debug.memory.address_input {
+            field.update(cx, |field, cx| field.set_text(format!("0x{address:x}"), cx));
+        }
+        self.read_memory(cx);
+        self.status = format!("内存视图已跳转到 {address:#x}");
+        cx.notify();
+    }
+
     /// Write bytes into the target at the memory view's current address and
     /// re-read the region on success. `data` is hex text like `de ad be ef`
     /// (whitespace-separated); an empty value is rejected as a no-op.
@@ -6713,6 +9520,86 @@ impl IdeApp {
         cx.notify();
     }
 
+    /// Export the currently dumped memory region to a `.bin` file in the
+    /// project `out` directory. Reports the path in the status bar.
+    fn export_memory_region(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let bytes = &self.debug.memory.bytes;
+        if bytes.is_empty() {
+            self.debug.memory.error = Some("没有可导出的内存数据（先「读取」）。".to_string());
+            cx.notify();
+            return;
+        }
+        let address = self.debug.memory.address;
+        let out_dir = project.root.join("out");
+        let _ = std::fs::create_dir_all(&out_dir);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = out_dir.join(format!("memory-{address:#x}-{stamp}.bin"));
+        match std::fs::write(&path, bytes) {
+            Ok(()) => {
+                self.status = format!("内存已导出: {} ({} 字节)", path.display(), bytes.len());
+                self.debug.memory.error = None;
+            }
+            Err(error) => {
+                self.debug.memory.error = Some(format!("导出失败: {error}"));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Load a `.bin` file into the target at the memory view's current
+    /// address. Uses the same debug session write path as manual hex editing
+    /// so the target memory and the view stay consistent.
+    fn import_memory_region(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let path = project.root.join("out").join("memory-import.bin");
+        if !path.exists() {
+            self.debug.memory.error = Some(format!("未找到导入文件 {}", path.display()));
+            cx.notify();
+            return;
+        }
+        let data = match std::fs::read(&path) {
+            Ok(data) => data,
+            Err(error) => {
+                self.debug.memory.error = Some(format!("读取导入文件失败: {error}"));
+                cx.notify();
+                return;
+            }
+        };
+        if data.is_empty() {
+            self.debug.memory.error = Some("导入文件为空。".to_string());
+            cx.notify();
+            return;
+        }
+        let address = self.debug.memory.address;
+        let reference = format!("{address:#x}");
+        if let Some(session) = &self.debug_session {
+            let _ = session
+                .commands
+                .send(DebugCommand::WriteMemory { reference, data: data.clone() });
+            self.status = format!(
+                "内存导入: {} 字节 @ {address:#x} <- {}",
+                data.len(),
+                path.display()
+            );
+            self.debug.memory.error = None;
+        } else {
+            self.debug.memory.error = Some("调试会话未运行".to_string());
+        }
+        cx.notify();
+    }
+
      /// Re-read the memory view's current region after a stop so the dump stays
     /// current. Only re-reads if the user has actually viewed memory (bytes are
     /// non-empty); otherwise there is nothing to refresh.
@@ -6805,6 +9692,17 @@ impl IdeApp {
         cx.notify();
     }
 
+    /// Toggle whether a device register's bit fields are expanded in the
+    /// device view. Expanding shows each field's live value, bit range and
+    /// (when present) SVD description.
+    fn toggle_device_reg_expand(&mut self, address: u64, cx: &mut Context<Self>) {
+        if !self.debug.device_reg_expanded.remove(&address) {
+            self.debug.device_reg_expanded.insert(address);
+        }
+        cx.notify();
+    }
+
+
     /// Commit a device-register value edit: parse hex and write to the target
     /// memory via the simulator (if active) or the debug session (DAP
     /// `writeMemory`). Falls back with a clear message when no source is
@@ -6825,6 +9723,10 @@ impl IdeApp {
         if let Some(sim) = self.sim.core.as_mut() {
             sim.write_u32(address as u32, value);
             self.status = format!("寄存器 0x{address:08X} 已写入 0x{value:08X}（仿真）");
+            // Keep the simulator memory view consistent with the written byte.
+            if !self.sim.mem_bytes.is_empty() {
+                self.sim_read_memory(cx);
+            }
         } else if let Some(session) = &self.debug_session {
             let _ = session.commands.send(DebugCommand::WriteMemory {
                 reference: format!("{address:#x}"),
@@ -7003,6 +9905,65 @@ impl IdeApp {
         }
     }
 
+
+    /// Case-insensitive substring match for a variable's name or any of its
+    /// descendant names (expanded children).
+    fn variable_matches(&self, variable: &Variable, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        if variable.name.to_lowercase().contains(&query.to_lowercase()) {
+            return true;
+        }
+        let reference = variable.variables_reference;
+        if reference > 0 {
+            if let Some(children) = self.debug.children.get(&reference) {
+                return children
+                    .iter()
+                    .any(|child| self.variable_matches(child, query));
+            }
+        }
+        false
+    }
+
+    /// `variable_rows`, but only renders variables (and expanded descendants)
+    /// whose name matches `query`. An empty query renders everything.
+    fn variable_rows_filtered(
+        &self,
+        variables: &[Variable],
+        parent_reference: u64,
+        depth: usize,
+        next_id: &mut usize,
+        cx: &mut Context<Self>,
+        query: &str,
+    ) -> Vec<gpui::AnyElement> {
+        if query.is_empty() {
+            return self.variable_rows(variables, parent_reference, depth, next_id, cx);
+        }
+        let mut rows = Vec::new();
+        for variable in variables {
+            if !self.variable_matches(variable, query) {
+                continue;
+            }
+            let row_id = *next_id;
+            *next_id += 1;
+            rows.push(self.variable_row(variable, parent_reference, depth, row_id, cx));
+            let reference = variable.variables_reference;
+            if reference > 0 && self.debug.expanded.contains(&reference) {
+                if let Some(children) = self.debug.children.get(&reference) {
+                    rows.extend(self.variable_rows_filtered(
+                        children,
+                        reference,
+                        depth + 1,
+                        next_id,
+                        cx,
+                        query,
+                    ));
+                }
+            }
+        }
+        rows
+    }
      fn variable_rows(
          &self,
         variables: &[Variable],
@@ -7124,7 +10085,26 @@ impl IdeApp {
                     }))
                     .child("✎"),
             )
-            .into_any_element()
+            .child(
+                div()
+                    .id(("dbg-var-copy", row_id))
+                    .flex_none()
+                    .ml(px(4.))
+                    .text_size(px(12.))
+                    .text_color(theme::color(theme::TEXT_FAINT))
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(theme::color(theme::ACCENT_3)))
+                    .on_click(cx.listener({
+                        let name = variable.name.clone();
+                        let value = variable.value.clone();
+                        move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.copy_variable_value(&name, &value, cx);
+                        }
+                    }))
+                    .child("📋"),
+            )
+             .into_any_element()
     }
 
     fn continue_debug(&mut self, cx: &mut Context<Self>) {
@@ -7261,6 +10241,67 @@ impl IdeApp {
                 .editor
                 .update(cx, |editor, cx| editor.set_breakpoints(lines, cx));
         }
+    }
+
+    /// Open the file at `path` and move the cursor to `line`.
+    fn open_bookmark(&mut self, path: String, line: usize, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let full_path = project.root.join(path);
+        self.open_file(full_path, cx);
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| editor.set_cursor_line(line, cx));
+        }
+        cx.notify();
+    }
+
+    fn remove_bookmark(&mut self, path: &str, line: usize, cx: &mut Context<Self>) {
+        if !self.bookmarks.remove(path, line) {
+            return;
+        }
+        self.sync_editor_bookmarks(path, cx);
+        self.status = format!("已删除书签 {path}:{line}");
+        self.persist_bookmarks();
+        cx.notify();
+    }
+
+    fn sync_editor_bookmarks(&mut self, path: &str, cx: &mut Context<Self>) {
+        let lines = self
+            .bookmarks
+            .for_path(path)
+            .into_iter()
+            .map(|b| b.line)
+            .collect::<Vec<_>>();
+        for tab in &self.tabs {
+            if self.breakpoint_key(&tab.path) == path {
+                tab.editor
+                    .update(cx, |editor, cx| editor.set_bookmarks(lines.clone(), cx));
+            }
+        }
+        if let Some(split) = &self.split {
+            if self.breakpoint_key(&split.path) == path {
+                split
+                    .editor
+                    .update(cx, |editor, cx| editor.set_bookmarks(lines, cx));
+            }
+        }
+    }
+
+    fn clear_bookmarks(&mut self, cx: &mut Context<Self>) {
+        let paths: Vec<String> = self
+            .bookmarks
+            .all()
+            .iter()
+            .map(|b| b.path.clone())
+            .collect();
+        self.bookmarks.clear();
+        for path in &paths {
+            self.sync_editor_bookmarks(path, cx);
+        }
+        self.status = "已清除全部书签".to_string();
+        self.persist_bookmarks();
+        cx.notify();
     }
 
     fn sync_all_editor_breakpoints(&mut self, cx: &mut Context<Self>) {
@@ -7634,6 +10675,92 @@ impl IdeApp {
         cx.notify();
     }
 
+    fn export_breakpoints(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            self.status = "没有打开项目，无法导出断点".to_string();
+            cx.notify();
+            return;
+        };
+        let root = project.root.clone();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let suggested = format!("breakpoints-{stamp}.json");
+        let receiver = cx.prompt_for_new_path(&root, Some(&suggested));
+        cx.spawn(async move |this, cx| {
+            match receiver.await {
+                Ok(Ok(Some(path))) => {
+                    this.update(cx, |this, cx| {
+                        match this.breakpoints.export_to(&path) {
+                            Ok(count) => {
+                                this.status = format!("已导出 {count} 个断点到 {}", path.display());
+                            }
+                            Err(error) => {
+                                this.status = format!("导出断点失败: {error}");
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Ok(Ok(None)) | Err(_) => {}
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = format!("导出断点对话框失败: {error}");
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Import breakpoints/watchpoints from a user-chosen JSON file, merging
+    /// them into the current store and persisting.
+    fn import_breakpoints(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择要导入的断点 JSON 文件".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            match receiver.await {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        this.update(cx, |this, cx| {
+                            match this.breakpoints.import_from(&path) {
+                                Ok(count) => {
+                                    this.status =
+                                        format!("已导入 {count} 个断点（{}）", path.display());
+                                    this.persist_breakpoints();
+                                    this.sync_all_editor_breakpoints(cx);
+                                    this.sync_debugger_breakpoints();
+                                }
+                                Err(error) => {
+                                    this.status = format!("导入断点失败: {error}");
+                                }
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                }
+                Ok(Ok(None)) | Err(_) => {}
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = format!("导入断点对话框失败: {error}");
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
     fn add_breakpoint(&mut self, path: &str, line: usize, cx: &mut Context<Self>) {
         self.breakpoints.set(path, line, true);
         self.sync_editor_breakpoints(path, cx);
@@ -7740,6 +10867,12 @@ impl IdeApp {
             compiler_opt: settings_field("优化选项（如 -O2）", config.compiler.opt, cx),
             compiler_defines: settings_field("宏定义（逗号分隔，如 FOO=1,BAR）", config.compiler.defines.join(","), cx),
             compiler_includes: settings_field("头文件目录（逗号分隔）", config.compiler.includes.join(","), cx),
+            compiler_link_flags: settings_field(
+                "链接标志（空格分隔，如 -lm -Wl,--gc-sections）",
+                config.compiler.link_flags.join(" "),
+                cx,
+            ),
+
             build_config: settings_field("debug | release", project.build_config().to_string(), cx),
             out_dir: settings_field("输出目录", config.build.out_dir, cx),
             build_jobs: settings_field("并行作业数（0=自动）", config.build.jobs.to_string(), cx),
@@ -7798,11 +10931,14 @@ impl IdeApp {
                 keys_text,
                 cx,
             ),
+            format_on_save: ns_project::IdeSettings::load().format_on_save,
+            save_before_build: ns_project::IdeSettings::load().save_before_build,
         };
         self.settings_dialog = Some(settings);
         self.focus_dialog_on_next_frame = true;
         cx.notify();
     }
+
 
     fn save_settings(&mut self, cx: &mut Context<Self>) {
         let Some(dialog) = self.settings_dialog.take() else {
@@ -7827,6 +10963,8 @@ impl IdeApp {
         let compiler_opt = dialog.compiler_opt.read(cx).text();
         let compiler_defines = dialog.compiler_defines.read(cx).text();
         let compiler_includes = dialog.compiler_includes.read(cx).text();
+        let compiler_link_flags = dialog.compiler_link_flags.read(cx).text();
+
         let build_config = dialog.build_config.read(cx).text();
         let out_dir = dialog.out_dir.read(cx).text();
         let build_jobs = dialog.build_jobs.read(cx).text();
@@ -7896,6 +11034,9 @@ impl IdeApp {
         project.config.compiler.opt = compiler_opt;
         project.config.compiler.defines = split_csv(&compiler_defines);
         project.config.compiler.includes = split_csv(&compiler_includes);
+        project.config.compiler.link_flags =
+            compiler_link_flags.split_whitespace().map(str::to_string).collect();
+
         // Write the build config to the active target's entry when a target is
         // set (per-target configs), else the shared `build.config`.
         if project.config.project.target.trim().is_empty() {
@@ -7967,6 +11108,18 @@ impl IdeApp {
                 return;
             }
         }
+
+        // ---- Global IDE preferences (ide.json) ----
+        let ide_settings = ns_project::IdeSettings {
+            format_on_save: dialog.format_on_save,
+            save_before_build: dialog.save_before_build,
+        };
+        if let Err(error) = ide_settings.save() {
+            self.status = format!("保存 IDE 设置失败: {error}");
+            cx.notify();
+            return;
+        }
+
 
         match project.save_config() {
             Ok(()) => {
@@ -8063,6 +11216,8 @@ impl IdeApp {
             ("DebugStepOver", "步过", "f10"),
             ("DebugStepIn", "步入", "f11"),
             ("DebugStepOut", "跳出", "shift-f11"),
+            ("DebugStepInstruction", "单指令步进", "cmd-alt-rightarrow"),
+
             ("RunToCursor", "运行到光标", "cmd-f10"),
             ("Flash", "烧写固件", "cmd-shift-f10"),
             ("FindInProject", "全局搜索", "cmd-shift-f"),
@@ -8343,6 +11498,54 @@ impl IdeApp {
         cx.notify();
     }
 
+    /// Copy a variable's `name = value` to the clipboard (variables panel 📋).
+    fn copy_variable_value(&mut self, name: &str, value: &str, cx: &mut Context<Self>) {
+        let text = if value.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} = {value}")
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        self.status = format!("已复制: {text}");
+        cx.notify();
+    }
+
+    /// Copy a disassembly line (`address  instruction`) to the clipboard.
+    fn copy_disasm_instruction(&mut self, address: u64, instruction: &str, cx: &mut Context<Self>) {
+        let text = format!("{address:#x}  {instruction}");
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        self.status = format!("已复制: {text}");
+    }
+
+    /// Copy a memory row's `address  hex-bytes  ascii` line to the clipboard.
+    fn copy_memory_row(
+        &mut self,
+        line_address: u64,
+        bytes: &[u8],
+        ascii: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let hex: Vec<String> = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        let text = format!(
+            "{line_address:#010x}  {}  │ {ascii}",
+            hex.join(" ")
+        );
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        self.status = format!("已复制: {text}");
+        cx.notify();
+    }
+
+    /// Copy a watch expression's `expression = value` to the clipboard.
+    fn copy_watch_value(&mut self, expression: &str, value: &str, cx: &mut Context<Self>) {
+        let text = if value.is_empty() || value == "…" {
+            expression.to_string()
+        } else {
+            format!("{expression} = {value}")
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        self.status = format!("已复制: {text}");
+        cx.notify();
+    }
     /// When a debug session is running, re-resolve and re-arm watchpoints.
     fn sync_watchpoints_if_running(&mut self) {
         if self.debug_session.is_none() {
@@ -8376,13 +11579,17 @@ impl IdeApp {
             }
             field
         });
+        let replace_field = cx.new(|cx| TextField::new("替换为…", cx));
         let subscription = cx.observe(&field, |this, field, cx| {
             this.refresh_search(field, cx);
         });
         self.search = Some(SearchState {
             field: field.clone(),
+            replace_field: replace_field.clone(),
             matches: Vec::new(),
             selected: 0,
+            case_sensitive: false,
+            whole_word: false,
             _subscription: subscription,
         });
         window.focus(&field.read(cx).focus_handle(cx));
@@ -8394,7 +11601,19 @@ impl IdeApp {
 
     fn matches_for(&self, query: &str) -> Option<Vec<SearchMatch>> {
         let project = self.project.as_ref()?;
-        Some(search::search_project(&project.root, query, search::MAX_MATCHES))
+        let options = self.search.as_ref().map(|search| search::SearchOptions {
+            case_sensitive: search.case_sensitive,
+            whole_word: search.whole_word,
+        });
+        Some(match options {
+            Some(options) => search::search_project_with_options(
+                &project.root,
+                query,
+                search::MAX_MATCHES,
+                options,
+            ),
+            None => search::search_project(&project.root, query, search::MAX_MATCHES),
+        })
     }
 
     fn refresh_search(&mut self, field: Entity<TextField>, cx: &mut Context<Self>) {
@@ -8411,6 +11630,105 @@ impl IdeApp {
         if self.search.take().is_some() {
             self.status = "已关闭搜索".to_string();
             cx.notify();
+        }
+    }
+
+    /// Toggle a search option (case sensitivity / whole-word) and re-run the
+    /// current query against the project so the results update immediately.
+    fn toggle_search_option(&mut self, option: SearchOption, cx: &mut Context<Self>) {
+        if let Some(search) = &mut self.search {
+            match option {
+                SearchOption::CaseSensitive => search.case_sensitive = !search.case_sensitive,
+                SearchOption::WholeWord => search.whole_word = !search.whole_word,
+            }
+        }
+        let query = self
+            .search
+            .as_ref()
+            .map(|search| search.field.read(cx).text())
+            .unwrap_or_default();
+        let refreshed = self.matches_for(&query).unwrap_or_default();
+        if let Some(search) = &mut self.search {
+            search.matches = refreshed;
+            search.selected = 0;
+        }
+        cx.notify();
+    }
+
+    /// Toggle the case-sensitivity search option.
+    fn toggle_case_sensitive(&mut self, cx: &mut Context<Self>) {
+        self.toggle_search_option(SearchOption::CaseSensitive, cx);
+    }
+
+    /// Toggle the whole-word search option.
+    fn toggle_whole_word(&mut self, cx: &mut Context<Self>) {
+        self.toggle_search_option(SearchOption::WholeWord, cx);
+    }
+
+    /// Replace every occurrence of the query with the replace text across the
+    /// project, then refresh the search results and reload any open editor tab
+    /// whose file changed on disk.
+    fn search_replace_all(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            self.status = "没有打开的项目。".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(search) = &self.search else {
+            return;
+        };
+        let query = search.field.read(cx).text();
+        let replacement = search.replace_field.read(cx).text();
+        let query = query.trim();
+        if query.is_empty() {
+            self.status = "搜索关键词为空，无法替换。".to_string();
+            cx.notify();
+            return;
+        }
+        let root = project.root.clone();
+        let (files_changed, occurrences) = search::replace_in_files(&root, query, &replacement);
+        // Reload any open editor whose file was rewritten so the buffer is not
+        // left stale (only if the tab is not dirty with unsaved edits).
+        for tab in &mut self.tabs {
+            if tab.is_hex {
+                continue;
+            }
+            if !tab.editor.read(cx).is_dirty() && fs::read_to_string(&tab.path).is_ok() {
+                if let Ok(text) = fs::read_to_string(&tab.path) {
+                    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+                    tab.saved_text = text.clone();
+                    tab.editor.update(cx, |editor, cx| {
+                        editor.reload_text(&text, cx);
+                        editor.mark_saved();
+                    });
+                }
+            }
+        }
+        if let Some(split) = self.split.as_mut() {
+            if !split.editor.read(cx).is_dirty() && fs::read_to_string(&split.path).is_ok() {
+                if let Ok(text) = fs::read_to_string(&split.path) {
+                    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+                    split.saved_text = text.clone();
+                    split.editor.update(cx, |editor, cx| {
+                        editor.reload_text(&text, cx);
+                        editor.mark_saved();
+                    });
+                }
+            }
+        }
+        self.status = format!(
+            "已替换 {occurrences} 处（{files_changed} 个文件）：{query} → {replacement}"
+        );
+        // Refresh search results for the updated query.
+        let query = self
+            .search
+            .as_ref()
+            .map(|search| search.field.read(cx).text())
+            .unwrap_or_default();
+        let refreshed = self.matches_for(&query).unwrap_or_default();
+        if let Some(search) = &mut self.search {
+            search.matches = refreshed;
+            search.selected = 0;
         }
     }
 
@@ -8530,9 +11848,16 @@ impl IdeApp {
     fn execute_palette_command(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         match id {
             "new-project" => self.open_wizard(window, cx),
+            "close-project" => self.close_project(cx),
+            "rename-project" => self.open_project_rename_dialog(cx),
+            "delete-project" => self.open_project_delete_dialog(cx),
+            "compile-commands" => self.generate_compile_commands(cx),
              "open-project" => self.open_project_dialog(cx),
             "import-project" => self.import_project_dialog(cx),
              "save" => self.save_active(cx),
+            "save-all" => {
+                self.save_all_editors(cx);
+            }
             "build" => self.start_build(false, cx),
             "rebuild" => self.rebuild_build(cx),
             "clean" => self.clean_build(cx),
@@ -8544,18 +11869,33 @@ impl IdeApp {
             "stop-debug" => self.stop_debug(cx),
             "restart-debug" => self.restart_debug(cx),
             "run-to-cursor" => self.run_to_cursor(cx),
+            "step-instruction" => self.debug_step(DebugStep::Instruction, cx),
+
             "find" => self.open_search(window, cx),
             "go-to-line" => self.open_go_to_line(cx),
+            "call-hierarchy" => self.lsp_call_hierarchy(cx),
+            "zoom-in" => self.set_editor_zoom(0.1, cx),
+            "zoom-out" => self.set_editor_zoom(-0.1, cx),
+            "zoom-reset" => self.set_editor_zoom(0.0, cx),
+            "indent-2" => self.set_editor_indent_width(2, cx),
+            "indent-4" => self.set_editor_indent_width(4, cx),
+            "indent-8" => self.set_editor_indent_width(8, cx),
+            "toggle-word-wrap" => self.toggle_editor_word_wrap(cx),
             "toggle-output" => {
                 self.show_output = !self.show_output;
                 cx.notify();
             }
             "breakpoints" => self.show_breakpoints(cx),
+            "bookmarks" => self.show_bookmarks(cx),
             "git" => self.show_git(cx),
             "static-analysis" => self.start_static_analysis(cx),
             "terminal" => self.show_terminal(cx),
             "serial-monitor" => self.show_serial_monitor(cx),
             "agent" => self.show_agent_panel(cx),
+            "tools" => self.run_tool_picker(cx),
+            "edit-tools" => self.open_tool_editor(None, cx),
+            "edit-snippets" => self.open_snippet_dialog(cx),
+
             "settings" => self.open_settings(cx),
             "flash" => self.start_flash(cx),
             "flash-erase" => self.flash_action(FlashAction::Erase, cx),
@@ -8572,7 +11912,9 @@ impl IdeApp {
              "memory-layout" => self.show_memory_layout(cx),
             "generate-device-files" => self.generate_device_files_for_project(cx),
              "generate-peripheral-init" => self.generate_peripheral_init_code(cx),
+             "peripheral-config-gui" => self.open_peripheral_config(cx),
              "simulation" => self.start_simulation(cx),
+            "compare-active-disk" => self.compare_active_with_disk(cx),
             "clear-breakpoints" => self.clear_all_breakpoints(cx),
             "add-watchpoint" => {
                 let initial = self
@@ -8591,6 +11933,8 @@ impl IdeApp {
                 self.output_tab = OutputTab::Problems;
                 cx.notify();
             }
+            "next-diagnostic" => self.navigate_diagnostic(1, cx),
+            "prev-diagnostic" => self.navigate_diagnostic(-1, cx),
             "focus-next-tab" => self.next_tab(true, cx),
             "focus-prev-tab" => self.next_tab(false, cx),
             "go-to-definition" => self.lsp_go_to_definition(cx),
@@ -8601,6 +11945,7 @@ impl IdeApp {
             "semantic-tokens" => self.lsp_semantic_tokens(cx),
             "document-symbols" => self.lsp_document_symbols(cx),
             "format-document" => self.lsp_format_document(cx),
+            "organize-imports" => self.lsp_organize_imports(cx),
             "code-action" => self.lsp_code_action(cx),
              "toggle-outline" => {
                  self.outline_open = !self.outline_open;
@@ -8723,9 +12068,16 @@ impl IdeApp {
         let language = Language::from_path(&path);
         let breakpoint_key = self.breakpoint_key(&path);
         let breakpoint_lines = self.breakpoints.lines(&breakpoint_key);
+        let bookmark_lines = self
+            .bookmarks
+            .for_path(&breakpoint_key)
+            .into_iter()
+            .map(|b| b.line)
+            .collect::<Vec<_>>();
         let editor = cx.new(|cx| {
             let mut editor = Editor::new(text, language, cx);
             editor.set_breakpoints(breakpoint_lines, cx);
+            editor.set_bookmarks(bookmark_lines, cx);
             editor
         });
         let version = std::cell::Cell::new(1i32);
@@ -8774,10 +12126,17 @@ impl IdeApp {
             }
             cx.notify();
         });
+        let bookmark_key = breakpoint_key.clone();
         let breakpoint_subscription = cx.subscribe(
             &editor,
             move |this, _editor, event: &BreakpointToggled, cx| {
                 this.on_breakpoint_toggled(&breakpoint_key, event.line, event.enabled, cx);
+            },
+        );
+        let bookmark_subscription = cx.subscribe(
+            &editor,
+            move |this, _editor, event: &BookmarkToggled, cx| {
+                this.on_bookmark_toggled(&bookmark_key, event.line, event.added, cx);
             },
         );
         let menu_key = self.breakpoint_key(&path);
@@ -8800,6 +12159,26 @@ impl IdeApp {
                 this.on_definition_requested(event.line, event.column, cx);
             },
         );
+        let diagnostic_hover_subscription = cx.subscribe(
+            &editor,
+            move |this, _editor, event: &DiagnosticHover, cx| {
+                match &event.message {
+                    Some(message) => {
+                        this.diagnostic_hover = Some((message.clone(), event.position));
+                    }
+                    None => {
+                        this.diagnostic_hover = None;
+                    }
+                }
+                cx.notify();
+            },
+        );
+        let hover_word_subscription = cx.subscribe(
+            &editor,
+            move |this, _editor, event: &HoverWord, cx| {
+                this.on_hover_word(event.word.clone(), event.position, cx);
+            },
+        );
         if let Some(server) = &self.lsp {
             let _ = server.open_file(path.clone(), text_for_lsp);
         }
@@ -8809,8 +12188,11 @@ impl IdeApp {
             saved_text,
             _subscription: subscription,
             _breakpoint_subscription: breakpoint_subscription,
+            _bookmark_subscription: bookmark_subscription,
             _menu_subscription: menu_subscription,
             _definition_subscription: definition_subscription,
+            _diagnostic_hover_subscription: diagnostic_hover_subscription,
+            _hover_word_subscription: hover_word_subscription,
         }
     }
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
@@ -9001,6 +12383,107 @@ impl IdeApp {
             .ok();
         })
         .detach();
+    }
+
+    /// Prepare the call hierarchy for the symbol under the cursor, then show
+    /// its incoming calls in the call-hierarchy popup. The prepared item is
+    /// cached so the user can flip between incoming/outgoing without a second
+    /// `prepareCallHierarchy` round-trip.
+    fn lsp_call_hierarchy(&mut self, cx: &mut Context<Self>) {
+        let Some((path, line, column)) = self.cursor_location(cx) else {
+            self.status = "没有活动编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(server) = &self.lsp else {
+            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            cx.notify();
+            return;
+        };
+        let Ok(rx) = server.prepare_call_hierarchy(path, line, column) else {
+            self.status = "无法请求调用层级（语言服务器不可用）".to_string();
+            cx.notify();
+            return;
+        };
+        self.status = "正在解析调用层级…".to_string();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
+            this.update(cx, |this, cx| {
+                match response {
+                    Some(response) => {
+                        let entries = ns_lsp::parse_call_hierarchy(&response);
+                        if entries.is_empty() {
+                            this.status = "光标处没有可解析的调用层级（不在函数/方法上）".to_string();
+                            this.call_hierarchy_open = false;
+                        } else {
+                            this.call_hierarchy_root = Some(entries[0].clone());
+                            this.call_hierarchy_item = Some(entries[0].raw.clone());
+                            this.call_hierarchy_direction = "incoming".to_string();
+                            this.call_hierarchy_selected = 0;
+                            this.call_hierarchy_open = true;
+                            this.fetch_call_hierarchy_calls(cx);
+                        }
+                    }
+                    None => this.status = "调用层级请求超时".to_string(),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Request the incoming/outgoing calls for the cached call-hierarchy item
+    /// and populate the popup. Reuses the already-prepared item.
+    fn fetch_call_hierarchy_calls(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.call_hierarchy_item.clone() else {
+            return;
+        };
+        let direction = self.call_hierarchy_direction.clone();
+        let Some(server) = &self.lsp else {
+            return;
+        };
+        let Ok(rx) = server.call_hierarchy_calls(&direction, item) else {
+            self.status = "无法请求调用层级（语言服务器不可用）".to_string();
+            cx.notify();
+            return;
+        };
+        self.status = format!(
+            "正在加载{}调用…",
+            if direction == "incoming" { "被" } else { "出" }
+        );
+        cx.notify();
+        let root = self.call_hierarchy_root.clone();
+        cx.spawn(async move |this, cx| {
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
+            this.update(cx, |this, cx| {
+                match response {
+                    Some(response) => {
+                        let calls = ns_lsp::parse_call_hierarchy_calls(&response);
+                        this.call_hierarchy_calls = calls.clone();
+                        this.call_hierarchy_selected = 0;
+                        let name = root.map(|r| r.name).unwrap_or_default();
+                        this.status = format!(
+                            "{}：{} 处{}调用",
+                            if name.is_empty() { "调用层级".to_string() } else { name },
+                            calls.len(),
+                            if direction == "incoming" { "被" } else { "出" }
+                        );
+                    }
+                    None => this.status = "调用层级请求超时".to_string(),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Switch the call-hierarchy popup between incoming and outgoing calls.
+    fn toggle_call_hierarchy_direction(&mut self, direction: &str, cx: &mut Context<Self>) {
+        self.call_hierarchy_direction = direction.to_string();
+        self.fetch_call_hierarchy_calls(cx);
     }
 
     /// Open the rename dialog for the symbol under the cursor.
@@ -9376,6 +12859,18 @@ impl IdeApp {
         self.references_selected = next;
         cx.notify();
     }
+
+    /// Move the highlighted call up/down.
+    fn call_hierarchy_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.call_hierarchy_calls.is_empty() {
+            return;
+        }
+        let len = self.call_hierarchy_calls.len();
+        let current = self.call_hierarchy_selected as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.call_hierarchy_selected = next;
+        cx.notify();
+    }
  
      /// Open the highlighted workspace symbol in the editor.
     fn workspace_symbol_confirm(&mut self, cx: &mut Context<Self>) {
@@ -9424,6 +12919,39 @@ impl IdeApp {
     fn close_references(&mut self, cx: &mut Context<Self>) {
         if self.references_open {
             self.references_open = false;
+            cx.notify();
+        }
+    }
+
+    /// Open the highlighted call site in the editor. A `CallHierarchyCall`
+    /// carries the related symbol's file and the call-site position.
+    fn call_hierarchy_confirm(&mut self, cx: &mut Context<Self>) {
+        let Some(call) = self.call_hierarchy_calls.get(self.call_hierarchy_selected) else {
+            return;
+        };
+        let path = call.path.clone();
+        if path.as_os_str().is_empty() {
+            self.status = "该调用没有可跳转的文件位置".to_string();
+            cx.notify();
+            return;
+        }
+        let line = call.line;
+        let column = call.column;
+        self.call_hierarchy_open = false;
+        self.push_nav_history(cx);
+        self.open_file(path, cx);
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| {
+                editor.set_cursor_line_column(line + 1, column, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    /// Close the call-hierarchy popup.
+    fn close_call_hierarchy(&mut self, cx: &mut Context<Self>) {
+        if self.call_hierarchy_open {
+            self.call_hierarchy_open = false;
             cx.notify();
         }
     }
@@ -9606,6 +13134,50 @@ impl IdeApp {
                         }
                     }
                     None => this.status = "快速修复请求超时".to_string(),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Request the LSP `source.organizeImports` code action for the active
+    /// file and apply its edits (rust-analyzer / clangd / zls).
+    fn lsp_organize_imports(&mut self, cx: &mut Context<Self>) {
+        let Some((path, _, _)) = self.cursor_location(cx) else {
+            self.status = "没有活动编辑器".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(server) = &self.lsp else {
+            self.status = "语言服务未运行".to_string();
+            cx.notify();
+            return;
+        };
+        let Ok(rx) = server.organize_imports(path.clone()) else {
+            self.status = "整理导入请求失败".to_string();
+            cx.notify();
+            return;
+        };
+        self.status = "正在整理导入…".to_string();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let response = rx
+                .recv_timeout(std::time::Duration::from_secs(8))
+                .ok();
+            this.update(cx, |this, cx| {
+                match response {
+                    Some(response) => {
+                        let actions = ns_lsp::parse_code_actions(&response);
+                        if let Some(action) = actions.iter().find(|a| !a.edits.is_empty()) {
+                            this.apply_workspace_edit(&action.edits, cx);
+                            this.status = format!("已整理导入：{}", action.title);
+                        } else {
+                            this.status = "没有可整理的导入".to_string();
+                        }
+                    }
+                    None => this.status = "整理导入请求超时".to_string(),
                 }
                 cx.notify();
             })
@@ -9858,18 +13430,32 @@ impl IdeApp {
         let Some(path) = self.tabs.get(index).map(|tab| tab.path.clone()) else {
             return;
         };
-        let mut marks: Vec<(usize, bool)> = Vec::new();
+        let mut marks: Vec<crate::editor::DiagnosticMark> = Vec::new();
         for diagnostic in &self.diagnostics {
             let same_file = diagnostic
                 .path
                 .as_ref()
                 .map(|candidate| paths_equal(candidate, &path))
                 .unwrap_or(false);
-            if same_file
-                && let Some(line) = diagnostic.line
-            {
+            if same_file && let Some(line) = diagnostic.line {
                 let is_error = diagnostic.severity == Severity::Error;
-                marks.push((line.saturating_sub(1), is_error));
+                let start = diagnostic.column.unwrap_or(1).saturating_sub(1);
+                // Build diagnostics carry no end column; underline to the end
+                // of the source line so the squiggle is easy to hover.
+                let line_end = self
+                    .tabs
+                    .get(index)
+                    .and_then(|tab| tab.editor.read(cx).line_text(line.saturating_sub(1)))
+                    .map(|t| t.chars().count())
+                    .unwrap_or(start + 1)
+                    .max(start + 1);
+                marks.push(crate::editor::DiagnosticMark {
+                    line: line.saturating_sub(1),
+                    start_col: start,
+                    end_col: line_end,
+                    message: diagnostic.message.clone(),
+                    is_error,
+                });
             }
         }
         for lsp_diagnostic in self.lsp_diagnostics.get(&path).into_iter().flatten() {
@@ -9877,12 +13463,18 @@ impl IdeApp {
                 lsp_diagnostic.severity,
                 ns_lsp::LspSeverity::Error
             );
-            marks.push((lsp_diagnostic.line, is_error));
+            marks.push(crate::editor::DiagnosticMark {
+                line: lsp_diagnostic.line,
+                start_col: lsp_diagnostic.column,
+                end_col: lsp_diagnostic.column + 1,
+                message: lsp_diagnostic.message.clone(),
+                is_error,
+            });
         }
         if let Some(tab) = self.tabs.get(index) {
             tab.editor.update(cx, |editor, cx| editor.set_diagnostics(marks, cx));
         }
-     }
+    }
 
     /// Push per-line coverage hits onto every open editor whose file was
     /// covered by the last gcov run. Uncovered files (no line data) are left
@@ -10086,6 +13678,7 @@ impl IdeApp {
             kind,
             field,
             rename: None,
+            duplicate: None,
         });
         self.focus_dialog_on_next_frame = true;
         cx.notify();
@@ -10141,6 +13734,38 @@ impl IdeApp {
             return;
         }
 
+        // Duplicate mode: copy the source entry to the new name.
+        if let Some(source) = dialog.duplicate {
+            let target = dialog.parent.join(&name);
+            if target.exists() {
+                self.status = format!("已存在: {name}");
+                cx.notify();
+                return;
+            }
+            let result = if source.is_dir() {
+                copy_dir_recursive(&source, &target)
+            } else {
+                std::fs::copy(&source, &target)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            };
+            match result {
+                Ok(()) => {
+                    if let Some(project) = &self.project {
+                        self.expanded.insert(project.root.clone());
+                        self.expanded.insert(dialog.parent.clone());
+                    }
+                    self.status = format!("已创建副本 {name}");
+                    cx.notify();
+                }
+                Err(error) => {
+                    self.status = format!("复制失败: {error}");
+                    cx.notify();
+                }
+            }
+            return;
+        }
+
         // Create mode.
         let target = dialog.parent.join(&name);
         if target.exists() {
@@ -10174,6 +13799,32 @@ impl IdeApp {
         }
     }
 
+    /// Open the "duplicate (copy)" dialog for a tree entry.
+    fn open_duplicate_dialog(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.tree_menu = None;
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            return;
+        };
+        let field = cx.new(|cx| {
+            let mut field = TextField::new("副本名称…", cx);
+            field.set_text(format!("{name} copy"), cx);
+            field
+        });
+        self.new_entry_dialog = Some(NewEntryDialog {
+            parent: path.parent().map(Path::to_path_buf).unwrap_or_default(),
+            kind: if path.is_dir() {
+                NewEntryKind::Directory
+            } else {
+                NewEntryKind::File
+            },
+            field,
+            rename: None,
+            duplicate: Some(path),
+        });
+        self.focus_dialog_on_next_frame = true;
+        cx.notify();
+    }
+
     fn cancel_new_entry_dialog(&mut self, cx: &mut Context<Self>) {
         if self.new_entry_dialog.take().is_some() {
             cx.notify();
@@ -10196,6 +13847,7 @@ impl IdeApp {
             kind: NewEntryKind::File,
             field,
             rename: Some(path),
+            duplicate: None,
         });
         self.focus_dialog_on_next_frame = true;
         cx.notify();
@@ -10234,6 +13886,12 @@ impl IdeApp {
         cx.notify();
     }
 
+    fn show_bookmarks(&mut self, cx: &mut Context<Self>) {
+        self.show_output = true;
+        self.output_tab = OutputTab::Bookmarks;
+        cx.notify();
+    }
+
     fn open_diagnostic(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(diagnostic) = self.diagnostics.get(index) else {
             return;
@@ -10248,6 +13906,129 @@ impl IdeApp {
         }
          cx.notify();
      }
+
+    /// After a failed build, open the first error (or, if there are no errors,
+    /// the first warning) that has a source path in the editor so the user is
+    /// taken straight to the root cause. No-op when there is nothing to jump to
+    /// (e.g. linker/script errors without a source location).
+    fn jump_to_first_build_diagnostic(&mut self, cx: &mut Context<Self>) {
+        let index = self
+            .diagnostics
+            .iter()
+            .position(|diagnostic| {
+                diagnostic.path.is_some() && diagnostic.severity == Severity::Error
+            })
+            .or_else(|| {
+                self.diagnostics
+                    .iter()
+                    .position(|diagnostic| {
+                        diagnostic.path.is_some() && diagnostic.severity == Severity::Warning
+                    })
+            });
+        if let Some(index) = index {
+            self.open_diagnostic(index, cx);
+            self.status = format!(
+                "已定位到首个{}: {}",
+                if self.diagnostics[index].severity == Severity::Error {
+                    "错误"
+                } else {
+                    "警告"
+                },
+                self.diagnostics[index].message,
+            );
+        } else {
+            self.status = "构建失败，但没有可定位到源码的错误/警告。".to_string();
+        }
+    }
+
+    /// Navigate to the next (`direction = 1`) or previous (`direction = -1`)
+    /// diagnostic across all sources (build output + LSP), sorted by file then
+    /// line. Uses the active file + cursor line as the anchor so repeated
+    /// presses walk the list in order; wraps around at the ends.
+    fn navigate_diagnostic(&mut self, direction: i32, cx: &mut Context<Self>) {
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let mut all: Vec<(PathBuf, usize, usize, String, bool)> = Vec::new();
+        for diagnostic in &self.diagnostics {
+            if let (Some(path), Some(line)) = (&diagnostic.path, diagnostic.line) {
+                let column = diagnostic.column.unwrap_or(1);
+                let is_error = diagnostic.severity == ns_build::Severity::Error;
+                all.push((canon(path), line, column, diagnostic.message.clone(), is_error));
+            }
+        }
+        for (path, diagnostics) in &self.lsp_diagnostics {
+            for diagnostic in diagnostics {
+                let is_error = diagnostic.severity == ns_lsp::LspSeverity::Error;
+                all.push((
+                    canon(path),
+                    diagnostic.line,
+                    diagnostic.column,
+                    diagnostic.message.clone(),
+                    is_error,
+                ));
+            }
+        }
+        if all.is_empty() {
+            self.status = "没有可跳转的错误/警告诊断。".to_string();
+            cx.notify();
+            return;
+        }
+        all.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+                .then(a.4.cmp(&b.4))
+        });
+
+        let anchor = self.active_editor().and_then(|editor| {
+            let (line, _) = editor.read(cx).cursor_line_col();
+            self.active_file_path().map(|path| (canon(&path), line))
+        });
+        let (mut idx, anchor_path, anchor_line) = match anchor {
+            Some((path, line)) => (None, path, line),
+            None => (None, PathBuf::new(), 0),
+        };
+        for (i, (path, line, _, _, _)) in all.iter().enumerate() {
+            let past = if direction > 0 {
+                (*path > anchor_path) || (*path == anchor_path && *line > anchor_line)
+            } else {
+                (*path < anchor_path) || (*path == anchor_path && *line < anchor_line)
+            };
+            if past {
+                idx = Some(i);
+                break;
+            }
+        }
+        let target = match idx {
+            Some(i) => i,
+            None => {
+                if direction > 0 {
+                    0
+                } else {
+                    all.len() - 1
+                }
+            }
+        };
+        let (path, line, column, message, is_error) = all[target].clone();
+        let severity_label = if is_error { "错误" } else { "警告" };
+        let path_display = path.display().to_string();
+        self.open_file(path, cx);
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| editor.set_cursor_line(line, cx));
+        }
+        let location = self
+            .active_file_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or(path_display);
+        self.status = format!("{severity_label} {location}:{line}:{column} — {message}");
+        self.show_output = true;
+        self.output_tab = OutputTab::Problems;
+        cx.notify();
+    }
+
+    fn active_file_path(&self) -> Option<PathBuf> {
+        let index = self.active_tab?;
+        self.tabs.get(index).map(|tab| tab.path.clone())
+    }
 
  
      /// Apply a quick fix to the build diagnostic at `index`. For
@@ -10290,9 +14071,39 @@ impl IdeApp {
              Some(ns_build::QuickFix::Hint(hint)) => {
                  self.status = hint;
              }
-             Some(ns_build::QuickFix::AddLinkFlag { .. }) => {
-                 self.status = "链接标志修复尚未接入设置页。".to_string();
-             }
+            Some(ns_build::QuickFix::AddLinkFlag { flag }) => {
+                // Write the flag into `project.toml`'s `[compiler] link_flags`
+                // (deduped), then persist. The build plan picks it up on the
+                // next build without any manual editing.
+                let Some(project) = self.project.as_mut() else {
+                    self.status = "没有已加载的项目，无法写入链接标志。".to_string();
+                    cx.notify();
+                    return;
+                };
+                let normalized = flag.trim().to_string();
+                if normalized.is_empty() {
+                    self.status = "链接标志为空，未写入。".to_string();
+                    cx.notify();
+                    return;
+                }
+                let flags = &mut project.config.compiler.link_flags;
+                if flags.iter().any(|existing| existing.trim() == normalized) {
+                    self.status = format!("链接标志 `{normalized}` 已存在于 project.toml");
+                    cx.notify();
+                    return;
+                }
+                flags.push(normalized.clone());
+                match project.save_config() {
+                    Ok(()) => {
+                        self.status =
+                            format!("已添加链接标志 `{normalized}` 到 [compiler] link_flags（下次构建生效）");
+                    }
+                    Err(error) => {
+                        self.status = format!("保存 project.toml 失败: {error}");
+                    }
+                }
+            }
+
              None => {
                  self.status = "没有可用的快速修复。".to_string();
              }
@@ -10542,11 +14353,37 @@ impl IdeApp {
                         }))
                         .into_any_element(),
                 );
+                if self.project.is_some() {
+                    items.push(
+                        item("topm-rename-project", "重命名项目…", false)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.top_menu_open = None;
+                                this.open_project_rename_dialog(cx);
+                            }))
+                            .into_any_element(),
+                    );
+                    items.push(
+                        item("topm-delete-project", "删除项目…", true)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.top_menu_open = None;
+                                this.open_project_delete_dialog(cx);
+                            }))
+                            .into_any_element(),
+                    );
+                    items.push(
+                        item("topm-close-project", "关闭项目", false)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.top_menu_open = None;
+                                this.close_project(cx);
+                            }))
+                            .into_any_element(),
+                    );
+                }
                 items.push(
                     item("topm-quit", "退出", false)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.top_menu_open = None;
-                            cx.quit();
+                            this.request_quit(cx);
                         }))
                         .into_any_element(),
                 );
@@ -10759,6 +14596,34 @@ impl IdeApp {
         )
     }
 
+
+    /// Look up the git change status for a tree entry path (repo-relative),
+    /// returning `(label, tone)` for a small badge in the file tree. `None`
+    /// when the project is not a repo or the file is unchanged.
+    fn git_tree_badge(&self, path: &Path) -> Option<(String, gpui::Hsla)> {
+        if !self.git.status.in_repo {
+            return None;
+        }
+        let root = self.project.as_ref()?.root.clone();
+        let relative = path.strip_prefix(&root).ok()?.to_string_lossy().to_string();
+        let change = self.git.status.files.iter().find(|file| {
+            let file_path = file.path.replace('\\', "/");
+            file_path == relative || relative.starts_with(&format!("{file_path}/"))
+        })?;
+        let (label, tone) = if change.is_untracked() {
+            ("U".to_string(), theme::color(theme::JADE))
+        } else if change.is_deleted() {
+            ("D".to_string(), theme::color(theme::DANGER))
+        } else {
+            let code = if change.staged != ' ' {
+                change.staged
+            } else {
+                change.worktree
+            };
+            (code.to_string(), theme::color(theme::ACCENT))
+        };
+        Some((label, tone))
+    }
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let entries = self.tree_entries();
         let active_path = self
@@ -10812,6 +14677,7 @@ impl IdeApp {
                         let is_active = active_path.as_ref() == Some(&entry.path);
                         let path = entry.path.clone();
                         let drop_path = path.clone();
+                        let git_badge = self.git_tree_badge(&path);
                         let is_dir = entry.is_dir;
                         let icon = if is_dir {
                             if entry.expanded {
@@ -10919,6 +14785,21 @@ impl IdeApp {
                                     })
                                     .child(entry.name),
                             )
+                            .when(!is_dir && git_badge.is_some(), |row| {
+                                let (label, tone) = git_badge.clone().unwrap_or_default();
+                                row.child(
+                                    div()
+                                        .id(("tree-git-badge", entry_index))
+                                        .px(px(4.))
+                                        .py(px(1.))
+                                        .rounded_full()
+                                        .text_size(px(8.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .bg(theme::alpha(theme::STROKE, 0.1))
+                                        .text_color(tone)
+                                        .child(label),
+                                )
+                            })
                     })),
             )
             .on_drop(cx.listener(
@@ -11128,6 +15009,15 @@ impl IdeApp {
                             .when(self.hover_tooltip.is_some(), |style| {
                                 style.child(self.render_hover_tooltip(cx))
                             })
+                            .when(self.diagnostic_hover.is_some(), |style| {
+                                style.child(self.render_diagnostic_hover_tooltip(cx))
+                            })
+                            .when(
+                                self.debug_hover.is_some() && self.debug_hover_value.is_some(),
+                                |style| {
+                                    style.child(self.render_debug_hover_tooltip(cx))
+                                },
+                            )
                             .when(self.workspace_symbol_open, |style| {
                                 style.child(self.render_workspace_symbol_popup(cx))
                             })
@@ -11137,8 +15027,14 @@ impl IdeApp {
                             .when(self.references_open, |style| {
                                 style.child(self.render_references_popup(cx))
                             })
+                            .when(self.call_hierarchy_open, |style| {
+                                style.child(self.render_call_hierarchy_popup(cx))
+                            })
                              .when(self.recent_open, |style| {
                                 style.child(self.render_recent_files_popup(cx))
+                            })
+                            .when(self.tool_picker_open, |style| {
+                                style.child(self.render_tool_picker_popup(cx))
                             })
                             .when(
                                 active
@@ -11394,6 +15290,75 @@ impl IdeApp {
                     .font_family(theme::MONO_FONT)
                     .text_color(theme::color(theme::TEXT))
                     .child(text),
+            )
+            .into_any_element()
+    }
+
+    /// Floating tooltip shown when the mouse hovers an error/warning squiggle.
+    /// Anchored just below the cursor; cleared on leave (DiagnosticHover None).
+    fn render_diagnostic_hover_tooltip(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        let Some((message, position)) = &self.diagnostic_hover else {
+            return div().into_any_element();
+        };
+        let message = message.clone();
+        let x = position.x + px(12.);
+        let y = position.y + px(16.);
+        div()
+            .id("diagnostic-hover-tooltip")
+            .absolute()
+            .left(x)
+            .top(y)
+            .max_w(px(480.))
+            .max_h(px(220.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::alpha(theme::STROKE, 0.22))
+            .bg(theme::color(theme::BG_1).opacity(0.98))
+            .shadow_lg()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .font_family(theme::MONO_FONT)
+                    .text_color(theme::color(theme::TEXT))
+                    .child(message),
+            )
+            .into_any_element()
+    }
+
+    /// Floating tooltip showing a debug variable's current value, anchored at
+    /// the hovered identifier. Shown while debug is stopped and the `Evaluate`
+    /// response for the hovered word has arrived.
+    fn render_debug_hover_tooltip(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        let (Some((_, position)), Some(value)) = (&self.debug_hover, &self.debug_hover_value) else {
+            return div().into_any_element();
+        };
+        let value = value.clone();
+        let x = position.x + px(12.);
+        let y = position.y + px(16.);
+        div()
+            .id("debug-hover-tooltip")
+            .absolute()
+            .left(x)
+            .top(y)
+            .max_w(px(480.))
+            .max_h(px(220.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::alpha(theme::JADE, 0.35))
+            .bg(theme::color(theme::BG_1).opacity(0.98))
+            .shadow_lg()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .font_family(theme::MONO_FONT)
+                    .text_color(theme::color(theme::JADE))
+                    .child(value),
             )
             .into_any_element()
     }
@@ -11896,6 +15861,161 @@ impl IdeApp {
                 )
             })
     }
+
+    /// Floating call-hierarchy popup. Shows a direction toggle (incoming /
+    /// outgoing) and the list of call sites; Enter/click jumps to the call site.
+    fn render_call_hierarchy_popup(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self
+            .call_hierarchy_selected
+            .min(self.call_hierarchy_calls.len().saturating_sub(1));
+        let incoming = self.call_hierarchy_direction == "incoming";
+        let root_name = self
+            .call_hierarchy_root
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_default();
+        div()
+            .id("call-hierarchy-popup")
+            .absolute()
+            .left(px(12.))
+            .top(px(46.))
+            .w(px(560.))
+            .max_h(px(400.))
+            .flex()
+            .flex_col()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::alpha(theme::STROKE, 0.18))
+            .bg(theme::color(theme::BG_1).opacity(0.98))
+            .shadow_lg()
+            .child(
+                div()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .border_b_1()
+                    .border_color(theme::alpha(theme::STROKE, 0.1))
+                    .text_size(px(10.))
+                    .text_color(theme::color(theme::TEXT_DIM))
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(format!(
+                                "调用层级 · {}（{} 处{}调用）",
+                                if root_name.is_empty() { "符号" } else { &root_name },
+                                self.call_hierarchy_calls.len(),
+                                if incoming { "被" } else { "出" }
+                            )),
+                    ))
+                    .child(
+                        div()
+                            .id("call-hierarchy-direction")
+                            .flex()
+                            .gap(px(4.))
+                            .children(["incoming", "outgoing"].into_iter().map(|dir| {
+                                let active = dir == self.call_hierarchy_direction;
+                                div()
+                                    .id(if dir == "incoming" { "call-hierarchy-dir-in" } else { "call-hierarchy-dir-out" })
+                                    .px(px(8.))
+                                    .py(px(2.))
+                                    .rounded(px(999.))
+                                    .cursor_pointer()
+                                    .bg(if active {
+                                        theme::alpha(theme::ACCENT, 0.2)
+                                    } else {
+                                        gpui::transparent_black()
+                                    })
+                                    .text_color(if active {
+                                        theme::color(theme::ACCENT_3)
+                                    } else {
+                                        theme::color(theme::TEXT_FAINT)
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_call_hierarchy_direction(dir, cx);
+                                    }))
+                                    .child(if dir == "incoming" { "被调用" } else { "调用" })
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("call-hierarchy-list")
+                    .max_h(px(340.))
+                    .overflow_y_scroll()
+                    .children(
+                        self.call_hierarchy_calls
+                            .iter()
+                            .enumerate()
+                            .map(|(index, call)| {
+                                let is_selected = index == selected;
+                                div()
+                                    .id(("call-hierarchy-item", index))
+                                    .px(px(10.))
+                                    .py(px(5.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .rounded(px(5.))
+                                    .bg(if is_selected {
+                                        theme::alpha(theme::ACCENT, 0.16)
+                                    } else {
+                                        gpui::transparent_black()
+                                    })
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.call_hierarchy_selected = index;
+                                        this.call_hierarchy_confirm(cx);
+                                    }))
+                                    .child(
+                                        div()
+                                            .w(px(52.))
+                                            .flex_none()
+                                            .text_size(px(9.))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child(format!("{}:{}", call.line + 1, call.column + 1)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .font_family(theme::MONO_FONT)
+                                            .text_size(px(11.))
+                                            .text_color(if is_selected {
+                                                theme::color(theme::TEXT)
+                                            } else {
+                                                theme::color(theme::TEXT_DIM)
+                                            })
+                                            .child(format!(
+                                                "{}{}",
+                                                call.name,
+                                                if call.detail.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    format!(" — {}", call.detail)
+                                                }
+                                            )),
+                                    )
+                            }),
+                    ),
+            )
+            .when(self.call_hierarchy_calls.is_empty(), |style| {
+                style.child(
+                    div()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .text_size(px(11.))
+                        .text_color(theme::color(theme::TEXT_FAINT))
+                        .child("没有调用…"),
+                )
+            })
+    }
  
      /// Floating Quick Open popup (Ctrl+P). Shows a query field and the filtered
     /// list of project files; Enter opens the highlighted entry.
@@ -12073,6 +16193,89 @@ impl IdeApp {
             })
     }
 
+    fn render_tool_picker_popup(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let tools = self.tools_store.tools();
+        let selected = self
+            .tool_picker_selected
+            .min(tools.len().saturating_sub(1));
+        div()
+            .id("tool-picker-popup")
+            .absolute()
+            .left(px(12.))
+            .top(px(46.))
+            .w(px(520.))
+            .max_h(px(380.))
+            .flex()
+            .flex_col()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::alpha(theme::STROKE, 0.18))
+            .bg(theme::color(theme::BG_1).opacity(0.98))
+            .shadow_lg()
+            .child(
+                div()
+                    .px(px(10.))
+                    .py(px(8.))
+                    .border_b_1()
+                    .border_color(theme::alpha(theme::STROKE, 0.1))
+                    .text_size(px(10.))
+                    .text_color(theme::color(theme::TEXT_FAINT))
+                    .child("运行外部工具"),
+            )
+            .child(
+                div()
+                    .id("tool-picker-list")
+                    .max_h(px(300.))
+                    .overflow_y_scroll()
+                    .children(
+                        tools
+                            .iter()
+                            .enumerate()
+                            .map(|(index, tool)| {
+                                let is_selected = index == selected;
+                                div()
+                                    .id(("tool-picker-item", index))
+                                    .px(px(10.))
+                                    .py(px(5.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .rounded(px(5.))
+                                    .bg(if is_selected {
+                                        theme::alpha(theme::ACCENT, 0.16)
+                                    } else {
+                                        gpui::transparent_black()
+                                    })
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.tool_picker_selected = index;
+                                        this.confirm_tool_picker(cx);
+                                    }))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .text_size(px(11.))
+                                            .text_color(if is_selected {
+                                                theme::color(theme::TEXT)
+                                            } else {
+                                                theme::color(theme::TEXT_DIM)
+                                            })
+                                            .child(tool.title.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.5))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child(tool.command.clone()),
+                                    )
+                            }),
+                    ),
+            )
+    }
+
 
     fn render_empty_editor(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -12109,6 +16312,48 @@ impl IdeApp {
                     .text_color(theme::color(theme::TEXT_FAINT))
                     .child("支持 C · C++ · Rust · Zig · ZR 与普通文本"),
             )
+    }
+
+    /// Write the current output buffer (build or run) to a timestamped log file
+    /// under `<project>/out/` and report the saved path. Returns early with a
+    /// status message when there is nothing to save or no project is open.
+    fn save_output_to_file(&mut self, cx: &mut Context<Self>) {
+        let content = if self.run.show_run_output {
+            self.run.output.clone()
+        } else {
+            self.output.clone()
+        };
+        if content.trim().is_empty() {
+            self.status = "当前输出为空，没有可保存的内容".to_string();
+            cx.notify();
+            return;
+        }
+        let Some(project) = &self.project else {
+            self.status = "没有打开的项目".to_string();
+            cx.notify();
+            return;
+        };
+        let out_dir = project.root.join("out");
+        if let Err(error) = std::fs::create_dir_all(&out_dir) {
+            self.status = format!("无法创建输出目录: {error}");
+            cx.notify();
+            return;
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let file = out_dir.join(format!("build-output-{stamp}.log"));
+        match std::fs::write(&file, content) {
+            Ok(()) => {
+                self.status = format!("输出已保存: {}", file.display());
+                cx.notify();
+            }
+            Err(error) => {
+                self.status = format!("保存输出失败: {error}");
+                cx.notify();
+            }
+        }
     }
 
     fn render_output(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -12192,6 +16437,28 @@ impl IdeApp {
                             )
                             .child(
                                 output_tab_button(
+                                    "out-tab-bookmarks",
+                                    &format!("书签 {}", self.bookmarks.len()),
+                                    self.output_tab == OutputTab::Bookmarks,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.output_tab = OutputTab::Bookmarks;
+                                    cx.notify();
+                                })),
+                            )
+                            .child(
+                                output_tab_button(
+                                    "out-tab-tools",
+                                    "工具",
+                                    self.output_tab == OutputTab::Tools,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.output_tab = OutputTab::Tools;
+                                    cx.notify();
+                                })),
+                            )
+                            .child(
+                                output_tab_button(
                                     "out-tab-debug",
                                     "调试",
                                     self.output_tab == OutputTab::Debug,
@@ -12258,6 +16525,27 @@ impl IdeApp {
                                     .child(self.build_command.clone()),
                             )
                             .child(
+                                div()
+                                    .id("out-save")
+                                    .h(px(22.))
+                                    .px(px(7.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded_full()
+                                    .text_size(px(9.5))
+                                    .text_color(theme::color(theme::TEXT_DIM))
+                                    .cursor_pointer()
+                                    .hover(|style| {
+                                        style
+                                            .text_color(theme::color(theme::TEXT))
+                                            .bg(theme::alpha(theme::STROKE, 0.08))
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.save_output_to_file(cx);
+                                    }))
+                                    .child("保存"),
+                            )
+                            .child(
                                 widgets::icon_button("out-clear", "⌫", 22.)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if this.run.show_run_output {
@@ -12317,6 +16605,9 @@ impl IdeApp {
                 let mut lsp_rows: Vec<gpui::AnyElement> = Vec::new();
                 for (path, diagnostics) in &self.lsp_diagnostics {
                     for diagnostic in diagnostics {
+                        if !self.lsp_problem_shown(diagnostic.severity) {
+                            continue;
+                        }
                         let (tone, glyph) = match diagnostic.severity {
                             ns_lsp::LspSeverity::Error => (theme::color(theme::DANGER), "✕"),
                             ns_lsp::LspSeverity::Warning => (theme::color(theme::ACCENT), "!"),
@@ -12407,16 +16698,27 @@ impl IdeApp {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .when(self.diagnostics.is_empty() && self.lsp_diagnostics.is_empty(), |style| {
-                        style.child(
-                            div()
-                                .p(px(12.))
-                                .text_size(px(11.))
-                                .text_color(theme::color(theme::TEXT_FAINT))
-                                .child("没有发现错误或警告。"),
-                        )
-                    })
-                    .children(self.diagnostics.iter().enumerate().map(|(index, diagnostic)| {
+                    .child(self.render_problem_filter_bar(cx))
+                    .when(
+                        self.diagnostics.is_empty() && self.lsp_diagnostics.is_empty(),
+                        |style| {
+                            style.child(
+                                div()
+                                    .p(px(12.))
+                                    .text_size(px(11.))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child("没有发现错误或警告。"),
+                            )
+                        },
+                    )
+                    .children(
+                        self.diagnostics
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, diagnostic)| {
+                                self.build_problem_shown(diagnostic.severity)
+                            })
+                            .map(|(index, diagnostic)| {
                         let (tone, glyph) = match diagnostic.severity {
                             Severity::Error => (theme::color(theme::DANGER), "✕"),
                             Severity::Warning => (theme::color(theme::ACCENT), "!"),
@@ -12679,12 +16981,26 @@ impl IdeApp {
                                         .text_color(theme::color(theme::TEXT_FAINT))
                                         .child(format!("{total} 个断点 · {enabled} 个已启用")),
                                 )
-                                .when(total > 0, |style| {
-                                    style.child(widgets::ghost_button("bp-clear-all", "清除全部")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.clear_all_breakpoints(cx);
-                                        })))
-                                }),
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(widgets::ghost_button("bp-export", "导出")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.export_breakpoints(cx);
+                                            })))
+                                        .child(widgets::ghost_button("bp-import", "导入")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.import_breakpoints(cx);
+                                            })))
+                                        .when(total > 0, |style| {
+                                            style.child(widgets::ghost_button("bp-clear-all", "清除全部")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.clear_all_breakpoints(cx);
+                                                })))
+                                        }),
+                                ),
                         )
                         .child(
                             div()
@@ -12708,6 +17024,152 @@ impl IdeApp {
                         )
                         .child(self.render_watchpoint_panel(cx))
                         .into_any_element()
+                }
+                OutputTab::Bookmarks => {
+                    let mut rows: Vec<gpui::AnyElement> = Vec::new();
+                    let mut current_file: Option<String> = None;
+                    for (index, bookmark) in self.bookmarks.all().iter().enumerate() {
+                        if current_file.as_deref() != Some(bookmark.path.as_str()) {
+                            current_file = Some(bookmark.path.clone());
+                            rows.push(
+                                div()
+                                    .id(("bm-file", index))
+                                    .pt(px(6.))
+                                    .pb(px(2.))
+                                    .px(px(6.))
+                                    .font_family(theme::MONO_FONT)
+                                    .text_size(px(9.5))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child(bookmark.path.clone())
+                                    .into_any_element(),
+                            );
+                        }
+                        let open_path = bookmark.path.clone();
+                        let remove_path = bookmark.path.clone();
+                        let line = bookmark.line;
+                        rows.push(
+                            div()
+                                .id(("bookmark", index))
+                                .px(px(10.))
+                                .py(px(6.))
+                                .flex()
+                                .items_center()
+                                .gap(px(9.))
+                                .rounded(px(6.))
+                                .bg(theme::alpha(0xffffff, 0.015))
+                                .cursor_pointer()
+                                .hover(|style| style.bg(theme::alpha(theme::STROKE, 0.07)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_bookmark(open_path.clone(), line, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .size(px(15.))
+                                        .rounded(px(4.))
+                                        .border_1()
+                                        .border_color(theme::alpha(theme::ACCENT, 0.9))
+                                        .bg(theme::alpha(theme::ACCENT, 0.9))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(9.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme::color(theme::DARK_TEXT))
+                                        .child("◆"),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(60.))
+                                        .font_family(theme::MONO_FONT)
+                                        .text_size(px(10.5))
+                                        .text_color(theme::color(theme::TEXT_DIM))
+                                        .child(format!("行 {}", line)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_size(px(10.5))
+                                        .text_color(theme::color(theme::TEXT_FAINT))
+                                        .child(if bookmark.label.is_empty() {
+                                            "书签".to_string()
+                                        } else {
+                                            bookmark.label.clone()
+                                        }),
+                                )
+                                .child(
+                                    widgets::icon_button(("bm-remove", index), "×", 20.)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.remove_bookmark(&remove_path, line, cx);
+                                        })),
+                                )
+                                .into_any_element(),
+                        );
+                    }
+                    div()
+                        .id("bookmarks-scroll")
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .h(px(30.))
+                                .flex_none()
+                                .px(px(12.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .border_b_1()
+                                .border_color(theme::alpha(theme::STROKE, 0.08))
+                                .child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .text_color(theme::color(theme::TEXT_FAINT))
+                                        .child(format!("{} 个书签", self.bookmarks.len())),
+                                )
+                                .child(
+                                    widgets::ghost_button("bm-clear-all", "清除全部")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.clear_bookmarks(cx);
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("bookmarks-list-scroll")
+                                .flex_1()
+                                .overflow_y_scroll()
+                                .p(px(8.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .when(self.bookmarks.is_empty(), |style| {
+                                    style.child(
+                                        div()
+                                            .p(px(12.))
+                                            .text_size(px(11.))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child("还没有书签。按 F2 在当前行添加，或 Cmd/Ctrl+点击行号栏切换。"),
+                                    )
+                                })
+                                .children(rows),
+                        )
+                        .into_any_element()
+                }
+                OutputTab::Tools => {
+                    if let Some(tools) = &self.tools {
+                        div().flex_1().overflow_hidden().child(tools.clone()).into_any_element()
+                    } else {
+                        div()
+                            .p(px(12.))
+                            .text_size(px(11.))
+                            .text_color(theme::color(theme::TEXT_FAINT))
+                            .child("外部工具未初始化。用命令面板「运行工具…」启动。")
+                            .into_any_element()
+                    }
                 }
                 OutputTab::Debug => self.render_debug(cx).into_any_element(),
                 OutputTab::Git => self.render_git(cx).into_any_element(),
@@ -13287,7 +17749,7 @@ impl IdeApp {
                                 cx.notify();
                             }))
                             .child("清屏"),
-                    ),
+                    )
                     .child(
                         div()
                             .id("term-tab-new")
@@ -13607,6 +18069,14 @@ impl IdeApp {
                                     }),
                                 ),
                             )
+                            .child(
+                                widgets::ghost_button("dbg-step-insn", "指令").on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.debug_step(DebugStep::Instruction, cx)
+                                    }),
+                                ),
+                            )
+
                             .when(session_active, |style| {
                                 style.child(
                                     widgets::ghost_button("dbg-restart", "重启").on_click(
@@ -13658,6 +18128,10 @@ impl IdeApp {
                                     .child(view_tab_pill("dbg-tab-sim", "仿真", self.debug.view_tab == DebugViewTab::Simulator)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.set_view_tab(DebugViewTab::Simulator, cx)
+                                        })))
+                                    .child(view_tab_pill("dbg-tab-rtos", "RTOS", self.debug.view_tab == DebugViewTab::Rtos)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_view_tab(DebugViewTab::Rtos, cx)
                                         }))),
                             )
                             .child(div().size(px(7.)).rounded_full().bg(status_color))
@@ -13782,6 +18256,7 @@ impl IdeApp {
                         DebugViewTab::Trace => self.render_debug_trace_column(cx),
                         DebugViewTab::Device => self.render_debug_device_column(cx),
                         DebugViewTab::Simulator => self.render_simulator_column(cx),
+                        DebugViewTab::Rtos => self.render_rtos_column(cx),
                     })
                     .child(
                         // 控制台
@@ -13952,6 +18427,14 @@ impl IdeApp {
                 div()
                     .px(px(10.))
                     .pt(px(6.))
+                    .pb(px(2.))
+                    .w_full()
+                    .child(self.var_filter_field.clone()),
+            )
+            .child(
+                div()
+                    .px(px(10.))
+                    .pt(px(6.))
                     .pb(px(4.))
                     .flex()
                     .flex_col()
@@ -13987,6 +18470,27 @@ impl IdeApp {
                                         } else {
                                             watch.value.clone()
                                         }),
+                                )
+                                .child(
+                                    div()
+                                        .id(("dbg-watch-copy", index))
+                                        .flex_none()
+                                        .ml(px(4.))
+                                        .text_size(px(11.))
+                                        .text_color(theme::color(theme::TEXT_FAINT))
+                                        .cursor_pointer()
+                                        .hover(|s| {
+                                            s.text_color(theme::color(theme::ACCENT_3))
+                                        })
+                                        .on_click(cx.listener({
+                                            let expression = watch.expression.clone();
+                                            let value = watch.value.clone();
+                                            move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.copy_watch_value(&expression, &value, cx);
+                                            }
+                                        }))
+                                        .child("📋"),
                                 )
                                 .child(
                                     div()
@@ -14032,7 +18536,32 @@ impl IdeApp {
                                 .child("没有变量。命中断点后显示。"),
                         )
                     })
-                    .children(self.variable_rows(&self.debug.variables, 0, 0, &mut 0, cx)),
+                    .when(
+                        !self.debug.variables.is_empty()
+                            && !self.var_filter.is_empty()
+                            && !self
+                                .debug
+                                .variables
+                                .iter()
+                                .any(|v| self.variable_matches(v, &self.var_filter)),
+                        |style| {
+                            style.child(
+                                div()
+                                    .p(px(10.))
+                                    .text_size(px(11.))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child(format!("没有变量匹配「{}」。", self.var_filter)),
+                            )
+                        },
+                    )
+                    .children(self.variable_rows_filtered(
+                        &self.debug.variables,
+                        0,
+                        0,
+                        &mut 0,
+                        cx,
+                        &self.var_filter,
+                    )),
             )
             .into_any_element()
     }
@@ -14074,6 +18603,9 @@ impl IdeApp {
                      .when(group_count > 0, |style| {
                          style.child(
                             div().flex().gap(px(4.)).children([
+                                widgets::ghost_button("dbg-regs-refresh", "刷新").on_click(
+                                    cx.listener(|this, _, _, cx| this.refresh_registers(cx)),
+                                ),
                                 widgets::ghost_button("dbg-regs-export", "导出快照").on_click(
                                     cx.listener(|this, _, _, cx| this.export_register_snapshot(cx)),
                                 ),
@@ -14280,6 +18812,28 @@ impl IdeApp {
             )
             .child(
                 div()
+                    .id(("dbg-register-copy", index))
+                    .flex_none()
+                    .text_size(px(11.))
+                    .text_color(theme::color(theme::TEXT_FAINT))
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(theme::color(theme::ACCENT_3)))
+                    .on_click(cx.listener({
+                        let name = name.clone();
+                        let value = value.clone();
+                        move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(format!(
+                                "{name} = {value}"
+                            )));
+                            this.status = format!("已复制寄存器 {name}");
+                            cx.notify();
+                        }
+                    }))
+                    .child("📋"),
+            )
+            .child(
+                div()
                     .id(("dbg-register-edit", index))
                     .flex_none()
                     .text_size(px(12.))
@@ -14347,18 +18901,40 @@ impl IdeApp {
                      }
                  })
                  .collect();
-             hex_rows.push(
-                 div()
-                     .id(("dbg-mem-row", row_index))
-                     .whitespace_nowrap()
-                     .font_family(theme::MONO_FONT)
-                     .text_size(px(9.5))
-                     .text_color(theme::color(theme::TEXT_DIM))
-                     .child(format!("{line_address:#010x}  "))
-                     .children(hex_children)
-                     .child(format!(" │ {ascii}"))
-                     .into_any_element(),
-             );
+            hex_rows.push(
+                div()
+                    .id(("dbg-mem-row", row_index))
+                    .whitespace_nowrap()
+                    .font_family(theme::MONO_FONT)
+                    .text_size(px(9.5))
+                    .text_color(theme::color(theme::TEXT_DIM))
+                    .child(format!("{line_address:#010x}  "))
+                    .children(hex_children)
+                    .child(format!(" │ {ascii}"))
+                    .child(
+                        div()
+                            .id(("dbg-mem-copy", row_index))
+                            .ml(px(8.))
+                            .text_color(theme::color(theme::TEXT_FAINT))
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(theme::color(theme::ACCENT_3)))
+                            .on_click(cx.listener({
+                                let row_bytes = chunk.to_vec();
+                                let row_ascii = ascii.clone();
+                                move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.copy_memory_row(
+                                        line_address,
+                                        &row_bytes,
+                                        &row_ascii,
+                                        cx,
+                                    );
+                                }
+                            }))
+                            .child("📋"),
+                    )
+                    .into_any_element(),
+            );
          }
 
         div()
@@ -14466,8 +19042,23 @@ impl IdeApp {
                                      }),
                              )
                              .child(
-                                 widgets::primary_button("dbg-mem-read", "读取").on_click(
-                                     cx.listener(|this, _, _, cx| this.read_memory(cx)),
+                                widgets::primary_button("dbg-mem-read", "读取").on_click(
+                                    cx.listener(|this, _, _, cx| this.read_memory(cx)),
+                                ),
+                            )
+                            .child(
+                                widgets::ghost_button("dbg-mem-pc", "跟随 PC").on_click(
+                                    cx.listener(|this, _, _, cx| this.jump_memory_to_pc(cx)),
+                                ),
+                            )
+                            .child(
+                                widgets::ghost_button("dbg-mem-export", "导出").on_click(
+                                    cx.listener(|this, _, _, cx| this.export_memory_region(cx)),
+                                ),
+                            )
+                             .child(
+                                 widgets::ghost_button("dbg-mem-import", "导入").on_click(
+                                     cx.listener(|this, _, _, cx| this.import_memory_region(cx)),
                                  ),
                              ),
                      )
@@ -14855,13 +19446,24 @@ impl IdeApp {
                                                   }),
                                           )
                                         .child(
-                                             div()
-                                                 .flex_none()
-                                                 .font_family(theme::MONO_FONT)
-                                                 .text_size(px(10.))
-                                                 .text_color(theme::color(theme::ACCENT_3))
-                                                 .child(format!("{:#x}", instruction.address)),
-                                         )
+                                            div()
+                                                .id(("dbg-disasm-addr", index))
+                                                .flex_none()
+                                                .font_family(theme::MONO_FONT)
+                                                .text_size(px(10.))
+                                                .text_color(theme::color(theme::ACCENT_3))
+                                                .cursor_pointer()
+                                                .hover(|style| style.text_color(theme::color(theme::ACCENT)))
+                                                .on_click(cx.listener({
+                                                    let address = instruction.address;
+                                                    move |this, _, _, cx| {
+                                                        this.debug.view_tab =
+                                                            DebugViewTab::Memory;
+                                                        this.jump_memory_to_address(address, cx);
+                                                    }
+                                                }))
+                                                .child(format!("{:#x}", instruction.address)),
+                                        )
                                         .child(
                                             div()
                                                 .font_family(theme::MONO_FONT)
@@ -14875,6 +19477,27 @@ impl IdeApp {
                                                 .text_ellipsis()
                                                 .whitespace_nowrap()
                                                 .child(instruction.instruction.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(("dbg-disasm-copy", index))
+                                                .flex_none()
+                                                .ml(px(6.))
+                                                .text_size(px(11.))
+                                                .text_color(theme::color(theme::TEXT_FAINT))
+                                                .cursor_pointer()
+                                                .hover(|s| {
+                                                    s.text_color(theme::color(theme::ACCENT_3))
+                                                })
+                                                .on_click(cx.listener({
+                                                    let addr = instruction.address;
+                                                    let text = instruction.instruction.clone();
+                                                    move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        this.copy_disasm_instruction(addr, &text, cx);
+                                                    }
+                                                }))
+                                                .child("📋"),
                                         )
                                         .into_any_element(),
                                 );
@@ -15324,6 +19947,121 @@ impl IdeApp {
              .into_any_element()
      }
 
+    /// Render the RTOS task list: a refresh button, a status line, and the
+    /// parsed tasks (running task highlighted).
+    fn render_rtos_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let tasks = &self.debug.rtos_tasks;
+        let status = self.debug.rtos_status.clone();
+        div()
+            .id("debug-rtos")
+            .w(px(390.))
+            .flex_none()
+            .h_full()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(theme::alpha(theme::STROKE, 0.08))
+            .child(
+                div()
+                    .px(px(10.))
+                    .pt(px(7.))
+                    .pb(px(3.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(widgets::section_label("RTOS 任务"))
+                    .child(
+                        widgets::ghost_button("dbg-rtos-refresh", "刷新任务列表").on_click(
+                            cx.listener(|this, _, _, cx| this.refresh_rtos_tasks(cx)),
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(10.))
+                    .pb(px(4.))
+                    .text_size(px(10.))
+                    .text_color(theme::color(theme::TEXT_FAINT))
+                    .child(status),
+            )
+            .child(
+                div()
+                    .id("debug-rtos-list")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .px(px(6.))
+                    .pb(px(6.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .when(tasks.is_empty(), |style| {
+                        style.child(
+                            div()
+                                .p(px(10.))
+                                .text_size(px(11.))
+                                .text_color(theme::color(theme::TEXT_FAINT))
+                                .child("暂无任务。命中断点后点击「刷新任务列表」。"),
+                        )
+                    })
+                    .children(tasks.iter().enumerate().map(|(index, task)| {
+                        let running = task.running;
+                        div()
+                            .id(("dbg-rtos-task", index))
+                            .px(px(6.))
+                            .py(px(4.))
+                            .rounded(px(6.))
+                            .bg(if running {
+                                theme::alpha(theme::JADE, 0.16)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .flex()
+                            .items_baseline()
+                            .gap(px(8.))
+                            .font_family(theme::MONO_FONT)
+                            .text_size(px(10.5))
+                            .child(
+                                div()
+                                    .w(px(12.))
+                                    .flex_none()
+                                    .text_color(theme::color(if running {
+                                        theme::JADE
+                                    } else {
+                                        theme::TEXT_FAINT
+                                    }))
+                                    .child(if running { "▶" } else { "·" }),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme::color(theme::TEXT))
+                                    .child(task.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .text_color(theme::color(theme::TEXT_DIM))
+                                    .child(format!("{} · 优先级 {}", task.state.label(), task.priority)),
+                            )
+                            .child(
+                                task.stack_usage
+                                    .map(|usage| {
+                                        div()
+                                            .flex_none()
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child(format!("栈 {usage}%"))
+                                            .into_any_element()
+                                    })
+                                    .unwrap_or_else(|| div().into_any_element()),
+                            )
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// Filter a device peripheral and its registers by a case-insensitive
     /// substring. Returns `(peripheral_matches, matching_registers)`: the
     /// peripheral header is shown when its own name matches OR any of its
@@ -15530,6 +20268,7 @@ impl IdeApp {
                     if !periph_match && regs.is_empty() {
                         continue;
                     }
+                     let periph_desc = device_description_short(&peripheral.description, 64);
                      rows.push(
                          div()
                              .id(gpui::SharedString::from(format!(
@@ -15539,26 +20278,32 @@ impl IdeApp {
                              .pt(px(8.))
                              .pb(px(3.))
                              .px(px(4.))
-                             .text_size(px(9.5))
-                             .font_weight(FontWeight::BOLD)
-                             .text_color(theme::color(theme::ACCENT))
-                             .child(format!(
-                                 "{}  @ 0x{:08X}",
-                                 peripheral.name,
-                                 peripheral.base_address
-                             ))
+                             .flex()
+                             .flex_col()
+                             .gap(px(1.))
+                             .child(
+                                 div()
+                                     .text_size(px(9.5))
+                                     .font_weight(FontWeight::BOLD)
+                                     .text_color(theme::color(theme::ACCENT))
+                                     .child(format!(
+                                         "{}  @ 0x{:08X}",
+                                         peripheral.name,
+                                         peripheral.base_address
+                                     )),
+                             )
+                             .when(!periph_desc.is_empty(), |el| {
+                                 el.child(
+                                     div()
+                                         .text_size(px(8.5))
+                                         .text_color(theme::color(theme::TEXT_FAINT))
+                                         .child(periph_desc.clone()),
+                                 )
+                             })
                              .into_any_element(),
                      );
                     for register in regs {
                         let reg_address = register.address;
-                        let field_summary: String = register
-                            .fields
-                            .iter()
-                            .map(|field| {
-                                format!("{}[{}:{}]", field.name, field.bit_offset + field.bit_width - 1, field.bit_offset)
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" · ");
                         // Live value: prefer the debug session's cached
                         // register read, then the simulator memory, else the
                         // reset value.
@@ -15579,98 +20324,234 @@ impl IdeApp {
                             .device_reg_values
                             .contains_key(&register.address)
                             || self.sim.core.is_some();
+                        // Field summary carries each field's live value so a
+                        // register's decoded bits are visible at a glance
+                        // (e.g. `MODE0=0xF[3:0] · CNF0=0x1[7:4]`).
+                        let field_summary: String = register
+                            .fields
+                            .iter()
+                            .map(|field| {
+                                let value = device_field_value(live, field);
+                                let range = if field.bit_width == 1 {
+                                    format!("{}", field.bit_offset)
+                                } else {
+                                    format!(
+                                        "{}:{}",
+                                        field.bit_offset + field.bit_width - 1,
+                                        field.bit_offset
+                                    )
+                                };
+                                format!("{}=0x{value:x}[{range}]", field.name)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        let reg_desc = device_description_short(&register.description, 80);
+                        let has_fields = !register.fields.is_empty();
+                        let expanded = self.debug.device_reg_expanded.contains(&register.address);
+                        // Expanded field rows: name, bit range, live value and
+                        // (when present) the SVD field description. Built
+                        // lazily so the non-expanded path never allocates it.
+                        let build_field_rows = |register: &ns_device::Register, live: u32| -> Vec<gpui::AnyElement> {
+                            register
+                                .fields
+                                .iter()
+                                .map(|field| {
+                                    let value = device_field_value(live, field);
+                                    let range = if field.bit_width == 1 {
+                                        format!("{}", field.bit_offset)
+                                    } else {
+                                        format!(
+                                            "{}:{}",
+                                            field.bit_offset + field.bit_width - 1,
+                                            field.bit_offset
+                                        )
+                                    };
+                                    let desc = field.description.trim();
+                                    let name_color = if value != 0 {
+                                        theme::color(theme::ACCENT_3)
+                                    } else {
+                                        theme::color(theme::TEXT_FAINT)
+                                    };
+                                    div()
+                                        .ml(px(136.))
+                                        .mr(px(8.))
+                                        .py(px(1.))
+                                        .flex()
+                                        .items_baseline()
+                                        .gap(px(6.))
+                                        .font_family(theme::MONO_FONT)
+                                        .text_size(px(9.))
+                                        .child(
+                                            div()
+                                                .w(px(110.))
+                                                .flex_none()
+                                                .text_color(name_color)
+                                                .child(format!("{}[{}]", field.name, range)),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .text_color(if value != 0 {
+                                                    theme::color(theme::TEXT)
+                                                } else {
+                                                    theme::color(theme::TEXT_FAINT)
+                                                })
+                                                .child(format!("= 0x{value:x}")),
+                                        )
+                                        .when(!desc.is_empty(), |el| {
+                                            el.child(
+                                                div()
+                                                    .flex_1()
+                                                    .overflow_hidden()
+                                                    .text_ellipsis()
+                                                    .whitespace_nowrap()
+                                                    .text_size(px(8.5))
+                                                    .text_color(theme::color(theme::TEXT_FAINT).opacity(0.75))
+                                                    .child(desc.to_string()),
+                                            )
+                                        })
+                                        .into_any_element()
+                                })
+                                .collect()
+                        };
                         rows.push(
                             div()
                                 .id(("dev-reg", register.address))
                                 .px(px(4.))
                                 .py(px(2.))
                                 .flex()
-                                .items_center()
-                                .gap(px(8.))
+                                .flex_col()
+                                .gap(px(1.))
                                 .child(
                                     div()
-                                        .w(px(120.))
-                                        .flex_none()
-                                        .font_family(theme::MONO_FONT)
-                                        .text_size(px(10.))
-                                        .text_color(theme::color(theme::TEXT_DIM))
-                                        .child(format!("0x{:08X}", register.address)),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(110.))
-                                        .flex_none()
-                                        .font_family(theme::MONO_FONT)
-                                        .text_size(px(10.))
-                                        .text_color(theme::color(theme::TEXT))
-                                        .child(register.name.clone()),
-                                )
-                                .child(
-                                    if self
-                                        .debug
-                                        .device_reg_edit
-                                        .as_ref()
-                                        .map(|(addr, _)| *addr == register.address)
-                                        .unwrap_or(false)
-                                    {
-                                        // Edit mode: render the input field.
-                                        let field = self
-                                            .debug
-                                            .device_reg_edit
-                                            .as_ref()
-                                            .map(|(_, f)| f.clone())
-                                            .unwrap();
-                                        let field_for_commit = field.clone();
-                                        div()
-                                            .w(px(110.))
-                                            .flex_none()
-                                            .child(field)
-                                            .on_key_down(cx.listener(
-                                                move |this, event: &KeyDownEvent, _, cx| {
-                                                    if event.keystroke.key.as_str() == "enter" {
-                                                        let text = field_for_commit
-                                                            .read(cx)
-                                                            .text();
-                                                        this.commit_device_reg_edit(&text, cx);
-                                                    }
-                                                },
-                                            ))
-                                            .into_any_element()
-                                    } else {
-                                        div()
-                                            .id(("dev-reg-val", register.address))
-                                            .w(px(90.))
-                                            .flex_none()
-                                            .cursor_pointer()
-                                            .rounded(px(4.))
-                                            .px(px(2.))
-                                            .hover(|s| {
-                                                s.bg(theme::alpha(theme::STROKE, 0.12))
-                                            })
-                                            .font_family(theme::MONO_FONT)
-                                            .text_size(px(10.))
-                                            .text_color(if live_active {
-                                                theme::color(theme::JADE)
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .w(px(14.))
+                                                .flex_none()
+                                                .text_size(px(9.))
+                                                .text_color(theme::color(theme::TEXT_FAINT))
+                                                .child(if has_fields {
+                                                    if expanded { "▾" } else { "▸" }
+                                                } else {
+                                                    " "
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(120.))
+                                                .flex_none()
+                                                .font_family(theme::MONO_FONT)
+                                                .text_size(px(10.))
+                                                .text_color(theme::color(theme::TEXT_DIM))
+                                                .child(format!("0x{:08X}", register.address)),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(110.))
+                                                .flex_none()
+                                                .font_family(theme::MONO_FONT)
+                                                .text_size(px(10.))
+                                                .text_color(theme::color(theme::TEXT))
+                                                .child(register.name.clone()),
+                                        )
+                                        .child(
+                                            if self
+                                                .debug
+                                                .device_reg_edit
+                                                .as_ref()
+                                                .map(|(addr, _)| *addr == register.address)
+                                                .unwrap_or(false)
+                                            {
+                                                // Edit mode: render the input field.
+                                                let field = self
+                                                    .debug
+                                                    .device_reg_edit
+                                                    .as_ref()
+                                                    .map(|(_, f)| f.clone())
+                                                    .unwrap();
+                                                let field_for_commit = field.clone();
+                                                div()
+                                                    .w(px(110.))
+                                                    .flex_none()
+                                                    .child(field)
+                                                    .on_key_down(cx.listener(
+                                                        move |this, event: &KeyDownEvent, _, cx| {
+                                                            if event.keystroke.key.as_str() == "enter" {
+                                                                let text = field_for_commit
+                                                                    .read(cx)
+                                                                    .text();
+                                                                this.commit_device_reg_edit(&text, cx);
+                                                            }
+                                                        },
+                                                    ))
+                                                    .into_any_element()
                                             } else {
-                                                theme::color(theme::TEXT_FAINT)
-                                            })
-                                            .child(format!("0x{:08X}", live))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.begin_device_reg_edit(reg_address, cx);
-                                            }))
-                                            .into_any_element()
-                                    },
+                                                div()
+                                                    .id(("dev-reg-val", register.address))
+                                                    .w(px(90.))
+                                                    .flex_none()
+                                                    .cursor_pointer()
+                                                    .rounded(px(4.))
+                                                    .px(px(2.))
+                                                    .hover(|s| {
+                                                        s.bg(theme::alpha(theme::STROKE, 0.12))
+                                                    })
+                                                    .font_family(theme::MONO_FONT)
+                                                    .text_size(px(10.))
+                                                    .text_color(if live_active {
+                                                        theme::color(theme::JADE)
+                                                    } else {
+                                                        theme::color(theme::TEXT_FAINT)
+                                                    })
+                                                    .child(format!("0x{:08X}", live))
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        this.begin_device_reg_edit(reg_address, cx);
+                                                    }))
+                                                    .into_any_element()
+                                            },
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .text_size(px(9.5))
+                                                .text_color(theme::color(theme::TEXT_FAINT))
+                                                .child(field_summary),
+                                        ),
                                 )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .text_size(px(9.5))
-                                        .text_color(theme::color(theme::TEXT_FAINT))
-                                        .child(field_summary),
-                                )
+                                .when(!reg_desc.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .ml(px(128.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .text_size(px(8.5))
+                                            .text_color(theme::color(theme::TEXT_FAINT).opacity(0.7))
+                                            .child(reg_desc.clone()),
+                                    )
+                                })
+                                .when(has_fields && expanded, |el| {
+                                    el.child(
+                                        div()
+                                            .ml(px(8.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(1.))
+                                            .children(build_field_rows(register, live)),
+                                    )
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if has_fields {
+                                        this.toggle_device_reg_expand(reg_address, cx);
+                                    }
+                                }))
                                 .into_any_element(),
                         );
                     }
@@ -16359,6 +21240,10 @@ impl IdeApp {
                         .on_click(cx.listener(|this, _, _, cx| this.sim_step_over(cx))),
                 )
                 .child(
+                    widgets::ghost_button("sim-run-cursor", "运行到光标")
+                        .on_click(cx.listener(|this, _, _, cx| this.sim_run_to_cursor(cx))),
+                )
+                .child(
                     widgets::ghost_button("sim-run", "运行")
                         .on_click(cx.listener(|this, _, _, cx| this.sim_run(cx))),
                 )
@@ -16508,12 +21393,34 @@ impl IdeApp {
                                     .into_any_element()
                             } else {
                                 div()
-                                    .id(gpui::SharedString::from(format!("sim-reg-{idx}")))
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.begin_reg_edit(idx, window, cx);
-                                    }))
-                                    .child(format!("{}  0x{:08x}", name, value))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .id(gpui::SharedString::from(format!("sim-reg-{idx}")))
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.begin_reg_edit(idx, window, cx);
+                                            }))
+                                            .child(format!("{}  0x{:08x}", name, value)),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(gpui::SharedString::from(format!(
+                                                "sim-reg-copy-{idx}"
+                                            )))
+                                            .cursor_pointer()
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .hover(|s| {
+                                                s.text_color(theme::color(theme::ACCENT_3))
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.sim_copy_reg(idx, cx);
+                                            }))
+                                            .child("📋"),
+                                    )
                                     .into_any_element()
                             })
                             .into_any_element(),
@@ -16535,42 +21442,134 @@ impl IdeApp {
             let bp_rows: Vec<gpui::AnyElement> = core
                 .breakpoints
                 .iter()
-                .map(|addr| {
-                    let a = *addr;
+                .map(|bp| {
+                    let a = bp.address;
                     let read = |x: u32| core.read_u8(x);
                     let text = ns_sim::disassemble_one_state(core.arch, a, &read, core.arm_state());
                     let at_pc = a == core.program_counter();
+                    let cond = bp.condition.clone();
+                    let hits = bp.hits();
+
+                    let hit_count = bp.hit_count;
+                    let cond_edit = self
+                        .sim
+                        .bp_condition_input
+                        .as_ref()
+                        .filter(|(addr, _)| *addr == a)
+                        .map(|(_, f)| f.clone());
+
                     div()
                         .id(gpui::SharedString::from(format!("sim-bp-{a}")))
                         .flex()
-                        .gap(px(8.))
-                        .items_center()
-                        .text_size(px(9.5))
-                        .text_color(if at_pc {
-                            theme::color(theme::DANGER)
+                        .flex_col()
+                        .gap(px(2.))
+                        .px(px(4.))
+                        .py(px(2.))
+                        .rounded(px(6.))
+                        .bg(if at_pc {
+                            theme::alpha(theme::DANGER, 0.08)
                         } else {
-                            theme::color(theme::TEXT_DIM)
+                            gpui::transparent_black()
                         })
-                        .child(format!("● 0x{a:08x}"))
                         .child(
                             div()
-                                .font_family(theme::MONO_FONT)
-                                .child(text),
+                                .flex()
+                                .gap(px(8.))
+                                .items_center()
+                                .text_size(px(9.5))
+                                .text_color(if at_pc {
+                                    theme::color(theme::DANGER)
+                                } else {
+                                    theme::color(theme::TEXT_DIM)
+                                })
+                                .child(format!("● 0x{a:08x}"))
+                                .child(
+                                    div()
+                                        .font_family(theme::MONO_FONT)
+                                        .child(text),
+                                )
+                                .when(at_pc, |style| style.child("← 命中"))
+                                .child(
+                                    div()
+                                        .id(gpui::SharedString::from(format!("sim-bp-del-{a}")))
+                                        .cursor_pointer()
+                                        .text_color(theme::color(theme::TEXT_FAINT))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.sim_remove_breakpoint(a, cx);
+                                        }))
+                                        .child("✕"),
+                                ),
                         )
-                        .when(at_pc, |style| style.child("← 命中"))
                         .child(
                             div()
-                                .id(gpui::SharedString::from(format!("sim-bp-del-{a}")))
-                                .cursor_pointer()
+                                .flex()
+                                .gap(px(6.))
+                                .items_center()
+                                .text_size(px(8.5))
                                 .text_color(theme::color(theme::TEXT_FAINT))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.sim_remove_breakpoint(a, cx);
-                                }))
-                                .child("✕"),
+                                .child(format!(
+                                    "命中 {hits}{}",
+                                    if hit_count > 0 {
+                                        format!("/{hit_count}")
+                                    } else {
+                                        String::new()
+                                    }
+                                ))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .child(
+                                            cond_edit
+                                                .clone()
+                                                .map(|field| div().child(field).into_any_element())
+                                                .unwrap_or_else(|| {
+                                                    div()
+                                                        .id(gpui::SharedString::from(format!(
+                                                            "sim-bp-cond-{a}"
+                                                        )))
+                                                        .cursor_pointer()
+
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.begin_sim_bp_condition_edit(
+                                                                    a,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        ))
+
+                                                        .child(if cond.is_empty() {
+                                                            "条件: (点击添加) ⌁".to_string()
+                                                        } else {
+                                                            format!("条件: {cond} ⌁")
+                                                        })
+                                                        .into_any_element()
+                                                }),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id(gpui::SharedString::from(format!(
+                                            "sim-bp-hits-{a}"
+                                        )))
+                                        .cursor_pointer()
+
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.begin_sim_bp_hitcount_edit(a, window, cx);
+                                        }))
+
+                                        .child(if hit_count > 0 {
+                                            format!("第 {hit_count} 次")
+                                        } else {
+                                            "次数: (点击) ⌁".to_string()
+                                        }),
+                                ),
                         )
                         .into_any_element()
                 })
                 .collect();
+
             rows.push(
                 div()
                     .id("sim-bp-list")
@@ -16885,6 +21884,12 @@ impl IdeApp {
                                 widgets::ghost_button("sim-mem-read", "读取")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.sim_read_memory(cx)
+                                    })),
+                            )
+                            .child(
+                                widgets::ghost_button("sim-mem-pc", "跟随 PC")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sim_jump_memory_to_pc(cx)
                                     })),
                             ),
                     )
@@ -17478,6 +22483,8 @@ impl Render for IdeApp {
                 window.focus(&dialog.field.read(cx).focus_handle(cx));
             } else if let Some(dialog) = &self.go_to_line_dialog {
                 window.focus(&dialog.field.read(cx).focus_handle(cx));
+            } else if let Some(dialog) = &self.project_rename_dialog {
+                window.focus(&dialog.field.read(cx).focus_handle(cx));
             } else if let Some(dialog) = &self.git_branch_dialog {
                 window.focus(&dialog.field.read(cx).focus_handle(cx));
             } else if let Some(dialog) = &self.set_var_dialog {
@@ -17492,6 +22499,8 @@ impl Render for IdeApp {
                 if let Some((_, _, _, field)) = dialog.fields.first() {
                     window.focus(&field.read(cx).focus_handle(cx));
                 }
+            } else if let Some(dialog) = &self.tool_dialog {
+                window.focus(&dialog.title.read(cx).focus_handle(cx));
             }
         }
 
@@ -17512,13 +22521,20 @@ impl Render for IdeApp {
                 || self.settings_dialog.is_some()
                 || self.toolchain_dialog.is_some()
                 || self.keybindings_dialog.is_some()
+                || self.tool_dialog.is_some()
+                || self.snippet_dialog.is_some()
+
                 || self.new_entry_dialog.is_some()
                 || self.go_to_line_dialog.is_some()
+                || self.project_rename_dialog.is_some()
+                || self.project_delete_dialog.is_some()
+                || self.confirm_close_dialog.is_some()
+                || self.periph_config.is_some()
             {
                 "Dialog"
             } else if self.search.is_some() {
                 "Search"
-            } else if self.palette.is_some() {
+            } else if self.palette.is_some() || self.tool_picker_open {
                 "Palette"
             } else {
                 "App"
@@ -17530,6 +22546,9 @@ impl Render for IdeApp {
                 this.open_project_dialog(cx)
             }))
             .on_action(cx.listener(|this, _: &Save, _, cx| this.save_active(cx)))
+            .on_action(cx.listener(|this, _: &SaveAll, _, cx| {
+                this.save_all_editors(cx);
+            }))
             .on_action(cx.listener(|this, _: &Build, _, cx| this.start_build(false, cx)))
             .on_action(cx.listener(|this, _: &Run, _, cx| this.start_build(true, cx)))
             .on_action(cx.listener(|this, _: &ClearBreakpoints, _, cx| {
@@ -17553,7 +22572,7 @@ impl Render for IdeApp {
                     let _ = session.commands.send(DebugCommand::Stop);
                 }
                 this.save_session(cx);
-                cx.quit()
+                this.request_quit(cx)
             }))
             .on_action(cx.listener(|this, _: &WizardNext, _, cx| {
                 if this.wizard.is_some() {
@@ -17567,13 +22586,34 @@ impl Render for IdeApp {
             }))
             .on_action(cx.listener(|this, _: &Palette, window, cx| this.open_palette(window, cx)))
             .on_action(cx.listener(|this, _: &PaletteConfirm, window, cx| {
-                this.confirm_palette(window, cx)
+                if this.tool_picker_open {
+                    this.confirm_tool_picker(cx);
+                } else {
+                    this.confirm_palette(window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &PaletteSelectUp, _, cx| {
-                this.move_palette_selection(-1, cx)
+                if this.tool_picker_open {
+                    let n = this.tools_store.tools().len();
+                    if n > 0 {
+                        this.tool_picker_selected =
+                            (this.tool_picker_selected + n - 1) % n;
+                        cx.notify();
+                    }
+                } else {
+                    this.move_palette_selection(-1, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &PaletteSelectDown, _, cx| {
-                this.move_palette_selection(1, cx)
+                if this.tool_picker_open {
+                    let n = this.tools_store.tools().len();
+                    if n > 0 {
+                        this.tool_picker_selected = (this.tool_picker_selected + 1) % n;
+                        cx.notify();
+                    }
+                } else {
+                    this.move_palette_selection(1, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &FindInProject, window, cx| {
                 this.open_search(window, cx)
@@ -17597,6 +22637,8 @@ impl Render for IdeApp {
                     this.save_watchpoint_dialog(cx);
                 } else if this.go_to_line_dialog.is_some() {
                     this.save_go_to_line_dialog(cx);
+                } else if this.project_rename_dialog.is_some() {
+                    this.save_project_rename(cx);
                 } else if this.set_var_dialog.is_some() {
                     this.save_set_var_dialog(cx);
                 } else if this.settings_dialog.is_some() {
@@ -17605,12 +22647,16 @@ impl Render for IdeApp {
                     this.save_toolchain(cx);
                 } else if this.keybindings_dialog.is_some() {
                     this.save_keybindings(cx);
+                } else if this.tool_dialog.is_some() {
+                    this.save_tool(cx);
                 } else if this.git_branch_dialog.is_some() {
                     this.git_create_branch(cx);
+                } else if this.confirm_close_dialog.is_some() {
+                    // Enter = save all and close (the default safe choice).
+                    this.resolve_close_dialog(true, cx);
                 }
             }))
 
-            .on_action(cx.listener(|this, _: &Debug, _, cx| this.start_debug(cx)))
             .on_action(cx.listener(|this, _: &StopDebug, _, cx| this.stop_debug(cx)))
             .on_action(cx.listener(|this, _: &DebugStepOver, _, cx| {
                 this.debug_step(DebugStep::Over, cx)
@@ -17621,11 +22667,17 @@ impl Render for IdeApp {
             .on_action(cx.listener(|this, _: &DebugStepOut, _, cx| {
                 this.debug_step(DebugStep::Out, cx)
             }))
+            .on_action(cx.listener(|this, _: &DebugStepInstruction, _, cx| {
+                this.debug_step(DebugStep::Instruction, cx)
+            }))
+
             .on_action(cx.listener(|this, _: &RunToCursor, _, cx| {
                 this.run_to_cursor(cx)
             }))
             .on_action(cx.listener(|this, _: &EscapeModal, _, cx| {
-                if this.wizard.is_some() {
+                if this.periph_config.is_some() {
+                    this.close_peripheral_config(cx);
+                } else if this.wizard.is_some() {
                     this.wizard_cancel(cx);
                 } else if this.condition_dialog.is_some() {
                     this.cancel_condition_dialog(cx);
@@ -17637,6 +22689,15 @@ impl Render for IdeApp {
                     this.cancel_git_branch_dialog(cx);
                 } else if this.go_to_line_dialog.is_some() {
                     this.cancel_go_to_line_dialog(cx);
+                } else if this.project_rename_dialog.is_some() {
+                    this.project_rename_dialog = None;
+                    cx.notify();
+                } else if this.project_delete_dialog.is_some() {
+                    this.project_delete_dialog = None;
+                    cx.notify();
+                } else if this.confirm_close_dialog.is_some() {
+                    this.confirm_close_dialog = None;
+                    cx.notify();
                 } else if this.set_var_dialog.is_some() {
                     this.cancel_set_var_dialog(cx);
                 } else if this.rename_dialog.is_some() {
@@ -17648,6 +22709,15 @@ impl Render for IdeApp {
                     this.cancel_toolchain(cx);
                 } else if this.keybindings_dialog.is_some() {
                     this.cancel_keybindings(cx);
+                } else if this.tool_dialog.is_some() {
+                    this.tool_dialog = None;
+                    cx.notify();
+                } else if this.snippet_dialog.is_some() {
+                    this.snippet_dialog = None;
+                    cx.notify();
+                } else if this.tool_picker_open {
+                    this.tool_picker_open = false;
+                    cx.notify();
                 } else if this.search.is_some() {
                     this.close_search(cx);
                 } else if this.palette.is_some() {
@@ -17661,15 +22731,25 @@ impl Render for IdeApp {
                  } else if this.context_menu.is_some() {
                      this.context_menu = None;
                      cx.notify();
-                } else if this.tab_menu.is_some() {
                     this.tab_menu = None;
                     cx.notify();
+                } else if this.compare_dialog.is_some() {
+                    this.close_compare_dialog(cx);
                  }
             }))
              .on_action(cx.listener(|this, _: &GoToDefinition, _, cx| {
                  this.lsp_go_to_definition(cx)
              }))
             .on_action(cx.listener(|this, _: &GoToLine, _, cx| this.open_go_to_line(cx)))
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.set_editor_zoom(0.1, cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.set_editor_zoom(-0.1, cx)))
+            .on_action(cx.listener(|this, _: &ZoomReset, _, cx| this.set_editor_zoom(0.0, cx)))
+            .on_action(cx.listener(|this, _: &NextDiagnostic, _, cx| {
+                this.navigate_diagnostic(1, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PrevDiagnostic, _, cx| {
+                this.navigate_diagnostic(-1, cx)
+            }))
             .on_action(cx.listener(|this, _: &GotoHeaderSource, _, cx| {
                 this.goto_header_source(cx)
             }))
@@ -17708,6 +22788,8 @@ impl Render for IdeApp {
                      this.workspace_symbol_move(-1, cx);
                  } else if this.references_open {
                      this.references_move(-1, cx);
+                 } else if this.call_hierarchy_open {
+                     this.call_hierarchy_move(-1, cx);
                  } else if this.quick_open {
                      this.quick_open_move(-1, cx);
                  } else if this.recent_open {
@@ -17721,6 +22803,8 @@ impl Render for IdeApp {
                      this.workspace_symbol_move(1, cx);
                  } else if this.references_open {
                      this.references_move(1, cx);
+                 } else if this.call_hierarchy_open {
+                     this.call_hierarchy_move(1, cx);
                  } else if this.quick_open {
                      this.quick_open_move(1, cx);
                  } else if this.recent_open {
@@ -17734,6 +22818,8 @@ impl Render for IdeApp {
                      this.workspace_symbol_confirm(cx);
                  } else if this.references_open {
                      this.references_confirm(cx);
+                 } else if this.call_hierarchy_open {
+                     this.call_hierarchy_confirm(cx);
                  } else if this.quick_open {
                      this.quick_open_confirm(cx);
                  } else if this.recent_open {
@@ -17747,6 +22833,8 @@ impl Render for IdeApp {
                      this.close_workspace_symbols(cx);
                  } else if this.references_open {
                      this.close_references(cx);
+                 } else if this.call_hierarchy_open {
+                     this.close_call_hierarchy(cx);
                  } else if this.quick_open {
                      this.close_quick_open(cx);
                  } else if this.recent_open {
@@ -17902,8 +22990,100 @@ impl Render for IdeApp {
                     }))
                     .into_any_element(),
             );
-             items.push(
-                 item("ctx-clear-file", "清除本文件断点", true)
+            items.push(
+                div()
+                    .h(px(1.))
+                    .my(px(4.))
+                    .bg(theme::alpha(theme::STROKE, 0.12))
+                    .into_any_element(),
+            );
+            items.push(
+                item("ctx-copy-path", "复制文件路径", false)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.copy_active_path(cx);
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                item("ctx-terminal-dir", "在终端中打开当前目录", false)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.terminal_in_active_dir(cx);
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                div()
+                    .h(px(1.))
+                    .my(px(4.))
+                    .bg(theme::alpha(theme::STROKE, 0.12))
+                    .into_any_element(),
+            );
+            items.push(
+                item("ctx-cut", "剪切", false)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.context_menu = None;
+                        if let Some(editor) = this.active_editor() {
+                            editor.update(cx, |editor, cx| {
+                                editor.cut_selection_to_clipboard(window, cx)
+                            });
+                        }
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                item("ctx-copy", "复制", false)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.context_menu = None;
+                        if let Some(editor) = this.active_editor() {
+                            editor.update(cx, |editor, cx| {
+                                editor.copy_selection_to_clipboard(cx)
+                            });
+                        }
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                item("ctx-paste", "粘贴", false)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.context_menu = None;
+                        if let Some(editor) = this.active_editor() {
+                            editor.update(cx, |editor, cx| {
+                                editor.paste_from_clipboard(window, cx)
+                            });
+                        }
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                item("ctx-select-all", "全选", false)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.context_menu = None;
+                        if let Some(editor) = this.active_editor() {
+                            editor.update(cx, |editor, cx| {
+                                editor.select_all_document(window, cx)
+                            });
+                        }
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                item("ctx-format-doc", "格式化文档", false)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.context_menu = None;
+                        this.lsp_format_document(cx);
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                item("ctx-rename-symbol", "重命名符号…", false)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.context_menu = None;
+                        this.rename_symbol(cx);
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                item("ctx-clear-file", "清除本文件断点", true)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.clear_file_breakpoints(&path, cx);
                     }))
@@ -18094,6 +23274,14 @@ impl Render for IdeApp {
             );
             let p = menu_path.clone();
             items.push(
+                item("tree-menu-duplicate", "复制副本…", false)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_duplicate_dialog(p.clone(), cx);
+                    }))
+                    .into_any_element(),
+            );
+            let p = menu_path.clone();
+            items.push(
                 item("tree-menu-delete", "删除", true)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.delete_tree_entry(p.clone(), cx);
@@ -18110,6 +23298,26 @@ impl Render for IdeApp {
                         ));
                         this.status = format!("已复制路径: {}", p.display());
                         cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+            let p = menu_path.clone();
+            items.push(
+                item("tree-menu-terminal", "在终端中打开", false)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.tree_menu = None;
+                        // Directories open directly; files open their parent.
+                        let dir = if p.is_dir() {
+                            p.clone()
+                        } else {
+                            p.parent().map(Path::to_path_buf).unwrap_or_default()
+                        };
+                        if dir.is_dir() {
+                            this.open_terminal_in_dir(dir, cx);
+                        } else {
+                            this.status = "无法确定要打开的目录".to_string();
+                            cx.notify();
+                        }
                     }))
                     .into_any_element(),
             );
@@ -18182,8 +23390,11 @@ impl Render for IdeApp {
         if let Some(dialog) = &self.new_entry_dialog {
             let field = dialog.field.clone();
             let is_rename = dialog.rename.is_some();
+            let is_duplicate = dialog.duplicate.is_some();
             let title = if is_rename {
                 "重命名"
+            } else if is_duplicate {
+                "复制副本"
             } else {
                 match dialog.kind {
                     NewEntryKind::File => "新建文件",
@@ -18239,7 +23450,7 @@ impl Render for IdeApp {
                                             this.cancel_new_entry_dialog(cx)
                                         }),
                                     ))
-                                    .child(widgets::primary_button("ne-save", if is_rename { "重命名" } else { "创建" }).on_click(
+                                    .child(widgets::primary_button("ne-save", if is_rename { "重命名" } else if is_duplicate { "复制" } else { "创建" }).on_click(
                                         cx.listener(|this, _, _, cx| {
                                             this.save_new_entry_dialog(cx)
                                         }),
@@ -18311,6 +23522,86 @@ impl Render for IdeApp {
                                     .child(widgets::primary_button("ext-overwrite", "用我的修改覆盖").on_click(
                                         cx.listener(|this, _, _, cx| {
                                             this.keep_external_change(cx)
+                                        }),
+                                    )),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.compare_dialog {
+            let display = self.display_path(&dialog.path);
+            let text = dialog.text.clone();
+            let changed = dialog.changed;
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .w(px(720.))
+                            .max_h(px(520.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(theme::color(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme::color(theme::TEXT))
+                                            .child("比较活动文件与磁盘"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child(format!("{display}  ·  {changed} 处变更")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("compare-diff")
+                                    .flex_1()
+                                    .overflow_scroll()
+                                    .min_h(px(220.))
+                                    .p(px(10.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(theme::alpha(theme::STROKE, 0.12))
+                                    .bg(theme::color(theme::BG_2))
+                                    .font_family(theme::MONO_FONT)
+                                    .text_size(px(10.))
+                                    .text_color(theme::color(theme::TEXT_DIM))
+                                    .child(text),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(widgets::ghost_button("compare-close", "关闭").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.close_compare_dialog(cx)
+                                        }),
+                                    ))
+                                    .child(widgets::ghost_button("compare-reload", "重新加载").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.close_compare_dialog(cx);
+                                            this.compare_active_with_disk(cx);
                                         }),
                                     )),
                             ),
@@ -18536,6 +23827,261 @@ impl Render for IdeApp {
                                         widgets::primary_button("gtl-save", "跳转").on_click(
                                             cx.listener(|this, _, _, cx| {
                                                 this.save_go_to_line_dialog(cx)
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.project_rename_dialog {
+            let field = dialog.field.clone();
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .w(px(420.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(theme::color(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme::color(theme::TEXT))
+                                            .child("重命名项目"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child("重命名项目目录并同步 project.toml 的 name 字段。"),
+                                    ),
+                            )
+                            .child(div().child(field))
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(widgets::ghost_button("prn-cancel", "取消").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.project_rename_dialog = None;
+                                            cx.notify();
+                                        }),
+                                    ))
+                                    .child(
+                                        widgets::primary_button("prn-save", "重命名").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.save_project_rename(cx)
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.project_delete_dialog {
+            let root_path = dialog.root.clone();
+            let name = root_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .w(px(440.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(theme::color(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::color(theme::CINNABAR))
+                                    .child("删除项目"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme::color(theme::TEXT_DIM))
+                                    .child(format!(
+                                        "将永久删除项目目录「{name}」及其全部文件：{}",
+                                        root_path.display()
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(widgets::ghost_button("pdl-cancel", "取消").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.project_delete_dialog = None;
+                                            cx.notify();
+                                        }),
+                                    ))
+                                    .child(
+                                        widgets::danger_button("pdl-delete", "删除").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.confirm_project_delete(cx)
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.confirm_close_dialog {
+            let root_path = self
+                .project
+                .as_ref()
+                .map(|p| p.root.clone())
+                .unwrap_or_default();
+            // Display the dirty files (deduped by path).
+            let mut dirty_files: Vec<PathBuf> = dialog
+                .indices
+                .iter()
+                .copied()
+                .filter(|&i| i < self.tabs.len() && self.tabs[i].editor.read(cx).is_dirty())
+                .filter_map(|i| self.tabs[i].path.strip_prefix(&root_path).ok().map(PathBuf::from))
+                .collect();
+            dirty_files.sort();
+            dirty_files.dedup();
+            let list = if dirty_files.is_empty() {
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme::color(theme::TEXT_DIM))
+                    .child("（无未保存文件）")
+                    .into_any_element()
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .bg(theme::alpha(0xffffff, 0.02))
+                    .rounded(px(8.))
+                    .p(px(10.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .children(dirty_files.iter().map(|path| {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .w(px(6.))
+                                            .h(px(6.))
+                                            .rounded_full()
+                                            .bg(theme::color(theme::CINNABAR)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(theme::color(theme::TEXT))
+                                            .child(path.display().to_string()),
+                                    )
+                                    .into_any_element()
+                            })),
+                    )
+                    .into_any_element()
+            };
+            let count = dirty_files.len();
+            let scope = if dialog.close_all {
+                "全部标签页".to_string()
+            } else {
+                format!("{} 个标签页", dialog.indices.len())
+            };
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .w(px(460.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(theme::color(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::color(theme::TEXT))
+                                    .child("未保存的更改"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme::color(theme::TEXT_DIM))
+                                    .child(format!(
+                                        "即将关闭 {scope}，其中 {count} 个文件有未保存的更改。"
+                                    )),
+                            )
+                            .child(list)
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(widgets::ghost_button("cfc-cancel", "取消").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.confirm_close_dialog = None;
+                                            cx.notify();
+                                        }),
+                                    ))
+                                    .child(widgets::ghost_button("cfc-discard", "不保存").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.resolve_close_dialog(false, cx)
+                                        }),
+                                    ))
+                                    .child(
+                                        widgets::primary_button("cfc-save", "全部保存").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.resolve_close_dialog(true, cx)
                                             }),
                                         ),
                                     ),
@@ -18880,6 +24426,92 @@ impl Render for IdeApp {
                                             .text_color(theme::color(theme::TEXT_FAINT))
                                             .child("参数空格分隔；环境变量每行 KEY=value；工作目录留空=项目根。"),
                                     )
+                                    .child(section("保存选项（IDE 全局）"))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .id("settings-format-on-save")
+                                                    .px(px(10.))
+                                                    .py(px(4.))
+                                                    .rounded(px(999.))
+                                                    .border_1()
+                                                    .border_color(if dialog.format_on_save {
+                                                        theme::alpha(theme::ACCENT, 0.5)
+                                                    } else {
+                                                        theme::alpha(theme::STROKE, 0.2)
+                                                    })
+                                                    .bg(if dialog.format_on_save {
+                                                        theme::alpha(theme::ACCENT, 0.16)
+                                                    } else {
+                                                        theme::alpha(0xffffff, 0.02)
+                                                    })
+                                                    .text_size(px(10.5))
+                                                    .text_color(if dialog.format_on_save {
+                                                        theme::color(theme::ACCENT_3)
+                                                    } else {
+                                                        theme::color(theme::TEXT_DIM)
+                                                    })
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        if let Some(d) = &mut this.settings_dialog {
+                                                            d.format_on_save = !d.format_on_save;
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                                    .child(if dialog.format_on_save {
+                                                        "✓ 格式化保存（Format on Save）"
+                                                    } else {
+                                                        "格式化保存（Format on Save）"
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("settings-save-before-build")
+                                                    .px(px(10.))
+                                                    .py(px(4.))
+                                                    .rounded(px(999.))
+                                                    .border_1()
+                                                    .border_color(if dialog.save_before_build {
+                                                        theme::alpha(theme::JADE, 0.5)
+                                                    } else {
+                                                        theme::alpha(theme::STROKE, 0.2)
+                                                    })
+                                                    .bg(if dialog.save_before_build {
+                                                        theme::alpha(theme::JADE, 0.16)
+                                                    } else {
+                                                        theme::alpha(0xffffff, 0.02)
+                                                    })
+                                                    .text_size(px(10.5))
+                                                    .text_color(if dialog.save_before_build {
+                                                        theme::color(theme::JADE)
+                                                    } else {
+                                                        theme::color(theme::TEXT_DIM)
+                                                    })
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        if let Some(d) = &mut this.settings_dialog {
+                                                            d.save_before_build = !d.save_before_build;
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                                    .child(if dialog.save_before_build {
+                                                        "✓ 构建前保存（Save before Build）"
+                                                    } else {
+                                                        "构建前保存（Save before Build）"
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child("格式化保存=保存时先经 LSP 格式化；构建前保存=构建/运行/烧写前自动保存未保存文件。"),
+                                    )
+
                                     .child(section("全局设置（跨项目）"))
                                     .child(row("终端 shell", terminal_shell))
                                     .child(
@@ -18914,6 +24546,311 @@ impl Render for IdeApp {
                                                 this.save_settings(cx)
                                             }),
                                         ),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(state) = &self.periph_config {
+            let target = state.target.clone();
+            let items: Vec<(usize, String, bool, Vec<PinMode>, String)> = state
+                .items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    (
+                        index,
+                        item.name.clone(),
+                        item.enabled,
+                        item.pins.clone(),
+                        item.baud.clone(),
+                    )
+                })
+                .collect();
+            let enabled_count = items.iter().filter(|(_, _, enabled, _, _)| *enabled).count();
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .id("periph-config-modal")
+                            .w(px(640.))
+                            .h(px(520.))
+                            .rounded(px(14.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(theme::color(theme::PANEL_SOLID))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .px(px(16.))
+                                    .pt(px(14.))
+                                    .pb(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme::color(theme::TEXT))
+                                            .child("外设配置（图形化）"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap(px(6.))
+                                            .child(
+                                                div()
+                                                    .id("periph-config-close")
+                                                    .px(px(8.))
+                                                    .py(px(3.))
+                                                    .rounded(px(6.))
+                                                    .text_size(px(10.5))
+                                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                                    .cursor_pointer()
+                                                    .hover(|style| style.text_color(theme::color(theme::DANGER)))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.close_peripheral_config(cx)
+                                                    }))
+                                                    .child("✕"),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(16.))
+                                    .pb(px(8.))
+                                    .text_size(px(10.5))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child(format!(
+                                        "目标 {target} · 已勾选 {enabled_count} 个外设。点击引脚模式循环切换；生成后写入 src/peripheral_init.c。"
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("periph-config-list")
+                                    .flex_1()
+                                    .overflow_y_scroll()
+                                    .px(px(10.))
+                                    .pb(px(10.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .children(items.into_iter().map(
+                                        |(index, name, enabled, pins, baud)| {
+                                            let upper = name.to_ascii_uppercase();
+                                            let is_gpio = upper.starts_with("GPIO");
+                                            let is_uart =
+                                                upper.contains("USART") || upper.contains("UART");
+                                            div()
+                                                .id(("periph-config-row", index))
+                                                .px(px(8.))
+                                                .py(px(6.))
+                                                .rounded(px(8.))
+                                                .bg(if enabled {
+                                                    theme::alpha(theme::ACCENT, 0.08)
+                                                } else {
+                                                    gpui::transparent_black()
+                                                })
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(6.))
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(8.))
+                                                        .child(
+                                                            div()
+                                                                .id(("periph-config-check", index))
+                                                                .px(px(7.))
+                                                                .py(px(2.))
+                                                                .rounded(px(6.))
+                                                                .text_size(px(11.))
+                                                                .cursor_pointer()
+                                                                .bg(if enabled {
+                                                                    theme::alpha(theme::ACCENT, 0.25)
+                                                                } else {
+                                                                    theme::alpha(theme::STROKE, 0.08)
+                                                                })
+                                                                .text_color(theme::color(if enabled {
+                                                                    theme::ACCENT_3
+                                                                } else {
+                                                                    theme::TEXT_FAINT
+                                                                }))
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        this.toggle_periph_enabled(
+                                                                            index,
+                                                                            cx,
+                                                                        );
+                                                                    },
+                                                                ))
+                                                                .child(if enabled { "✓" } else { "○" }),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .items_center()
+                                                                .gap(px(6.))
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(11.5))
+                                                                        .font_weight(FontWeight::MEDIUM)
+                                                                        .text_color(theme::color(
+                                                                            theme::TEXT,
+                                                                        ))
+                                                                        .child(name.clone()),
+                                                                )
+                                                                .when(is_gpio, |style| {
+                                                                    style.child(
+                                                                        div()
+                                                                            .id(gpui::SharedString::from(
+                                                                                format!(
+                                                                                    "periph-pinout-select-{index}"
+                                                                                ),
+                                                                            ))
+                                                                            .ml(px(6.))
+                                                                            .px(px(6.))
+                                                                            .py(px(1.))
+                                                                            .rounded(px(5.))
+                                                                            .text_size(px(9.))
+                                                                            .cursor_pointer()
+                                                                            .bg(theme::alpha(
+                                                                                theme::ACCENT,
+                                                                                0.14,
+                                                                            ))
+                                                                            .text_color(theme::color(
+                                                                                theme::ACCENT_3,
+                                                                            ))
+                                                                            .on_click(cx.listener(
+                                                                                move |this, _, _, cx| {
+                                                                                    this.select_pinout_periph(
+                                                                                        index,
+                                                                                        cx,
+                                                                                    );
+                                                                                },
+                                                                            ))
+                                                                            .child("引脚图"),
+                                                                    )
+                                                                }),
+                                                        ),
+
+
+
+
+                                                )
+                                                .when(enabled && is_gpio, |style| {
+                                                    let mut row = style;
+                                                    for pin in 0..16 {
+                                                        row = row.child(
+                                                            div()
+                                                                .id((
+                                                                    "periph-config-pin",
+                                                                    index * 16 + pin,
+                                                                ))
+                                                                .px(px(6.))
+                                                                .py(px(2.))
+                                                                .rounded(px(5.))
+                                                                .text_size(px(9.5))
+                                                                .cursor_pointer()
+                                                                .bg(theme::alpha(
+                                                                    theme::STROKE,
+                                                                    0.1,
+                                                                ))
+                                                                .text_color(theme::color(
+                                                                    theme::TEXT_DIM,
+                                                                ))
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        this.cycle_periph_pin(
+                                                                            index,
+                                                                            pin,
+                                                                            cx,
+                                                                        );
+                                                                    },
+                                                                ))
+                                                                .child(format!(
+                                                                    "P{pin}:{}",
+                                                                    pins
+                                                                        .get(pin)
+                                                                        .map(|mode| mode.label())
+                                                                        .unwrap_or("—")
+                                                                )),
+                                                        );
+                                                    }
+                                                    row
+                                                })
+                                                .when(enabled && is_uart, |style| {
+                                                    style.child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(8.))
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(10.5))
+                                                                    .text_color(theme::color(
+                                                                        theme::TEXT_FAINT,
+                                                                    ))
+                                                                    .child("波特率"),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(10.5))
+                                                                    .text_color(theme::color(
+                                                                        theme::TEXT_DIM,
+                                                                    ))
+                                                                    .child(baud.clone()),
+                                                            ),
+                                                    )
+                                                })
+                                        },
+                                    )),
+                            )
+                            .child(render_periph_pinout(&self.periph_config, cx))
+
+                            .child(
+                                div()
+                                    .px(px(16.))
+                                    .py(px(10.))
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .id("periph-config-cancel")
+                                            .px(px(14.))
+                                            .py(px(6.))
+                                            .rounded(px(9.))
+                                            .text_size(px(11.))
+                                            .text_color(theme::color(theme::TEXT_DIM))
+                                            .bg(theme::alpha(theme::STROKE, 0.08))
+                                            .cursor_pointer()
+                                            .hover(|style| {
+                                                style.bg(theme::alpha(theme::STROKE, 0.16))
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.close_peripheral_config(cx)
+                                            }))
+                                            .child("取消"),
+                                    )
+                                    .child(
+                                        widgets::primary_button(
+                                            "periph-config-generate",
+                                            "生成代码",
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.generate_peripheral_config_code(cx)
+                                        })),
                                     ),
                             ),
                     ),
@@ -19098,14 +25035,272 @@ impl Render for IdeApp {
             );
         }
 
+        if let Some(dialog) = &self.tool_dialog {
+            let title_field = dialog.title.clone();
+            let command_field = dialog.command.clone();
+            let cwd_field = dialog.cwd.clone();
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .id("tool-edit-dialog")
+                            .w(px(520.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(theme::color(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::color(theme::TEXT))
+                                    .child("编辑外部工具"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child("工具经 `sh -c` / `cmd /C` 运行，输出流式显示到「工具」页；命令在项目根目录执行（可指定相对目录）。"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child("标题"),
+                                    )
+                                    .child(title_field),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child("命令"),
+                                    )
+                                    .child(command_field),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .child("工作目录（相对项目根，留空=根）"),
+                                    )
+                                    .child(cwd_field),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        widgets::ghost_button("tool-cancel", "取消").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.tool_dialog = None;
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    )
+                                    .when(dialog.is_edit, |style| {
+                                        style.child(
+                                            widgets::ghost_button("tool-delete", "删除").on_click(
+                                                cx.listener(|this, _, _, cx| {
+                                                    let id = this
+                                                        .tool_dialog
+                                                        .as_ref()
+                                                        .map(|d| d.id.clone())
+                                                        .unwrap_or_default();
+                                                    this.tool_dialog = None;
+                                                    this.delete_tool(&id, cx);
+                                                }),
+                                            ),
+                                        )
+                                    })
+                                    .child(
+                                        widgets::primary_button("tool-save", "保存").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.save_tool(cx);
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.snippet_dialog {
+            let rows = dialog
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(row_index, row)| {
+                    let prefix = row.prefix.clone();
+                    let body = row.body.clone();
+                    let description = row.description.clone();
+                    div()
+                        .id(("snippet-row", row_index))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .p(px(8.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(theme::alpha(theme::STROKE, 0.15))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .text_color(theme::color(theme::TEXT_FAINT))
+                                                .child("触发词"),
+                                        )
+                                        .child(prefix),
+                                )
+                                .child(
+                                    widgets::ghost_button(
+                                        ("snippet-del", row_index),
+                                        "删除",
+                                    )
+
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.delete_snippet_row(row_index, cx);
+                                    })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(theme::color(theme::TEXT_FAINT))
+                                .child("片段体（${1:占位} / $0 结尾光标）"),
+                        )
+                        .child(body)
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(theme::color(theme::TEXT_FAINT))
+                                .child("描述（可选）"),
+                        )
+                        .child(description)
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>();
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .id("snippet-dialog")
+                            .w(px(560.))
+                            .max_h(px(520.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(theme::color(theme::PANEL_SOLID))
+                            .p(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::color(theme::TEXT))
+                                    .child("管理代码片段"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child("代码片段全局共享（snippets.json），补全时按触发词前缀匹配；支持 ${1:默认} 占位与 $0 结尾光标。"),
+                            )
+                            .child(
+                                div()
+                                    .id("snippet-rows")
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
+                                    .overflow_y_scroll()
+                                    .max_h(px(320.))
+                                    .children(rows),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        widgets::ghost_button("snippet-add", "＋ 添加片段").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.add_snippet_row(cx);
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        widgets::ghost_button("snippet-cancel", "取消").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.snippet_dialog = None;
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        widgets::primary_button("snippet-save", "保存").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.save_snippets(cx);
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+
         if self.search.is_some() {
-            let (field, matches, selected, query) = {
+            let (field, replace_field, matches, selected, query, case_sensitive, whole_word) = {
                 let search = self.search.as_ref().unwrap();
                 (
                     search.field.clone(),
+                    search.replace_field.clone(),
                     search.matches.clone(),
                     search.selected,
                     search.field.read(cx).text(),
+                    search.case_sensitive,
+                    search.whole_word,
                 )
             };
             let match_count = matches.len();
@@ -19244,6 +25439,95 @@ impl Render for IdeApp {
                                                 0 => "无结果".to_string(),
                                                 n => format!("{n} 个结果"),
                                             }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(12.))
+                                    .pb(px(6.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .id("search-opt-case")
+                                            .px(px(10.))
+                                            .py(px(3.))
+                                            .rounded(px(999.))
+                                            .cursor_pointer()
+                                            .border_1()
+                                            .border_color(if case_sensitive {
+                                                theme::alpha(theme::ACCENT, 0.5)
+                                            } else {
+                                                theme::alpha(theme::STROKE, 0.2)
+                                            })
+                                            .bg(if case_sensitive {
+                                                theme::alpha(theme::ACCENT, 0.16)
+                                            } else {
+                                                gpui::transparent_black()
+                                            })
+                                            .text_size(px(10.))
+                                            .text_color(if case_sensitive {
+                                                theme::color(theme::ACCENT_3)
+                                            } else {
+                                                theme::color(theme::TEXT_FAINT)
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.toggle_case_sensitive(cx);
+                                            }))
+                                            .child("Aa 区分大小写"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("search-opt-whole-word")
+                                            .px(px(10.))
+                                            .py(px(3.))
+                                            .rounded(px(999.))
+                                            .cursor_pointer()
+                                            .border_1()
+                                            .border_color(if whole_word {
+                                                theme::alpha(theme::ACCENT, 0.5)
+                                            } else {
+                                                theme::alpha(theme::STROKE, 0.2)
+                                            })
+                                            .bg(if whole_word {
+                                                theme::alpha(theme::ACCENT, 0.16)
+                                            } else {
+                                                gpui::transparent_black()
+                                            })
+                                            .text_size(px(10.))
+                                            .text_color(if whole_word {
+                                                theme::color(theme::ACCENT_3)
+                                            } else {
+                                                theme::color(theme::TEXT_FAINT)
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.toggle_whole_word(cx);
+                                            }))
+                                            .child("W 全词匹配"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(12.))
+                                    .pb(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .w(px(18.))
+                                            .flex_none()
+                                            .text_size(px(12.))
+                                            .text_color(theme::color(theme::ACCENT_2))
+                                            .child("替"),
+                                    )
+                                    .child(div().flex_1().child(replace_field))
+                                    .child(
+                                        widgets::ghost_button("search-replace-all", "全部替换")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.search_replace_all(cx);
+                                            })),
                                     ),
                             )
                             .child(
@@ -19656,6 +25940,126 @@ fn parse_hex_address(text: &str) -> Option<u64> {
     u64::from_str_radix(hex, 16).ok()
 }
 
+/// Parse a decimal or hex integer from a debugger `evaluate` result. The
+/// result may carry a `0x` prefix, a trailing type suffix, or surrounding
+/// whitespace.
+fn parse_u64_loose(text: &str) -> Option<u64> {
+    let trimmed = text.trim().trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return u64::from_str_radix(hex, 16).ok();
+    }
+    trimmed.parse::<u64>().ok()
+}
+
+/// Parse a `__rtos_<kind>_<hexaddr>` walk tag out of an evaluate expression.
+/// The tag is encoded as a C comment (`/* __rtos_first_0x2000 */`) appended to
+/// the real deref expression; the debugger echoes the expression verbatim, so
+/// the walker recovers the kind and base address to correlate the response.
+fn parse_rtos_tag(expression: &str) -> (String, u64) {
+    let Some(pos) = expression.find("__rtos_") else {
+        return (String::new(), 0);
+    };
+    let rest = &expression[pos + "__rtos_".len()..];
+    let (kind, addr_part) = match rest.find('_') {
+        Some(idx) => (&rest[..idx], &rest[idx + 1..]),
+        None => (rest, ""),
+    };
+    let addr = parse_u64_loose(addr_part).unwrap_or(0);
+    (kind.to_string(), addr)
+}
+
+/// Build the tagged `Evaluate` expression for one step of the real-kernel
+/// list walk. `kind` selects which field to read from the current item or TCB:
+/// - `owner`    → `pvOwner` of the current list item (deref, gives the TCB)
+/// - `name`     → `pcTaskName` of the current TCB (char pointer → string)
+/// - `priority` → `uxPriority` of the current TCB (deref)
+/// - `next`     → `pxNext` of the current list item (deref, gives the next
+///                item; `0`/head means the list is exhausted)
+///
+/// The returned expression carries a `__rtos_<kind>_<addr>` C comment tag so
+/// the response routes back to [`IdeApp::handle_rtos_kernel_evaluated`].
+fn kernel_walk_expr(kernel: &RtosKernelWalk, kind: &str) -> String {
+    let layout = kernel.layout;
+    let (addr, expr) = match kind {
+        "owner" => {
+            let addr = kernel.current_item.unwrap_or(0) + layout.list_item_pv_owner as u64;
+            (addr, format!("(unsigned int)*(unsigned int*)0x{addr:x}"))
+        }
+        "name" => {
+            let addr = kernel.current_tcb.unwrap_or(0) + layout.tcb_pc_task_name as u64;
+            (addr, format!("(char*)0x{addr:x}"))
+        }
+        "priority" => {
+            let addr = kernel.current_tcb.unwrap_or(0) + layout.tcb_ux_priority as u64;
+            (addr, format!("(unsigned int)*(unsigned int*)0x{addr:x}"))
+        }
+        "next" => {
+            let addr = kernel.current_item.unwrap_or(0) + layout.list_item_px_next as u64;
+            (addr, format!("(unsigned int)*(unsigned int*)0x{addr:x}"))
+        }
+        _ => (0, String::new()),
+    };
+    format!("{expr} /* __rtos_{kind}_{addr:#x} */")
+}
+
+#[cfg(test)]
+mod kernel_walk_expr_tests {
+    use super::*;
+
+    fn kernel() -> RtosKernelWalk {
+        RtosKernelWalk {
+            layout: ns_debug::rtos::RtosLayout::default(),
+            running_tcb: Some(0x2000_2000),
+            lists: vec![(0x2000_3000, 0)],
+            list_index: 0,
+            current_item: Some(0x2000_1000),
+            tasks: Vec::new(),
+            in_flight: 0,
+            step: RtosWalkStep::Owner,
+            current_tcb: Some(0x2000_2000),
+            pending_name: None,
+            pending_priority: None,
+        }
+    }
+
+    /// Each kind builds the correct deref expression and `__rtos_` tag using
+    /// the default layout offsets (pvOwner=12, pcTaskName=44, uxPriority=36,
+    /// pxNext=4).
+    #[test]
+    fn builds_tagged_expressions_for_each_walk_step() {
+        let k = kernel();
+
+        let owner = kernel_walk_expr(&k, "owner");
+        assert!(owner.contains("(unsigned int)*(unsigned int*)0x2000100c"));
+        assert!(owner.contains("/* __rtos_owner_0x2000100c */"));
+
+        let name = kernel_walk_expr(&k, "name");
+        assert!(name.contains("(char*)0x2000202c"));
+        assert!(name.contains("/* __rtos_name_0x2000202c */"));
+
+        let priority = kernel_walk_expr(&k, "priority");
+        assert!(priority.contains("(unsigned int)*(unsigned int*)0x20002024"));
+        assert!(priority.contains("/* __rtos_priority_0x20002024 */"));
+
+        let next = kernel_walk_expr(&k, "next");
+        assert!(next.contains("(unsigned int)*(unsigned int*)0x20001004"));
+        assert!(next.contains("/* __rtos_next_0x20001004 */"));
+    }
+
+    /// An unknown kind yields an empty (non-evaluable) expression rather than
+    /// dereferencing a garbage address.
+    #[test]
+    fn unknown_kind_returns_empty_expression() {
+        let k = kernel();
+        assert_eq!(kernel_walk_expr(&k, "bogus"), " /* __rtos_bogus_0x0 */");
+    }
+}
+
+
+
 /// Format a simulator time readout from a cycle count and a nominal clock.
 /// With a configured clock (`clock_hz > 0`) the elapsed wall-clock time is
 /// shown alongside the cycle count; without one only cycles are shown.
@@ -19679,6 +26083,33 @@ fn sim_time_readout(cycles: u64, clock_hz: u64) -> String {
         format!("{clock_hz} Hz")
     };
     format!("时间: {time} @ {freq}")
+}
+
+/// Extract the value of a bit field from a register's raw value. The field
+/// occupies `bit_offset..=bit_offset+bit_width-1`; bits above the field's
+/// width are masked so the returned value is a plain unsigned number.
+fn device_field_value(raw: u32, field: &ns_device::Field) -> u32 {
+    if field.bit_width == 0 || field.bit_offset >= 32 {
+        return 0;
+    }
+    let width = field.bit_width.min(32 - field.bit_offset);
+    let mask = if width >= 32 { u32::MAX } else { (1u32 << width) - 1 };
+    (raw >> field.bit_offset) & mask
+}
+
+/// Truncate a description to `max_chars` for inline display, appending `…`
+/// when it was cut. Empty descriptions stay empty.
+fn device_description_short(description: &str, max_chars: usize) -> String {
+    if description.is_empty() {
+        return String::new();
+    }
+    let trimmed = description.trim();
+    if trimmed.chars().count() <= max_chars {
+        trimmed.to_string()
+    } else {
+        let cut: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
 }
 
 /// Parse whitespace-separated hex bytes like `de ad be ef` into a byte vector.
@@ -19816,6 +26247,23 @@ fn is_binary_file(path: &Path, head: &[u8]) -> bool {
     // file (source, linker script) never contains one.
     head.iter().take(8 * 1024).any(|&b| b == 0)
  }
+
+/// Recursively copy a directory tree. Used by the file-tree "duplicate"
+/// operation for copying a folder to a new name.
+fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target).map_err(|e| e.to_string())?;
+    let entries = std::fs::read_dir(source).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let from = entry.path();
+        let to = target.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
  
 /// Compute the counterpart file for `path` (header ↔ source) so the IDE can
 /// jump between a `.c`/`.cpp` and its `.h`/`.hpp` pair.
@@ -19924,6 +26372,44 @@ fn hex_dump_text(bytes: &[u8]) -> String {
         ));
     }
     out
+}
+
+/// Parse an edited hex-dump buffer back into raw bytes.
+///
+/// The dump layout produced by [`hex_dump_text`] is `"OFFSET  HH HH … |ascii|"`.
+/// Only the byte columns are parsed (offsets, ASCII gutter, truncation note are
+/// ignored). Returns the error message with the offending row when a byte cell
+/// is not two hex digits, so the user can fix the edit before saving.
+fn parse_hex_dump_bytes(text: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    for (row, line) in text.lines().enumerate() {
+        let line = line.trim_end();
+        if line.starts_with("...") {
+            // Truncation note appended by hex_dump_text; nothing to parse.
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        // Expect `OFFSET  HH HH …` — the byte columns sit between the 8-hex
+        // offset and the ASCII gutter (two spaces + `|`).
+        let Some(offset_end) = line.find("  ") else {
+            return Err(format!("第 {} 行缺少偏移列", row + 1));
+        };
+        let byte_cols = &line[offset_end + 2..];
+        let byte_cols = byte_cols.split(" |").next().unwrap_or(byte_cols);
+        let mut row_bytes = Vec::new();
+        for cell in byte_cols.split_whitespace() {
+            if cell.len() != 2 {
+                return Err(format!("第 {} 行字节不是两位 hex: {cell}", row + 1));
+            }
+            let value = u8::from_str_radix(cell, 16)
+                .map_err(|_| format!("第 {} 行字节非法: {cell}", row + 1))?;
+            row_bytes.push(value);
+        }
+        bytes.extend(row_bytes);
+    }
+    Ok(bytes)
 }
 
 /// Parse a single `textDocument/definition` response into a location.
@@ -20639,6 +27125,81 @@ mod tests {
         assert!(out.contains("1.00 s @ 72.0 MHz"), "{out}");
     }
 
+    /// `device_field_value` extracts the masked, shifted value of a bit field
+    /// from a raw register value, including single-bit and top-bit fields.
+    #[test]
+    fn device_field_value_extracts_shifted_and_masked() {
+        let low = ns_device::Field {
+            name: "MODE0".into(),
+            bit_offset: 0,
+            bit_width: 4,
+            description: String::new(),
+        };
+        // 0x1F: low nibble = 0xF.
+        assert_eq!(device_field_value(0x1F, &low), 0xF);
+        // 0x10: low nibble = 0x0.
+        assert_eq!(device_field_value(0x10, &low), 0x0);
+
+        let high = ns_device::Field {
+            name: "CNF0".into(),
+            bit_offset: 4,
+            bit_width: 2,
+            description: String::new(),
+        };
+        // 0x30: bits[5:4] = 0b11 = 3.
+        assert_eq!(device_field_value(0x30, &high), 3);
+
+        let single = ns_device::Field {
+            name: "ODR".into(),
+            bit_offset: 7,
+            bit_width: 1,
+            description: String::new(),
+        };
+        assert_eq!(device_field_value(0x80, &single), 1);
+        assert_eq!(device_field_value(0x00, &single), 0);
+
+        // Zero-width and out-of-range fields yield 0 (defensive).
+        let bad = ns_device::Field {
+            name: "bad".into(),
+            bit_offset: 0,
+            bit_width: 0,
+            description: String::new(),
+        };
+        assert_eq!(device_field_value(0xFF, &bad), 0);
+    }
+
+    /// `toggle_device_reg_expand` toggles a register's expansion state in the
+    /// device view and notifies so the row re-renders.
+    #[test]
+    fn toggle_device_reg_expand_adds_and_removes() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let addr = 0x4001_0800u64;
+            // Initially collapsed.
+            assert!(!app.debug.device_reg_expanded.contains(&addr));
+            app.toggle_device_reg_expand(addr, cx);
+            assert!(app.debug.device_reg_expanded.contains(&addr));
+            // Toggling again removes it.
+            app.toggle_device_reg_expand(addr, cx);
+            assert!(!app.debug.device_reg_expanded.contains(&addr));
+            app
+        });
+    }
+
+    /// `device_description_short` trims, truncates with an ellipsis, and leaves
+    /// empty or short descriptions untouched.
+    #[test]
+    fn device_description_short_truncates_and_preserves() {
+        assert_eq!(device_description_short("", 64), "");
+        assert_eq!(device_description_short("  Configuration low  ", 64), "Configuration low");
+        let long = "a".repeat(100);
+        let short = device_description_short(&long, 10);
+        assert_eq!(short.chars().count(), 10);
+        assert!(short.ends_with('…'));
+        assert_eq!(short, "aaaaaaaaa…");
+    }
+
     /// `filter_device_peripheral` narrows registers by a case-insensitive
     /// substring and keeps the peripheral header when the peripheral itself OR
     /// any of its registers match.
@@ -21010,6 +27571,7 @@ mod tests {
                 TerminalConfig {
                     kind: TerminalKind::Shell,
                     program: "sh".to_string(),
+                    cwd: None,
                 },
                 cx,
             )
@@ -21078,6 +27640,30 @@ mod tests {
         let dump = hex_dump_text(&bytes);
         assert!(dump.contains("截断"), "large dumps note truncation");
         assert!(dump.lines().count() <= 258, "bounded row count");
+    }
+
+    #[test]
+    fn hex_dump_round_trips_editable_bytes() {
+        // A full 16-byte row plus a partial 3-byte row, including non-printable
+        // bytes so the ASCII gutter uses '.' — those must not leak into bytes.
+        let bytes = vec![0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x7F, 0xFF];
+        let dump = hex_dump_text(&bytes);
+        let parsed = parse_hex_dump_bytes(&dump).expect("dump parses back");
+        assert_eq!(parsed, bytes, "round-trip preserves exact bytes");
+    }
+
+    #[test]
+    fn hex_dump_parse_rejects_bad_cells() {
+        let dump = "00000000  de ad be ef |....|\n";
+        assert!(parse_hex_dump_bytes(dump).is_ok(), "valid dump parses");
+        let bad = "00000000  de ad zz |...|\n";
+        assert!(parse_hex_dump_bytes(bad).is_err(), "non-hex cell errors");
+        let bad_len = "00000000  de ad b |...|\n";
+        assert!(parse_hex_dump_bytes(bad_len).is_err(), "short cell errors");
+        // The truncation note and empty lines are skipped, not parsed.
+        let note = "00000000  de ad |..|\n... 共 17 字节（仅显示前 16 字节，hex 视图截断）\n";
+        let parsed = parse_hex_dump_bytes(note).expect("truncation note skipped");
+        assert_eq!(parsed, vec![0xDE, 0xAD]);
     }
 
     #[test]
@@ -21173,6 +27759,9 @@ fn renders_device_picker_and_build_config() {
         app.show_output = true;
         app.output_tab = OutputTab::Debug;
         app.debug.view_tab = DebugViewTab::Device;
+        // Expand a known GPIOA register (CRL at 0x40010800) so the expanded
+        // field rows (name/range/value/description) render path is exercised.
+        app.debug.device_reg_expanded.insert(0x4001_0800);
         app
     });
 }
@@ -21208,6 +27797,106 @@ fn device_reg_edit_commits_to_simulator() {
         assert!(app.debug.device_reg_edit.is_none());
         let value = app.sim.core.as_ref().unwrap().read_u32(addr as u32);
         assert_eq!(value, 0xDEAD_BEEF, "register write reached the simulator");
+        app
+    });
+}
+
+/// The simulator memory "跟随 PC" button reports honestly when no core is
+/// loaded, and with a core sets the address to the PC and re-reads the dump.
+#[test]
+fn sim_jump_memory_to_pc_sets_address_and_reads() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+
+        // No core loaded: an honest error.
+        app.sim_jump_memory_to_pc(cx);
+        assert!(app
+            .sim
+            .mem_error
+            .as_deref()
+            .is_some_and(|e| e.contains("仿真器未加载")));
+
+        // With a RISC-V core, the address tracks the PC and a dump is read.
+        let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
+        sim.reset(0x1000);
+        let pc = sim.program_counter();
+        assert_eq!(pc, 0x1000);
+        sim.write_u32(pc, 0x1122_3344);
+        app.sim.core = Some(sim);
+        app.sim.mem_address.clear();
+        app.sim_jump_memory_to_pc(cx);
+        assert_eq!(app.sim.mem_address, "0x1000");
+        assert!(!app.sim.mem_bytes.is_empty(), "dump read after jump");
+        app
+    });
+}
+
+/// The simulator register copy button writes `name = 0xvalue` to the
+/// clipboard and reports the status.
+#[test]
+fn sim_copy_reg_writes_name_eq_hex() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
+        sim.write_reg(6, 0xDEAD_BEEF); // t1 (x6 in the ABI)
+        app.sim.core = Some(sim);
+        app.sim_copy_reg(6, cx);
+        assert!(app.sim.status.contains("t1 = 0xdeadbeef"), "{}", app.sim.status);
+        app
+    });
+}
+
+/// `sim_run_to_cursor` maps the cursor's source line to an address via the
+/// ELF line table, runs to it, restores the user breakpoints, and reports the
+/// hit line. A line with no mapped address reports honestly.
+#[test]
+fn sim_run_to_cursor_runs_to_mapped_line() {
+    let mut cx = gpui::TestAppContext::single();
+    let temp = std::env::temp_dir();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "simcursor".to_string();
+        app.project = Some(Project {
+            root: temp.clone(),
+            config,
+        });
+        // A two-instruction program: `addi x0,x0,0` at ENTRY and at +4.
+        let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
+        sim.load_image(ns_sim::ENTRY_POINT, &[0x13, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00]);
+        sim.line_table = vec![
+            ns_sim::LineEntry { address: ns_sim::ENTRY_POINT, file: 0, line: 1 },
+            ns_sim::LineEntry { address: ns_sim::ENTRY_POINT + 4, file: 0, line: 2 },
+        ];
+        sim.source_files = vec!["main.c".to_string()];
+        // The cursor line must not already be a breakpoint, so the transient
+        // target is observable after the run.
+        app.sim.core = Some(sim);
+
+        let main = temp.join("main.c");
+        std::fs::write(&main, "int main(void) {\n    return 0;\n}\n").unwrap();
+        app.open_file(main.clone(), cx);
+        app.active_editor()
+            .unwrap()
+            .update(cx, |editor, cx| editor.set_cursor_line(1, cx)); // 0-based line 1 = 源码第 2 行
+        app.sim_run_to_cursor(cx);
+        assert!(
+            app.sim.status.contains("已运行到光标"),
+            "status: {}",
+            app.sim.status
+        );
+        let pc = app.sim.core.as_ref().unwrap().program_counter();
+        assert_eq!(pc, ns_sim::ENTRY_POINT + 4, "ran to the cursor line");
+
+        // A line with no mapped address reports the limitation.
+        app.active_editor()
+            .unwrap()
+            .update(cx, |editor, cx| editor.set_cursor_line(50, cx));
+        app.sim_run_to_cursor(cx);
+        assert!(app.sim.status.contains("没有可映射"), "status: {}", app.sim.status);
+        let _ = std::fs::remove_dir_all(&temp);
         app
     });
 }
@@ -21826,6 +28515,163 @@ fn tabs_close_and_other_tabs_keep_target() {
     });
  }
 
+/// Closing a dirty tab asks to save/discard instead of silently dropping the
+/// edits; cancel keeps the tab, discard/save closes it.
+#[test]
+fn close_dirty_tab_prompts_and_resolves() {
+    let mut cx = gpui::TestAppContext::single();
+    let temp = std::env::temp_dir();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = temp.join(format!("ns_close_dirty_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.c");
+        let b = dir.join("b.c");
+        for p in [&a, &b] {
+            std::fs::write(p, "int x;\n").unwrap();
+            app.open_file(p.clone(), cx);
+        }
+        assert_eq!(app.tabs.len(), 2);
+        // Dirty the first tab via an edit that changes the buffer.
+        app.tabs[0].editor.update(cx, |editor, _cx| {
+            editor.apply_text_edit(0, 0, 0, 7, "int x = 1;\n");
+        });
+        assert!(app.tabs[0].editor.read(cx).is_dirty());
+
+        // Requesting a close of the dirty tab opens the confirm dialog and
+        // does not remove the tab.
+        app.close_tab(0, cx);
+        assert!(app.confirm_close_dialog.is_some());
+        assert_eq!(app.tabs.len(), 2);
+
+        // Cancel clears the dialog and keeps the tab.
+        app.confirm_close_dialog = None;
+        cx.notify();
+
+        // Discard closes the tab without saving.
+        app.close_tab(0, cx);
+        app.resolve_close_dialog(false, cx);
+        assert!(app.confirm_close_dialog.is_none());
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(
+            app.tabs[0].path,
+            b.canonicalize().unwrap(),
+            "the clean tab survives"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// Closing all tabs with a dirty buffer prompts once; saving all persists the
+/// edits to disk and then closes every tab.
+#[test]
+fn close_all_dirty_prompts_save_then_closes() {
+    let mut cx = gpui::TestAppContext::single();
+    let temp = std::env::temp_dir();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = temp.join(format!("ns_close_all_dirty_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.c");
+        let b = dir.join("b.c");
+        for p in [&a, &b] {
+            std::fs::write(p, "int x;\n").unwrap();
+            app.open_file(p.clone(), cx);
+        }
+        app.tabs[1].editor.update(cx, |editor, _cx| {
+            editor.apply_text_edit(0, 0, 0, 7, "int x = 2;\n");
+        });
+
+        app.close_all_tabs(cx);
+        assert!(app.confirm_close_dialog.is_some());
+        assert_eq!(app.tabs.len(), 2);
+
+        // Save all and close: the edited buffer is written back to disk.
+        app.resolve_close_dialog(true, cx);
+        assert!(app.confirm_close_dialog.is_none());
+        assert_eq!(app.tabs.len(), 0);
+        let on_disk = std::fs::read_to_string(&b).unwrap();
+        assert!(on_disk.contains("int x = 2;"), "edit saved: {on_disk:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// `save_all_editors` writes every dirty tab back to disk (hex and text) and
+/// reports success; the status reflects how many files were saved.
+#[test]
+fn save_all_editors_persists_dirty_tabs() {
+    let mut cx = gpui::TestAppContext::single();
+    let temp = std::env::temp_dir();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = temp.join(format!("ns_save_all_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.c");
+        let b = dir.join("b.c");
+        for p in [&a, &b] {
+            std::fs::write(p, "int x;\n").unwrap();
+            app.open_file(p.clone(), cx);
+        }
+        // Dirty both tabs with unsaved edits.
+        app.tabs[0].editor.update(cx, |editor, _cx| {
+            editor.apply_text_edit(0, 0, 0, 7, "int a = 1;\n");
+        });
+        app.tabs[1].editor.update(cx, |editor, _cx| {
+            editor.apply_text_edit(0, 0, 0, 7, "int b = 2;\n");
+        });
+
+        let ok = app.save_all_editors(cx);
+        assert!(ok);
+        assert!(std::fs::read_to_string(&a).unwrap().contains("int a = 1;"));
+        assert!(std::fs::read_to_string(&b).unwrap().contains("int b = 2;"));
+        assert!(app.tabs.iter().all(|tab| !tab.editor.read(cx).is_dirty()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// Quitting with unsaved changes opens the confirm dialog and sets the quit
+/// flag; resolving it (save) closes the tabs and quits.
+#[test]
+fn quit_with_dirty_prompts_then_saves() {
+    let mut cx = gpui::TestAppContext::single();
+    let temp = std::env::temp_dir();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = temp.join(format!("ns_quit_dirty_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.c");
+        std::fs::write(&a, "int x;\n").unwrap();
+        app.open_file(a.clone(), cx);
+        app.tabs[0].editor.update(cx, |editor, _| {
+            editor.apply_text_edit(0, 0, 0, 7, "int x = 9;\n");
+        });
+        assert!(app.tabs[0].editor.read(cx).is_dirty());
+
+        // A quit request with dirty tabs must not quit immediately; it opens
+        // the save/discard dialog and flags the pending quit.
+        app.request_quit(cx);
+        assert!(app.confirm_close_dialog.is_some());
+        assert!(app.quit_pending);
+        assert_eq!(app.tabs.len(), 1);
+
+        // Resolving with save persists the edit and clears the pending quit.
+        app.resolve_close_dialog(true, cx);
+        assert!(!app.quit_pending);
+        assert_eq!(app.tabs.len(), 0);
+        let on_disk = std::fs::read_to_string(&a).unwrap();
+        assert!(on_disk.contains("int x = 9;"), "edit saved: {on_disk:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
 /// Watch expressions persist to `.ns-ide/watch.json` and reload on project
 /// open; runtime values are intentionally not persisted.
 #[test]
@@ -21897,6 +28743,415 @@ fn refresh_variables_clears_and_reports() {
         app
     });
  }
+
+/// `refresh_registers` clears the cached register groups and re-requests the
+/// adapter's Registers scope; with no scope it reports an honest status.
+#[test]
+fn refresh_registers_clears_and_reports() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.debug.registers_scope = 0;
+        app.debug
+            .register_groups
+            .insert("General Purpose Registers".into(), Vec::new());
+        // No Registers scope: reports a message (nothing can be refreshed).
+        app.refresh_registers(cx);
+        assert!(app.status.contains("无寄存器作用域"));
+
+        // With a scope, the cache is cleared and the re-request is issued; with
+        // no session the groups stay empty (nothing arrives).
+        app.debug.registers_scope = 42;
+        app.debug
+            .register_groups
+            .insert("General Purpose Registers".into(), Vec::new());
+        app.refresh_registers(cx);
+        assert!(app.debug.register_groups.is_empty());
+        assert!(app.status.contains("已刷新寄存器"));
+        app
+    });
+}
+
+/// The variables filter matches by name case-insensitively and recurses into
+/// expanded children; an empty query matches everything.
+#[test]
+fn variable_filter_matches_names_and_children() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.debug.children.insert(
+            100,
+            vec![
+                Variable {
+                    name: "Count".into(),
+                    value: "3".into(),
+                    variables_reference: 0,
+                },
+                Variable {
+                    name: "inner_flag".into(),
+                    value: "true".into(),
+                    variables_reference: 0,
+                },
+            ],
+        );
+        let parent = Variable {
+            name: "GpioRegs".into(),
+            value: "{…}".into(),
+            variables_reference: 100,
+        };
+
+        // Empty query matches all.
+        assert!(app.variable_matches(&parent, ""));
+        assert!(app.variable_matches(&parent, "gpio"));
+        assert!(app.variable_matches(&parent, "GPIO"));
+        // Child match via recursion (the parent itself does not match).
+        assert!(app.variable_matches(&parent, "flag"));
+        assert!(!app.variable_matches(&parent, "uart"));
+
+        // A standalone variable matches its own name only.
+        let x = Variable {
+            name: "counter".into(),
+            value: "1".into(),
+            variables_reference: 0,
+        };
+        assert!(app.variable_matches(&x, "count"));
+        assert!(!app.variable_matches(&x, "uart"));
+        app
+    });
+}
+
+/// STM32F1 `CRL`/`CRH` packing: 4 bits per pin ([3:2]=MODE, [1:0]=CNF),
+/// pins 0-7 → CRL, pins 8-15 → CRH. Verify output push-pull on pin 1 and
+/// input-float on pin 9 land in the right nibbles.
+#[test]
+fn stm32f1_gpio_registers_pack_nibbles() {
+    let mut pins = vec![PinMode::InputFloat; 16];
+    pins[1] = PinMode::OutputPushPull;
+    pins[9] = PinMode::InputPull;
+    let (crl, crh) = stm32f1_gpio_registers(&pins);
+    // Pin 1 (nibble 1): 0x3 << 4.
+    assert_eq!((crl >> 4) & 0xF, 0x3, "crl={crl:#010x}");
+    // Pin 9 (nibble 1 of CRH): 0x8 << 4.
+    assert_eq!((crh >> 4) & 0xF, 0x8, "crh={crh:#010x}");
+    // Pin 0 remains input-float (0x4) in the low nibble of CRL.
+    assert_eq!(crl & 0xF, 0x4, "crl={crl:#010x}");
+}
+
+/// The graphical configurator seeds items from the target SVD, toggles a GPIO
+/// port, cycles a pin to output push-pull, and generates code with a real
+/// `GPIOA->CRL` write (not just a comment).
+#[test]
+fn peripheral_config_gui_generates_real_gpio_writes() {
+    let mut cx = gpui::TestAppContext::single();
+    let temp = std::env::temp_dir();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = temp.join(format!("ns_periph_gui_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "periphproj".to_string();
+        config.project.target = "stm32f103c8".to_string();
+        app.project = Some(Project { root: dir.clone(), config });
+
+        app.open_peripheral_config(cx);
+        let state = app.periph_config.as_ref().unwrap();
+        let gpio_index = state
+            .items
+            .iter()
+            .position(|item| item.name == "GPIOA")
+            .expect("GPIOA in stm32f103c8 catalog");
+
+        app.toggle_periph_enabled(gpio_index, cx);
+        app.cycle_periph_pin(gpio_index, 1, cx);
+        app.cycle_periph_pin(gpio_index, 1, cx); // InputFloat → InputPull → OutputPushPull
+        app.cycle_periph_pin(gpio_index, 1, cx);
+
+        app.generate_peripheral_config_code(cx);
+        let path = dir.join("src").join("peripheral_init.c");
+        let code = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(code.contains("GPIOA->CRL"), "generated code missing CRL: {code}");
+        assert!(code.contains("GPIOA->CRH"), "generated code missing CRH: {code}");
+        // All 16 pins input-float (0x4) except pin 1 → output push-pull (0x3):
+        // CRL = 0x44444434.
+        assert!(code.contains("GPIOA->CRL = 0x44444434;"), "not packed: {code}");
+        assert!(code.contains("gpioa_init"), "{code}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+#[test]
+fn periph_pinout_selects_gpio_and_skips_non_gpio() {
+    let mut cx = gpui::TestAppContext::single();
+    let temp = std::env::temp_dir();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = temp.join(format!("ns_pinout_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "pinoutproj".to_string();
+        config.project.target = "stm32f103c8".to_string();
+        app.project = Some(Project { root: dir.clone(), config });
+
+        app.open_peripheral_config(cx);
+        let state = app.periph_config.as_ref().unwrap();
+        let gpio_index = state
+            .items
+            .iter()
+            .position(|item| item.name == "GPIOA")
+            .expect("GPIOA in stm32f103c8 catalog");
+        let non_gpio_index = state
+            .items
+            .iter()
+            .position(|item| !item.name.to_ascii_uppercase().starts_with("GPIO"))
+            .expect("non-GPIO peripheral exists");
+
+        // Selecting a GPIO sets the pinout; selecting a non-GPIO does not.
+        app.select_pinout_periph(gpio_index, cx);
+        assert_eq!(app.periph_config.as_ref().unwrap().selected_pinout, Some(gpio_index));
+        app.select_pinout_periph(non_gpio_index, cx);
+        assert_eq!(
+            app.periph_config.as_ref().unwrap().selected_pinout,
+            Some(gpio_index),
+            "non-GPIO selection must not change the pinout"
+        );
+
+        // Enabling a GPIO auto-selects it for the pinout.
+        app.periph_config.as_mut().unwrap().selected_pinout = None;
+        app.toggle_periph_enabled(gpio_index, cx);
+        assert_eq!(app.periph_config.as_ref().unwrap().selected_pinout, Some(gpio_index));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+
+/// `jump_memory_to_pc` reports honestly without a PC, and with a PC sets the
+/// address input to the PC hex and triggers a read (no session → a clear
+/// error rather than a silent no-op).
+#[test]
+fn jump_memory_to_pc_sets_address_and_reports() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.ensure_memory_input(cx);
+
+        // No PC yet: an honest error, no panic.
+        app.jump_memory_to_pc(cx);
+        assert!(app
+            .debug
+            .memory
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("无 PC")));
+
+        // With a PC, the address field is populated and a read is attempted
+        // (no live session → the read path reports "调试会话未运行").
+        app.debug.pc = Some(0x0800_0100);
+        app.jump_memory_to_pc(cx);
+        let text = app
+            .debug
+            .memory
+            .address_input
+            .as_ref()
+            .map(|field| field.read(cx).text())
+            .unwrap_or_default();
+        assert_eq!(text, "0x8000100");
+        assert!(app
+            .debug
+            .memory
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("调试会话未运行")));
+        app
+    });
+}
+
+/// `jump_memory_to_address` sets the memory address input to the given address
+/// (not just PC) and reports the jump in the status bar.
+#[test]
+fn jump_memory_to_address_sets_input_and_reports() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.jump_memory_to_address(0x2000_0004, cx);
+        let text = app
+            .debug
+            .memory
+            .address_input
+            .as_ref()
+            .map(|field| field.read(cx).text())
+            .unwrap_or_default();
+        assert_eq!(text, "0x20000004");
+        assert!(app.status.contains("0x20000004"), "{}", app.status);
+        app
+    });
+}
+
+/// `build_rtos_tasks` assembles collected partial tasks, marks the task at
+/// `current_index` running, maps state/stack, and sorts by name.
+#[test]
+fn build_rtos_tasks_marks_running_and_sorts() {
+    let mut tasks = BTreeMap::new();
+    tasks.insert(
+        0,
+        PartialRtosTask {
+            name: Some("led".into()),
+            priority: Some(2),
+            stack_usage: Some(35),
+            state: Some(0),
+        },
+    );
+    tasks.insert(
+        1,
+        PartialRtosTask {
+            name: Some("monitor".into()),
+            priority: Some(1),
+            stack_usage: Some(60),
+            state: Some(1),
+        },
+    );
+    tasks.insert(
+        2,
+        PartialRtosTask {
+            name: Some("usb".into()),
+            priority: Some(0),
+            stack_usage: None,
+            state: Some(2),
+        },
+    );
+    let state = RtosRefreshState {
+        count: 3,
+        current_index: Some(1),
+        tasks,
+        mode: RtosKernelMode::Template,
+        kernel: None,
+    };
+    let rtos = build_rtos_tasks(&state);
+    assert_eq!(rtos.len(), 3);
+    let running = rtos.iter().filter(|task| task.running).collect::<Vec<_>>();
+    assert_eq!(running.len(), 1);
+    assert_eq!(running[0].name, "monitor");
+    // Sorted by name: led, monitor, usb.
+    assert_eq!(rtos[0].name, "led");
+    assert_eq!(rtos[2].name, "usb");
+    // State and stack carried through.
+    let monitor = rtos.iter().find(|task| task.name == "monitor").unwrap();
+    assert_eq!(monitor.state, RtosTaskState::Blocked);
+    assert_eq!(monitor.stack_usage, Some(60));
+}
+
+/// `refresh_rtos_tasks` without a live session reports an honest status and
+/// clears the task list instead of silently doing nothing.
+#[test]
+fn refresh_rtos_tasks_without_session_reports() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.refresh_rtos_tasks(cx);
+        assert!(app.debug.rtos_status.contains("无调试会话"), "{}", app.debug.rtos_status);
+        assert!(app.debug.rtos_tasks.is_empty());
+        app
+    });
+}
+
+/// `handle_rtos_evaluated` routes a `task_count` result: a count of 0 clears
+/// the list; a positive count marks the refresh as in-flight (consumed).
+#[test]
+fn handle_rtos_evaluated_routes_task_count() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.rtos_pending = Some(RtosRefreshState {
+            count: 0,
+            current_index: None,
+            tasks: BTreeMap::new(),
+            mode: RtosKernelMode::Template,
+            kernel: None,
+        });
+        // Zero tasks: consumed, list cleared, pending dropped.
+        assert!(app.handle_rtos_evaluated("task_count", "0", cx));
+        assert!(app.debug.rtos_tasks.is_empty());
+        assert!(app.rtos_pending.is_none());
+
+        // Positive count: consumed and pending remains (names still expected).
+        app.rtos_pending = Some(RtosRefreshState {
+            count: 0,
+            current_index: None,
+            tasks: BTreeMap::new(),
+            mode: RtosKernelMode::Template,
+            kernel: None,
+        });
+        assert!(app.handle_rtos_evaluated("task_count", "2", cx));
+        assert!(app.rtos_pending.is_some());
+        // Unrelated expression is not consumed.
+        assert!(!app.handle_rtos_evaluated("x + 1", "3", cx));
+        app
+    });
+}
+
+/// The variables panel copy action writes `name = value` (or just `name` when
+/// the value is empty) to the clipboard and reports the status.
+#[test]
+fn copy_variable_value_writes_name_eq_value() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.copy_variable_value("count", "42", cx);
+        assert!(app.status.contains("count = 42"));
+        app.copy_variable_value("empty_val", "", cx);
+        assert!(app.status.contains("empty_val"));
+        app
+    });
+}
+
+/// The disassembly copy action writes `address  instruction` to the clipboard.
+#[test]
+fn copy_disasm_instruction_writes_addr_and_insn() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.copy_disasm_instruction(0x0800_0100, "addi a0, a0, 1", cx);
+        assert!(
+            app.status.contains("0x8000100  addi a0, a0, 1"),
+            "{}",
+            app.status
+        );
+        app
+    });
+}
+
+/// The memory row copy action writes `address  hex-bytes  │ ascii`.
+#[test]
+fn copy_memory_row_writes_address_hex_ascii() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.copy_memory_row(0x0800_0000, &[0xde, 0xad, 0xbe, 0xef], "....", cx);
+        assert!(
+            app.status.contains("0x08000000  de ad be ef  │ ...."),
+            "{}",
+            app.status
+        );
+        app
+    });
+}
+
+/// The watch copy action writes `expression = value` (value-empty → expression).
+#[test]
+fn copy_watch_value_writes_expr_eq_value() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        app.copy_watch_value("counter", "42", cx);
+        assert!(app.status.contains("counter = 42"), "{}", app.status);
+        app.copy_watch_value("marker", "", cx);
+        assert!(app.status.contains("marker"), "{}", app.status);
+        app
+    });
+}
 
 /// `set_build_config` writes the chosen config to the active target's
 /// `[[targets]]` entry (or the shared `[build] config` when no target is set),
@@ -22014,4 +29269,812 @@ fn go_to_line_dialog_jumps_and_clamps() {
         app
     });
 }
+
+/// The tree "duplicate" operation copies a file or a whole directory tree to
+/// the new name, preserving nested structure and file contents.
+#[test]
+fn duplicate_tree_entry_copies_recursively() {
+    let base = std::env::temp_dir().join(format!("ns_dup_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("src/sub")).unwrap();
+    std::fs::write(base.join("src/main.c"), "int main(){}").unwrap();
+    std::fs::write(base.join("src/sub/util.h"), "#pragma once").unwrap();
+
+    // File copy: the save handler uses `std::fs::copy` for files.
+    std::fs::copy(base.join("src/main.c"), base.join("main_copy.c")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(base.join("main_copy.c")).unwrap(),
+        "int main(){}"
+    );
+
+    // Directory copy (recursive) via the tree-duplicate helper.
+    copy_dir_recursive(&base.join("src"), &base.join("src_copy")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(base.join("src_copy/main.c")).unwrap(),
+        "int main(){}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(base.join("src_copy/sub/util.h")).unwrap(),
+        "#pragma once"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The output panel "save" writes the active build/run buffer to a log file
+/// under the project's `out/` directory and reports the path; empty output is
+/// rejected without writing.
+#[test]
+fn save_output_to_file_writes_log_and_rejects_empty() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = std::env::temp_dir().join(format!("ns_outlog_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "outlog".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+        app.project = Some(Project { root: dir.clone(), config });
+
+        // Empty output is rejected.
+        app.output.clear();
+        app.save_output_to_file(cx);
+        assert!(app.status.contains("为空"));
+
+        // Non-empty output is written to out/build-output-*.log.
+        app.output = "build ok\nwarning: x\n".to_string();
+        app.save_output_to_file(cx);
+        assert!(app.status.contains("已保存"));
+        let logs = std::fs::read_dir(dir.join("out")).unwrap().count();
+        assert_eq!(logs, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+#[test]
+fn memory_export_writes_bin_and_rejects_empty() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = std::env::temp_dir().join(format!("ns_memexp_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "memexp".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+        app.project = Some(Project { root: dir.clone(), config });
+
+        // Empty bytes are rejected.
+        app.debug.memory.bytes.clear();
+        app.export_memory_region(cx);
+        assert!(app.debug.memory.error.as_deref().unwrap_or("").contains("没有"));
+
+        // Non-empty bytes are written to out/memory-<addr>-<ts>.bin.
+        app.debug.memory.address = 0x2000_0000;
+        app.debug.memory.bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        app.export_memory_region(cx);
+        assert!(app.status.contains("内存已导出"));
+        let written = std::fs::read_dir(dir.join("out"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read(&written).unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+#[test]
+fn log_breakpoint_hit_marks_and_persists() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = std::env::temp_dir().join(format!("ns_logbp_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "logbp".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+        app.project = Some(Project { root: dir.clone(), config });
+
+        // Add a log breakpoint at src/main.c:12 and fire a tagged output.
+        let rel = "src/main.c";
+        app.breakpoints.set(rel, 12, true);
+        app.breakpoints.set_log_message(rel, 12, "counter: {value}");
+        assert_eq!(app.breakpoints.find(rel, 12).unwrap().hits, 0);
+
+        app.mark_log_breakpoint_hit(&dir.join(rel).to_string_lossy(), 12, cx);
+        let bp = app.breakpoints.find(rel, 12).unwrap();
+        assert_eq!(bp.hits, 1);
+        assert!(bp.hit);
+        assert!(app.status.contains("日志断点命中"));
+
+        // Reload the store: the hit count is persisted.
+        let reloaded = ns_project::BreakpointStore::load(&dir);
+        assert_eq!(reloaded.find(rel, 12).unwrap().hits, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// `on_bookmark_toggled` adds/removes the bookmark in the store and persists
+/// it to `.ns-ide/bookmarks.json`; reloading the store recovers it.
+#[test]
+fn bookmark_toggle_updates_and_persists() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = std::env::temp_dir().join(format!("ns_bm_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "bm".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+        app.project = Some(Project { root: dir.clone(), config });
+
+        let rel = "src/main.c";
+        app.on_bookmark_toggled(rel, 5, true, cx);
+        assert!(app.bookmarks.find(rel, 5).is_some());
+        assert!(app.status.contains("已添加书签"));
+
+        app.on_bookmark_toggled(rel, 5, false, cx);
+        assert!(app.bookmarks.find(rel, 5).is_none());
+
+        app.on_bookmark_toggled(rel, 7, true, cx);
+        let reloaded = ns_project::BookmarkStore::load(&dir);
+        assert!(reloaded.find(rel, 7).is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// `remove_bookmark` / `clear_bookmarks` update the store and persist; the
+/// panel's per-row remove and clear-all both take effect.
+#[test]
+fn bookmark_panel_remove_and_clear() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let mut app = IdeApp::new(None, cx);
+        let dir = std::env::temp_dir().join(format!("ns_bmp_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "bmp".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+        app.project = Some(Project { root: dir.clone(), config });
+
+        let rel = "src/main.c";
+        app.bookmarks.add(rel, 3, "");
+        app.bookmarks.add(rel, 9, "");
+        app.bookmarks.add("src/uart.c", 4, "");
+        assert_eq!(app.bookmarks.len(), 3);
+
+        app.remove_bookmark(rel, 3, cx);
+        assert_eq!(app.bookmarks.len(), 2);
+        assert!(app.bookmarks.find(rel, 3).is_none());
+
+        app.clear_bookmarks(cx);
+        assert!(app.bookmarks.is_empty());
+        let reloaded = ns_project::BookmarkStore::load(&dir);
+        assert!(reloaded.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// External tools: add/edit/save/delete a tool command, then run it via the
+/// picker; the store persists to `.ns-ide/tools.json` and reloads.
+#[test]
+fn external_tools_add_edit_run_delete() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let dir = std::env::temp_dir().join(format!("ns-tools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "toolsproj".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+
+        let mut app = IdeApp::new(None, cx);
+        app.project = Some(Project { root: dir.clone(), config });
+
+        // Add a tool via the editor dialog, then save.
+        app.open_tool_editor(None, cx);
+        let dialog = app.tool_dialog.as_ref().expect("dialog opened");
+        dialog.title.update(cx, |field, fcx| field.set_text("构建", fcx));
+        dialog.command.update(cx, |field, fcx| field.set_text("echo hello", fcx));
+        app.save_tool(cx);
+        assert_eq!(app.tools_store.len(), 1);
+        assert!(app.tools_store.find("tool-1").is_some());
+        assert!(dir.join(".ns-ide/tools.json").exists(), "tools saved to disk");
+
+        // Reload from disk.
+        let reloaded = ns_project::ToolStore::load(&dir);
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded.find("tool-1").unwrap().title, "构建");
+
+        // Picker selects and runs it (the panel receives the command).
+        app.run_tool_picker(cx);
+        assert!(app.tool_picker_open, "picker opens");
+        app.confirm_tool_picker(cx);
+        assert!(!app.tool_picker_open, "picker closes after confirm");
+        assert!(app.tools.is_some(), "tools panel created for the run");
+
+        // Edit the existing tool, then delete it.
+        app.open_tool_editor(Some("tool-1".to_string()), cx);
+        assert!(app.tool_dialog.as_ref().unwrap().is_edit);
+        app.delete_tool("tool-1", cx);
+        assert_eq!(app.tools_store.len(), 0);
+        let reloaded = ns_project::ToolStore::load(&dir);
+        assert!(reloaded.is_empty(), "deletion persisted");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// Snippet management: add a row, fill prefix/body, save to `snippets.json`,
+/// reload from disk, then delete the row and confirm persistence.
+#[test]
+fn snippet_dialog_add_edit_save_delete() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        // Snapshot the pre-existing global store, then wipe it so the test is
+        // hermetic regardless of pollution from earlier runs.
+        let original = ns_project::SnippetStore::load();
+        let _ = ns_project::SnippetStore::default().save();
+        let mut app = IdeApp::new(None, cx);
+
+
+        // Open the dialog (loads the current snippets.json).
+        app.open_snippet_dialog(cx);
+        assert!(app.snippet_dialog.is_some(), "dialog opens");
+        let before = app.snippet_dialog.as_ref().unwrap().rows.len();
+
+        // Add a blank row and fill it.
+        app.add_snippet_row(cx);
+        let rows = app.snippet_dialog.as_ref().unwrap().rows.len();
+        assert_eq!(rows, before + 1, "a new row is added");
+        let row = app.snippet_dialog.as_ref().unwrap().rows.last().unwrap();
+        row.prefix.update(cx, |f, fcx| f.set_text("for", fcx));
+        row.body.update(cx, |f, fcx| {
+            f.set_text("for (int i = 0; i < $1; i++) { $0 }", fcx)
+        });
+        row.description
+            .update(cx, |f, fcx| f.set_text("经典 for 循环", fcx));
+        app.save_snippets(cx);
+        assert!(app.snippet_dialog.is_none(), "dialog closes on save");
+        assert!(app.status.contains("已保存"), "{}", app.status);
+
+        // Reload from disk and verify the new snippet persisted.
+        let store = ns_project::SnippetStore::load();
+        assert!(
+            store
+                .matching("for")
+                .iter()
+                .any(|s| s.body.contains("$1") && s.description == "经典 for 循环"),
+            "snippet persisted with body and description"
+        );
+
+        // Re-open: the added snippet shows up as a row; delete it.
+        app.open_snippet_dialog(cx);
+        let target = app
+            .snippet_dialog
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .position(|r| r.prefix.read(cx).text() == "for");
+        let target = target.expect("the new snippet row is present");
+        app.delete_snippet_row(target, cx);
+        app.save_snippets(cx);
+
+        // The snippet must be gone.
+        let store = ns_project::SnippetStore::load();
+        assert!(
+            !store
+                .snippets
+                .iter()
+                .any(|s| s.prefix == "for" && s.description == "经典 for 循环"),
+            "the test snippet was removed"
+        );
+        // Restore the original store so the test leaves no trace.
+        let _ = original.save();
+
+        app
+    });
+}
+
+
+
+/// Diagnostic navigation walks build + LSP diagnostics in file/line order,
+/// wraps at the ends, and reports the destination in the status bar.
+#[test]
+fn navigate_diagnostic_walks_and_wraps() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let dir = std::env::temp_dir().join(format!("ns-diag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "diagproj".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+
+        let mut app = IdeApp::new(None, cx);
+        app.project = Some(Project { root: dir.clone(), config });
+
+        let a = dir.join("src/a.c");
+        let b = dir.join("src/b.c");
+        std::fs::write(&a, "int x;\nint y;\nint z;\n").unwrap();
+        std::fs::write(&b, "int p;\nint q;\n").unwrap();
+
+        // Build diagnostic at a.c:2; LSP diagnostic at a.c:1 and b.c:1.
+        app.diagnostics = vec![Diagnostic {
+            path: Some(a.clone()),
+            line: Some(2),
+            column: Some(3),
+            severity: Severity::Error,
+            message: "build error".to_string(),
+            raw: String::new(),
+        }];
+        app.lsp_diagnostics.insert(
+            a.clone(),
+            vec![ns_lsp::LspDiagnostic {
+                path: a.clone(),
+                line: 1,
+                column: 1,
+                severity: ns_lsp::LspSeverity::Warning,
+                message: "lsp warn".to_string(),
+            }],
+        );
+        app.lsp_diagnostics.insert(
+            b.clone(),
+            vec![ns_lsp::LspDiagnostic {
+                path: b.clone(),
+                line: 1,
+                column: 2,
+                severity: ns_lsp::LspSeverity::Error,
+                message: "lsp err".to_string(),
+            }],
+        );
+
+        // No file open: next lands on the first diagnostic (a.c:1).
+        app.navigate_diagnostic(1, cx);
+        assert!(app.status.contains("a.c:1:1"), "first diag: {}", app.status);
+        assert_eq!(app.output_tab, OutputTab::Problems, "problems panel shown");
+
+        // Next lands on a.c:2 (build error).
+        app.navigate_diagnostic(1, cx);
+        assert!(app.status.contains("a.c:2:3"), "second diag: {}", app.status);
+
+        // Next lands on b.c:1 (LSP error), then wraps to a.c:1.
+        app.navigate_diagnostic(1, cx);
+        assert!(app.status.contains("b.c:1:2"), "third diag: {}", app.status);
+        app.navigate_diagnostic(1, cx);
+        assert!(app.status.contains("a.c:1:1"), "wrap: {}", app.status);
+
+        // Previous from a.c:1 wraps to b.c:1.
+        app.navigate_diagnostic(-1, cx);
+        assert!(app.status.contains("b.c:1:2"), "prev wrap: {}", app.status);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// Debug variable hover: with a stopped session the hovered identifier is
+/// recorded and an `Evaluate` is requested; when the response arrives it is
+/// shown as the hover value. Leaving the word clears the tooltip state.
+#[test]
+fn debug_hover_evaluates_and_clears() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let dir = std::env::temp_dir().join(format!("ns-hover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "hoverproj".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+        std::fs::write(dir.join("src/main.c"), "int counter = 5;\n").unwrap();
+
+        let mut app = IdeApp::new(None, cx);
+        app.project = Some(Project { root: dir.clone(), config });
+        app.open_file(dir.join("src/main.c"), cx);
+
+        // Not stopped: hovering a word clears any stale debug hover.
+        app.debug_hover = Some(("counter".to_string(), Point::new(px(1.), px(2.))));
+        app.on_hover_word(Some("counter".to_string()), Point::new(px(1.), px(2.)), cx);
+        assert!(app.debug_hover.is_none(), "not stopped clears hover");
+
+        // Stopped but no session: records the hover word and anchor.
+        app.debug.status = DebugStatus::Stopped {
+            reason: "breakpoint".to_string(),
+        };
+        app.on_hover_word(Some("counter".to_string()), Point::new(px(10.), px(20.)), cx);
+        assert_eq!(
+            app.debug_hover.as_ref().map(|(w, _)| w.as_str()),
+            Some("counter")
+        );
+        assert!(app.debug_hover_value.is_none());
+
+        // Leaving the word clears both hover state fields.
+        app.on_hover_word(None, Point::new(px(0.), px(0.)), cx);
+        assert!(app.debug_hover.is_none());
+        assert!(app.debug_hover_value.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// Global find & replace: setting the search query and replace text then
+/// invoking `search_replace_all` rewrites matching files on disk, reloads the
+/// open (clean) editor buffer, and reports the change counts in the status.
+#[test]
+fn search_replace_all_rewrites_files_and_reloads_editor() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let dir = std::env::temp_dir().join(format!("ns-searchrepl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "searchrepl".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+        std::fs::write(dir.join("src/main.c"), "int ticks = TICKS;\n").unwrap();
+
+        let mut app = IdeApp::new(None, cx);
+        app.project = Some(Project { root: dir.clone(), config });
+        app.open_file(dir.join("src/main.c"), cx);
+
+        // Set up the search state with query + replace text.
+        let field = cx.new(|cx| {
+            let mut f = crate::text_field::TextField::new("search", cx);
+            f.set_text("TICKS", cx);
+            f
+        });
+        let replace_field = cx.new(|cx| {
+            let mut f = crate::text_field::TextField::new("replace", cx);
+            f.set_text("COUNT", cx);
+            f
+        });
+        let sub = cx.observe(&field, |_, _, _| {});
+        app.search = Some(SearchState {
+            field,
+            replace_field,
+            matches: Vec::new(),
+            selected: 0,
+            case_sensitive: false,
+            whole_word: false,
+            _subscription: sub,
+        });
+
+        app.search_replace_all(cx);
+        assert!(app.status.contains("1 处"), "status: {}", app.status);
+        assert!(app.status.contains("1 个文件"), "status: {}", app.status);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/main.c")).unwrap(),
+            "int ticks = COUNT;\n"
+        );
+        // The open editor buffer was reloaded to match disk.
+        let editor_text = app
+            .active_editor()
+            .map(|e| e.read(cx).text().to_string())
+            .unwrap_or_default();
+        assert_eq!(editor_text, "int ticks = COUNT;\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// Toggling the search option pills flips the `case_sensitive` / `whole_word`
+/// flags and re-runs the query so the result set updates immediately.
+#[test]
+fn search_option_toggles_flip_flags_and_refresh() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|window, cx| {
+        let dir = std::env::temp_dir().join(format!("ns-searchopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "searchopt".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+        std::fs::write(dir.join("src/main.c"), "int TICKS;\nint ticks_counter;\n").unwrap();
+
+        let mut app = IdeApp::new(None, cx);
+        app.project = Some(Project { root: dir.clone(), config });
+        app.open_file(dir.join("src/main.c"), cx);
+        app.open_search(window, cx);
+
+        let field = app.search.as_ref().unwrap().field.clone();
+        field.update(cx, |field, cx| field.set_text("ticks", cx));
+        app.refresh_search(field.clone(), cx);
+
+        // Default: case-insensitive -> 2 content matches (TICKS + ticks_counter).
+        let initial = app.search.as_ref().unwrap().matches.len();
+        assert_eq!(initial, 2, "case-insensitive finds both lines");
+
+        // Case-sensitive: only the lowercase `ticks_counter` line matches.
+        app.toggle_case_sensitive(cx);
+        let after_cs = app.search.as_ref().unwrap();
+        assert!(after_cs.case_sensitive);
+        assert_eq!(after_cs.matches.len(), 1, "case-sensitive finds one line");
+
+        // Whole-word on top: `ticks_counter` is a prefix, no standalone `ticks`.
+        app.toggle_whole_word(cx);
+        let after_ww = app.search.as_ref().unwrap();
+        assert!(after_ww.whole_word);
+        assert_eq!(after_ww.matches.len(), 0, "whole-word + case-sensitive finds none");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+
+/// After a failed build, `jump_to_first_build_diagnostic` opens the source file
+/// of the first error and moves the cursor to that line; when there is no
+/// source-located diagnostic it reports that instead of jumping.
+#[test]
+fn jump_to_first_build_diagnostic_opens_first_error() {
+    let mut cx = gpui::TestAppContext::single();
+    cx.add_window_view(|_window, cx| {
+        let dir = std::env::temp_dir().join(format!("ns-jumpdiag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let mut config = ns_project::ProjectConfig::default();
+        config.project.name = "jumpdiag".to_string();
+        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+        std::fs::write(dir.join("src/main.c"), "int main(void) {\n  bad();\n  return 0;\n}\n").unwrap();
+
+        let mut app = IdeApp::new(None, cx);
+        app.project = Some(Project { root: dir.clone(), config });
+
+        // Two diagnostics: an error on line 2 of main.c, then a warning on a
+        // pathless linker message. The error should win the jump.
+        app.diagnostics = vec![
+            Diagnostic {
+                path: Some(dir.join("src/main.c")),
+                line: Some(2),
+                column: Some(3),
+                severity: Severity::Error,
+                message: "use of undeclared identifier 'bad'".to_string(),
+                raw: "error: use of undeclared identifier".to_string(),
+            },
+            Diagnostic {
+                path: None,
+                line: None,
+                column: None,
+                severity: Severity::Error,
+                message: "undefined reference to `startup`".to_string(),
+                raw: "undefined reference to `startup`".to_string(),
+            },
+        ];
+
+        app.jump_to_first_build_diagnostic(cx);
+        assert!(app.status.contains("已定位到首个错误"), "status: {}", app.status);
+        // The editor for main.c is open and its cursor is on line 2.
+        let editor = app.active_editor().expect("main.c editor open");
+        let (line, _column) = editor.read(cx).cursor_line_col();
+        assert_eq!(line, 2, "cursor jumped to the error line");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        app
+    });
+}
+    /// A clean buffer whose file changes on disk is silently reloaded by
+    /// `check_external_changes`; a dirty buffer is left alone and surfaces the
+    /// external-change dialog instead of being overwritten.
+    #[test]
+    fn external_change_reloads_clean_and_prompts_dirty() {
+        let mut cx = gpui::TestAppContext::single();
+        let dir = std::env::temp_dir().join(format!("ns-ide-extchg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let clean_raw = dir.join("clean.c");
+        let dirty_raw = dir.join("dirty.c");
+        std::fs::write(&clean_raw, "int clean = 1;\n").unwrap();
+        std::fs::write(&dirty_raw, "int dirty = 1;\n").unwrap();
+        let clean = clean_raw.canonicalize().unwrap();
+        let dirty = dirty_raw.canonicalize().unwrap();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: dir.clone(),
+                config: Default::default(),
+            });
+            app.open_file(clean.clone(), cx);
+            app.open_file(dirty.clone(), cx);
+            // Make the dirty buffer dirty (unsaved edit).
+            {
+                let index = app
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.path == dirty)
+                    .expect("dirty tab");
+                let editor = app.tabs[index].editor.clone();
+                editor.update(cx, |editor, _cx| {
+                    editor.apply_text_edit(0, 0, 0, 0, "// edit\n");
+                });
+            }
+            // Both files change on disk.
+            std::fs::write(&clean, "int clean = 2;\n").unwrap();
+            std::fs::write(&dirty, "int dirty = 2;\n").unwrap();
+            app.check_external_changes(cx);
+            // Clean buffer reloaded from disk, not dirty.
+            {
+                let index = app
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.path == clean)
+                    .expect("clean tab");
+                let editor = app.tabs[index].editor.clone();
+                let text = editor.read(cx).text();
+                assert_eq!(text, "int clean = 2;\n");
+                assert!(!editor.read(cx).is_dirty());
+            }
+            // Dirty buffer untouched; dialog opened for it.
+            {
+                let index = app
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.path == dirty)
+                    .expect("dirty tab");
+                let editor = app.tabs[index].editor.clone();
+                let text = editor.read(cx).text();
+                assert!(text.starts_with("// edit"), "dirty buffer preserved: {text}");
+            }
+            assert!(
+                app.external_change_dialog.is_some(),
+                "dirty external change surfaces the dialog"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// `compare_active_with_disk` opens the diff modal when the buffer differs
+    /// from disk and reports "consistent" when it matches.
+    #[test]
+    fn compare_active_with_disk_shows_diff_or_reports_consistent() {
+        let mut cx = gpui::TestAppContext::single();
+        let dir = std::env::temp_dir().join(format!("ns-ide-cmp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("main.c");
+        std::fs::write(&file, "int a = 1;\nint b = 2;\n").unwrap();
+        let file = file.canonicalize().unwrap();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: dir.clone(),
+                config: Default::default(),
+            });
+            app.open_file(file.clone(), cx);
+            // Modify the buffer (unsaved), then compare against disk.
+            let editor = app.active_editor().expect("editor open");
+            editor.update(cx, |editor, _cx| {
+                editor.apply_text_edit(0, 0, 0, 0, "// added\n");
+            });
+            app.compare_active_with_disk(cx);
+            let dialog = app.compare_dialog.as_ref().expect("dialog opened");
+            assert!(dialog.text.contains("+ // added"), "diff: {}", dialog.text);
+            assert_eq!(dialog.changed, 1);
+            // Reload from disk makes buffer == disk; comparing reports consistent.
+            app.close_compare_dialog(cx);
+            let disk_text = std::fs::read_to_string(&file).unwrap();
+            let editor = app.active_editor().expect("editor open");
+            editor.update(cx, |editor, cx| {
+                editor.reload_text(&disk_text, cx);
+                editor.mark_saved();
+            });
+            app.compare_active_with_disk(cx);
+            assert!(
+                app.compare_dialog.is_none(),
+                "identical versions must not open the dialog"
+            );
+            assert!(app.status.contains("一致"), "status: {}", app.status);
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// The problems-panel severity filter toggles each severity independently,
+    /// never leaves the panel empty, and gates both build and LSP diagnostics.
+    #[test]
+    fn problem_severity_filter_toggles_and_never_empties() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            // All three severities start enabled.
+            assert!(app.problem_severity_shown(SeverityFilter::Error));
+            assert!(app.problem_severity_shown(SeverityFilter::Warning));
+            assert!(app.problem_severity_shown(SeverityFilter::Info));
+            // Toggling error off hides errors.
+            app.toggle_problem_filter(SeverityFilter::Error, cx);
+            assert!(!app.problem_severity_shown(SeverityFilter::Error));
+            assert!(app.problem_severity_shown(SeverityFilter::Warning));
+            // Filter predicates respect the active set.
+            assert!(!app.build_problem_shown(Severity::Error));
+            assert!(app.build_problem_shown(Severity::Warning));
+            assert!(app.lsp_problem_shown(ns_lsp::LspSeverity::Warning));
+            assert!(!app.lsp_problem_shown(ns_lsp::LspSeverity::Error));
+            // Toggling off the last two would leave an empty panel; the toggle
+            // refuses to remove the last enabled severity.
+            app.toggle_problem_filter(SeverityFilter::Warning, cx);
+            assert!(app.problem_severity_shown(SeverityFilter::Info));
+            app.toggle_problem_filter(SeverityFilter::Info, cx);
+            assert!(
+                app.problem_severity_shown(SeverityFilter::Info),
+                "last enabled severity is never removed"
+            );
+            // At this point only Info remains. Add Error, then drop Info and
+            // Warning; Error alone stays enabled.
+            app.toggle_problem_filter(SeverityFilter::Error, cx);
+            assert!(app.problem_severity_shown(SeverityFilter::Error));
+            app.toggle_problem_filter(SeverityFilter::Info, cx);
+            assert!(!app.problem_severity_shown(SeverityFilter::Info));
+            assert!(!app.problem_severity_shown(SeverityFilter::Warning));
+            assert!(app.problem_severity_shown(SeverityFilter::Error));
+            assert!(app.build_problem_shown(Severity::Error));
+            assert!(!app.build_problem_shown(Severity::Warning));
+            assert!(!app.lsp_problem_shown(ns_lsp::LspSeverity::Information));
+            assert!(app.lsp_problem_shown(ns_lsp::LspSeverity::Error));
+            app
+        });
+    }
+
+    /// `git_tree_badge` maps a repo-relative tree path to a status label/tone
+    /// for the file-tree badge: modified (M), untracked (U), deleted (D), and
+    /// unchanged (None).
+    #[test]
+    fn git_tree_badge_labels_changed_paths() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let root = std::env::temp_dir().join("ns-badge-root");
+            app.project = Some(Project {
+                root: root.clone(),
+                config: Default::default(),
+            });
+            app.git.status = git::RepoStatus {
+                in_repo: true,
+                branch: "main".to_string(),
+                changes: 3,
+                files: vec![
+                    git::GitChange { path: "src/main.c".into(), staged: ' ', worktree: 'M' },
+                    git::GitChange { path: "src/new.c".into(), staged: '?', worktree: '?' },
+                    git::GitChange { path: "src/old.c".into(), staged: 'D', worktree: ' ' },
+                ],
+            };
+            // Modified file.
+            let (label, _) = app.git_tree_badge(&root.join("src/main.c")).expect("M badge");
+            assert_eq!(label, "M");
+            // Untracked file.
+            let (label, _) = app.git_tree_badge(&root.join("src/new.c")).expect("U badge");
+            assert_eq!(label, "U");
+            // Deleted file.
+            let (label, _) = app.git_tree_badge(&root.join("src/old.c")).expect("D badge");
+            assert_eq!(label, "D");
+            // Unchanged / absent path.
+            assert!(app.git_tree_badge(&root.join("src/clean.c")).is_none());
+            // Not a repo.
+            app.git.status.in_repo = false;
+            assert!(app.git_tree_badge(&root.join("src/main.c")).is_none());
+            app
+        });
+    }
  }

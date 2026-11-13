@@ -76,6 +76,32 @@ pub fn ghost_button(
         .child(label)
 }
 
+/// A destructive confirm button (cinnabar fill, light text).
+pub fn danger_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .h(px(34.))
+        .px(px(16.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(10.))
+        .bg(theme::alpha(theme::CINNABAR, 0.85))
+        .border_1()
+        .border_color(theme::alpha(theme::CINNABAR, 0.5))
+        .text_color(theme::color(theme::TEXT))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_size(px(13.))
+        .cursor_pointer()
+        .hover(|style| style.opacity(0.9))
+        .active(|style| style.opacity(0.85))
+        .child(label)
+}
+
 pub fn icon_button(
     id: impl Into<ElementId>,
     glyph: impl Into<SharedString>,

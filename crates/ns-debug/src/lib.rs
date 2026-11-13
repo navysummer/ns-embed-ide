@@ -23,7 +23,9 @@ use serde_json::{Value, json};
 
  pub mod swvd;
  pub mod embedded;
+pub mod rtos;
 pub mod profile;
+
 
 pub use dap::{read_message, wait_for_response, write_message};
 pub use embedded::{
@@ -198,8 +200,17 @@ pub enum DebugMessage {
     MemoryWritten { address: u64, bytes: usize },
     /// Disassembly instructions starting at the given address.
     Disassembly { instructions: Vec<Instruction> },
-    /// Output from the debuggee or the adapter.
-    Output { category: String, text: String },
+    /// Output from the debuggee or the adapter. When a log breakpoint fires,
+    /// the adapter attaches `source` and `line` so the UI can mark that
+    /// breakpoint as hit even though execution does not pause.
+    Output {
+        category: String,
+        text: String,
+        /// Absolute source path the output originated from (if any).
+        source: Option<String>,
+        /// 1-based source line the output originated from (if any).
+        line: Option<usize>,
+    },
     /// Whether each requested breakpoint bound in the debuggee, as confirmed
     /// by a `setBreakpoints` response. Delivered for the initial set on
     /// launch and for every [`DebugCommand::ResyncBreakpoints`].
@@ -768,6 +779,8 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                                 let _ = command_messages.send(DebugMessage::Output {
                                     category: "console".into(),
                                     text: format!("SWO 流已连接(端口 {port})。"),
+                                    source: None,
+                                    line: None,
                                 });
                                 trace_stream = Some(stream);
                             }
@@ -784,6 +797,8 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                             let _ = command_messages.send(DebugMessage::Output {
                                 category: "console".into(),
                                 text: "SWO 数据流已停止。".into(),
+                                source: None,
+                                line: None,
                             });
                         }
                     }
@@ -1304,8 +1319,21 @@ fn translate_event(event: &Value, messages: &Sender<DebugMessage>, terminated: &
                 .and_then(Value::as_str)
                 .unwrap_or("console")
                 .to_string();
+            // A log breakpoint's output carries `source`/`line`; capture them
+            // so the UI can mark the breakpoint hit without a stop event.
+            let source = body
+                .get("source")
+                .and_then(|s| s.get("path"))
+                .and_then(Value::as_str)
+                .map(|p| p.to_string());
+            let line = body.get("line").and_then(Value::as_u64).map(|l| l as usize);
             if !text.is_empty() {
-                let _ = messages.send(DebugMessage::Output { category, text });
+                let _ = messages.send(DebugMessage::Output {
+                    category,
+                    text,
+                    source,
+                    line,
+                });
             }
         }
         _ => {}
@@ -2464,6 +2492,64 @@ mod tests {
         );
         match rx.try_recv().unwrap() {
             DebugMessage::Error(message) => assert!(message.contains("no thread")),
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_event_carries_source_and_line_for_log_breakpoints() {
+        let (tx, rx) = mpsc::channel();
+        let mut terminated = false;
+        translate_event(
+            &json!({
+                "type": "event",
+                "event": "output",
+                "body": {
+                    "category": "console",
+                    "output": "counter: 7\n",
+                    "source": { "path": "/proj/src/main.c" },
+                    "line": 42,
+                }
+            }),
+            &tx,
+            &mut terminated,
+        );
+        match rx.try_recv().unwrap() {
+            DebugMessage::Output {
+                category,
+                text,
+                source,
+                line,
+            } => {
+                assert_eq!(category, "console");
+                assert_eq!(text, "counter: 7\n");
+                assert_eq!(source.as_deref(), Some("/proj/src/main.c"));
+                assert_eq!(line, Some(42));
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_event_without_location_has_none_source_and_line() {
+        let (tx, rx) = mpsc::channel();
+        let mut terminated = false;
+        translate_event(
+            &json!({
+                "type": "event",
+                "event": "output",
+                "body": { "category": "stdout", "output": "hi\n" }
+            }),
+            &tx,
+            &mut terminated,
+        );
+        match rx.try_recv().unwrap() {
+            DebugMessage::Output {
+                source, line, ..
+            } => {
+                assert_eq!(source, None);
+                assert_eq!(line, None);
+            }
             other => panic!("unexpected message: {other:?}"),
         }
     }

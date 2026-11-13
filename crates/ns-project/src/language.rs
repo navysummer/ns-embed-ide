@@ -213,6 +213,9 @@ int main(void) {
 
 typedef struct {
     const char *name;
+    unsigned priority;      /* 0=低，数字越大越优先 */
+    unsigned stack_usage;   /* 0-100，相对高水位估算 */
+    unsigned state;         /* 0=就绪,1=阻塞,2=挂起 */
 } Task;
 
 static Task tasks[MAX_TASKS];
@@ -240,10 +243,17 @@ static void scheduler_add(const char *name) {
 int main(void) {
     scheduler_add("led");
     scheduler_add("monitor");
+    /* 每个任务的可观测属性（调试器经 RTOS 视图读取）。 */
+    tasks[0].priority = 2; tasks[0].stack_usage = 35; tasks[0].state = 0;
+    tasks[1].priority = 1; tasks[1].stack_usage = 60; tasks[1].state = 0;
 
     for (;;) {
         current_task = (current_task + 1) % task_count;
         sys_ticks++;
+        /* 标记运行任务为就绪，其余保持；这里简单地把运行任务置 0。 */
+        for (int i = 0; i < task_count; i++) {
+            tasks[i].state = (i == current_task) ? 0 : 0;
+        }
         if (current_task == 0) {
             task_led();
         } else {

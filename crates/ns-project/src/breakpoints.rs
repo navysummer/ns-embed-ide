@@ -236,6 +236,60 @@ impl BreakpointStore {
         fs::write(&path, text).with_context(|| format!("写入 {} 失败", path.display()))
     }
 
+    /// Export all breakpoints (and watchpoints) to a JSON file at `path`.
+    /// Returns the number of breakpoints written.
+    pub fn export_to(&self, path: &Path) -> Result<usize> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("创建目录 {} 失败", parent.display()))?;
+        }
+        let text = serde_json::to_string_pretty(self).context("序列化断点失败")?;
+        fs::write(path, text).with_context(|| format!("写入 {} 失败", path.display()))?;
+        Ok(self.breakpoints.len())
+    }
+
+    /// Import breakpoints (and watchpoints) from a JSON file at `path`,
+    /// appending them to the current store. Returns the number of breakpoints
+    /// imported. Malformed entries are skipped; a structurally invalid file is
+    /// an error.
+    pub fn import_from(&mut self, path: &Path) -> Result<usize> {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("读取 {} 失败", path.display()))?;
+        let incoming: BreakpointStore =
+            serde_json::from_str(&text).context("断点文件格式无效")?;
+        let mut imported = 0;
+        for breakpoint in incoming.breakpoints {
+            // Skip entries without a usable source location.
+            if breakpoint.path.is_empty() || breakpoint.line == 0 {
+                continue;
+            }
+            // Replace an existing breakpoint at the same location so imports
+            // don't stack duplicates; otherwise append.
+            if let Some(index) = self.position(&breakpoint.path, breakpoint.line) {
+                self.breakpoints[index] = breakpoint;
+            } else {
+                self.breakpoints.push(breakpoint);
+            }
+            imported += 1;
+        }
+        for watchpoint in incoming.watchpoints {
+            if watchpoint.expression.trim().is_empty() {
+                continue;
+            }
+            if let Some(index) = self
+                .watchpoints
+                .iter()
+                .position(|existing| existing.expression == watchpoint.expression)
+            {
+                self.watchpoints[index] = watchpoint;
+            } else {
+                self.watchpoints.push(watchpoint);
+            }
+        }
+        self.sort();
+        Ok(imported)
+    }
+
     pub fn len(&self) -> usize {
         self.breakpoints.len()
     }
@@ -777,6 +831,52 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+
+    #[test]
+    fn import_export_roundtrip_and_dedup() {
+        let dir = std::env::temp_dir().join(format!(
+            "ns-embed-ide-breakpoint-io-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let export_path = dir.join("breakpoints-export.json");
+
+        let mut store = BreakpointStore::default();
+        store.toggle("src/main.c", 5);
+        store.toggle("src/main.c", 12);
+        store.watchpoints.push(Watchpoint {
+            expression: "counter".into(),
+            access: WatchAccess::ReadWrite,
+            ..Watchpoint::default()
+        });
+        // Export writes both breakpoints and the watchpoint.
+        let exported = store.export_to(&export_path).unwrap();
+        assert_eq!(exported, 2);
+        assert!(export_path.is_file());
+
+        // Import into an empty store restores everything.
+        let mut imported = BreakpointStore::default();
+        let count = imported.import_from(&export_path).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(imported.len(), 2);
+        assert!(imported.find("src/main.c", 5).is_some());
+        assert!(imported.find("src/main.c", 12).is_some());
+        assert_eq!(imported.watchpoints().len(), 1);
+        assert_eq!(imported.watchpoints()[0].expression, "counter");
+
+        // Importing again dedupes by (path, line), so the count stays 2.
+        let second = imported.import_from(&export_path).unwrap();
+        assert_eq!(second, 2);
+        assert_eq!(imported.len(), 2);
+
+        // A malformed file is rejected, not silently ignored.
+        let bad = dir.join("bad.json");
+        fs::write(&bad, "{ not json").unwrap();
+        assert!(imported.import_from(&bad).is_err());
+
+        let _ = fs::remove_dir_all(dir);
+    }
     #[test]
     fn set_condition_creates_and_reverts() {
         let mut store = BreakpointStore::default();
