@@ -32,7 +32,7 @@
 - **工具链检测（M11 切片）**：新建项目向导为编译器/仿真器/调试器/烧写器显示「路径 · 版本」（`--version` 探测），缺失工具给出安装建议；`ns-project::toolchain::Tool::version` + `missing_guide`
 - **工具链校验（M11 切片）**：打开项目时校验 `project.toml` 配置的工具是否在 PATH，缺失的显示到「问题」面板并附安装建议；`Project::tool_warnings`
 - **静态分析（M12 切片）**：命令面板「静态分析」按语言运行 clang-tidy / cargo clippy / zig / zr-lint，结果进「问题」面板；`ns_build::plan_static_analysis`
-- **终端（M12）**：命令面板「打开终端」启动系统 shell（`Terminal`，基于 `portable-pty`，PTY 尺寸 100×30），实时输出流式渲染、可输入回显、Ctrl+C 中断、清屏按钮、退出码/尺寸显示、`Drop` 时关闭 PTY；命令面板「打开串口监视器」用 `NS_SERIAL_PORT` 环境变量指定的设备启动串口会话（`TerminalKind::Serial`），未设置时如实提示。
+- **终端（M12）**：命令面板「打开终端」启动系统 shell（`Terminal`，基于 `portable-pty`），实时输出流式渲染、可输入回显、Ctrl+C 中断、清屏按钮、退出码/尺寸显示、`Drop` 时关闭 PTY；PTY 网格随面板尺寸自适应（`on_children_prepainted` 量取视口后按字符 advance 与 17px 行高计算列/行并 `resize`，提示符与光标不会被挤出可视区）；提示符由 IDE 注入（bash `--rcfile`、zsh `ZDOTDIR`、POSIX sh `$ENV` 生成临时初始化脚本，先加载用户 rc，不改写用户配置），形如 `目录名# `，git 工作区内为 `目录名(git:分支)# `；新终端默认工作目录为项目根（无项目时 `$HOME`）；新输出自动滚动到底部，用户上滚暂停跟随、回到底部恢复，面板底部「跟随输出 / 已暂停跟随」可手动切换；滚轮/触控板按平台方向滚动回溯（上滚看历史，像素增量累积为整行）。命令面板「打开串口监视器」用 `NS_SERIAL_PORT` 环境变量指定的设备启动串口会话（`TerminalKind::Serial`），未设置时如实提示。
 - **会话恢复（M12）**：打开文件标签与当前活动标签持久化到 `.ns-ide/session.json`（打开/切换/关闭/退出时保存，重开项目自动恢复），`ns_project::Session` 往返单测覆盖。
 - **项目设置（M12）**：`Cmd/Ctrl+,` 或命令面板「项目设置…」打开设置模态，编辑 `project.toml` 常用字段（名称/目标 MCU/编译器路径/构建配置/输出目录/调试器路径/烧写器路径/烧写器类型），保存即写回 `project.toml`（校验：名称非空、构建配置为 debug/release、烧写器类型为 openocd/pyocd/jlink），`ns_project` 往返单测覆盖。
 - **烧写（M5 切片）**：命令面板「烧写固件」/ 顶部「烧写」按钮 / `Cmd/Ctrl+Shift+F10` 用 `project.toml` 的 `[flasher]` 适配器（OpenOCD / pyOCD / J-Link Commander，`kind` + `path` + `interface`）烧写构建产物；固件格式 ELF / Intel HEX / BIN（HEX 解码、校验和/EOF 校验）；`ns_flash` crate：`adapter_for` + `Flasher` trait + 端到端单测（stub 工具验证命令构造）。
