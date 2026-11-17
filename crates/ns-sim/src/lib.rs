@@ -29,8 +29,10 @@ pub mod rx;
 
 pub mod rl78;
 pub mod spi;
+pub mod adc;
 
 pub use spi::{SpiPeripheral, SpiCpolCpha, SpiPrescaler};
+pub use adc::{AdcPeripheral, AdcResolution};
 
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
@@ -219,6 +221,8 @@ pub struct VirtualPeripherals {
     pub irq_pending: [bool; 16],
     /// Registered SPI peripherals for memory-mapped access.
     pub spi_peripherals: Vec<SpiPeripheral>,
+    /// Registered ADC peripherals for memory-mapped access.
+    pub adc_peripherals: Vec<AdcPeripheral>,
 }
 
 /// A virtual watchdog timer. When enabled, it counts core cycles; if the
@@ -328,6 +332,7 @@ impl VirtualPeripherals {
             watchdog: None,
             irq_pending: [false; 16],
             spi_peripherals: Vec::new(),
+            adc_peripherals: Vec::new(),
         }
     }
 }
@@ -2419,6 +2424,7 @@ impl Simulator {
         self.timer_write(address);
         self.watchdog_write(address);
         self.spi_write(address);
+        self.adc_write(address);
     }
 
     /// Handle watchdog register writes: base+0x00 feed (0xAA55 resets the
@@ -2502,6 +2508,18 @@ impl Simulator {
         }
     }
 
+    /// Route writes to registered ADC peripherals.
+    fn adc_write(&mut self, address: u32) {
+        let value = self.read_u32(address);
+        for adc in self.peripherals.adc_peripherals.iter_mut() {
+            if adc.contains(address) {
+                let offset = adc.offset(address);
+                adc.write_reg(offset, value);
+                return;
+            }
+        }
+    }
+
     /// Handle timer register writes (CR, PSC, CNT, ARR, SR).
     fn timer_write(&mut self, address: u32) {
         let value = self.read_u32(address);
@@ -2538,6 +2556,12 @@ impl Simulator {
             if spi.contains(address) {
                 let offset = spi.offset(address);
                 return spi.read_reg(offset);
+            }
+        }
+        for adc in &self.peripherals.adc_peripherals {
+            if adc.contains(address) {
+                let offset = adc.offset(address);
+                return adc.read_reg(offset);
             }
         }
         for timer in &self.peripherals.timers {
