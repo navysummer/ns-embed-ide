@@ -28,6 +28,7 @@ pub mod stm8;
 pub mod rx;
 
 pub mod rl78;
+pub mod spi;
 
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
