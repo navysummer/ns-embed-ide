@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -198,8 +198,15 @@ pub struct Hover {
 /// Commands the UI can issue to the server.
 #[derive(Debug, Clone)]
 pub enum LspCommand {
-    OpenFile { path: PathBuf, text: String },
-    ChangeFile { path: PathBuf, text: String, version: i32 },
+    OpenFile {
+        path: PathBuf,
+        text: String,
+    },
+    ChangeFile {
+        path: PathBuf,
+        text: String,
+        version: i32,
+    },
     Completion {
         path: PathBuf,
         line: usize,
@@ -290,7 +297,10 @@ pub enum LspCommand {
 /// Notifications the server pushes to the UI.
 #[derive(Debug, Clone)]
 pub enum LspEvent {
-    Diagnostics { path: PathBuf, diagnostics: Vec<LspDiagnostic> },
+    Diagnostics {
+        path: PathBuf,
+        diagnostics: Vec<LspDiagnostic>,
+    },
     ServerExit,
 }
 
@@ -319,8 +329,9 @@ impl LspServer {
     pub fn spawn(language: &ns_project::Language, root: &Path) -> Result<Self> {
         let program = server_for_language(language)
             .ok_or_else(|| anyhow!("{} 没有对应的语言服务器", language))?;
-        let path = find_command(program)
-            .ok_or_else(|| anyhow!("未找到语言服务器 {program}（clangd / rust-analyzer / zls / zr）"))?;
+        let path = find_command(program).ok_or_else(|| {
+            anyhow!("未找到语言服务器 {program}（clangd / rust-analyzer / zls / zr）")
+        })?;
         Self::spawn_with_path(program, &path, root)
     }
 
@@ -328,11 +339,7 @@ impl LspServer {
     /// single entry point for both [`Self::spawn`] (which resolves the program
     /// on PATH) and tests that use a mock server binary, so a mock never has
     /// to mutate the process-global PATH.
-    pub(crate) fn spawn_with_path(
-        program: &str,
-        path: &Path,
-        root: &Path,
-    ) -> Result<Self> {
+    pub(crate) fn spawn_with_path(program: &str, path: &Path, root: &Path) -> Result<Self> {
         let mut command = Command::new(path);
         // `zr lsp` is the LSP subcommand of the zr compiler; the others are
         // standalone LSP servers.
@@ -347,7 +354,10 @@ impl LspServer {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| anyhow!("启动语言服务器 {program} 失败: {error}"))?;
-        let stdin = child.stdin.take().ok_or_else(|| anyhow!("无法获取语言服务器 stdin"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("无法获取语言服务器 stdin"))?;
         let stdout = child
             .stdout
             .take()
@@ -355,7 +365,8 @@ impl LspServer {
 
         let (command_tx, command_rx) = mpsc::channel::<LspCommand>();
         let (event_tx, event_rx) = mpsc::channel::<LspEvent>();
-        let responses: Arc<Mutex<HashMap<u64, Sender<Value>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let responses: Arc<Mutex<HashMap<u64, Sender<Value>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let next_id = Arc::new(AtomicU64::new(1));
         let shutdown = Arc::new(Mutex::new(false));
         // Set when the server process's stdout closes (child died or exited),
@@ -379,7 +390,9 @@ impl LspServer {
                         if let Some(tx) = responses.lock().unwrap().remove(&id) {
                             let _ = tx.send(message.clone());
                         }
-                    } else if message.get("method").and_then(|v| v.as_str()) == Some("textDocument/publishDiagnostics") {
+                    } else if message.get("method").and_then(|v| v.as_str())
+                        == Some("textDocument/publishDiagnostics")
+                    {
                         if let Some(diagnostics) = parse_diagnostics(&message) {
                             let _ = event_tx.send(LspEvent::Diagnostics {
                                 path: diagnostics.path,
@@ -444,15 +457,16 @@ impl LspServer {
                 if init_failed {
                     return;
                 }
-                let _ = notify(
-                    &mut stdin,
-                    "initialized",
-                    json!({}),
-                );
+                let _ = notify(&mut stdin, "initialized", json!({}));
                 while let Ok(command) = command_rx.recv() {
                     match command {
                         LspCommand::Shutdown => {
-                            let _ = write_request(&mut stdin, next_id.fetch_add(1, Ordering::SeqCst), "shutdown", json!({}));
+                            let _ = write_request(
+                                &mut stdin,
+                                next_id.fetch_add(1, Ordering::SeqCst),
+                                "shutdown",
+                                json!({}),
+                            );
                             *shutdown.lock().unwrap() = true;
                             break;
                         }
@@ -470,7 +484,11 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::ChangeFile { path, text, version } => {
+                        LspCommand::ChangeFile {
+                            path,
+                            text,
+                            version,
+                        } => {
                             let _ = notify(
                                 &mut stdin,
                                 "textDocument/didChange",
@@ -480,7 +498,12 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::Completion { path, line, column, reply } => {
+                        LspCommand::Completion {
+                            path,
+                            line,
+                            column,
+                            reply,
+                        } => {
                             let _ = request(
                                 &mut stdin,
                                 &responses,
@@ -493,7 +516,12 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::Definition { path, line, column, reply } => {
+                        LspCommand::Definition {
+                            path,
+                            line,
+                            column,
+                            reply,
+                        } => {
                             let _ = request(
                                 &mut stdin,
                                 &responses,
@@ -506,7 +534,12 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::Hover { path, line, column, reply } => {
+                        LspCommand::Hover {
+                            path,
+                            line,
+                            column,
+                            reply,
+                        } => {
                             let _ = request(
                                 &mut stdin,
                                 &responses,
@@ -519,7 +552,12 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::References { path, line, column, reply } => {
+                        LspCommand::References {
+                            path,
+                            line,
+                            column,
+                            reply,
+                        } => {
                             let _ = request(
                                 &mut stdin,
                                 &responses,
@@ -533,7 +571,13 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::Rename { path, line, column, new_name, reply } => {
+                        LspCommand::Rename {
+                            path,
+                            line,
+                            column,
+                            new_name,
+                            reply,
+                        } => {
                             let _ = request(
                                 &mut stdin,
                                 &responses,
@@ -547,7 +591,12 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::SignatureHelp { path, line, column, reply } => {
+                        LspCommand::SignatureHelp {
+                            path,
+                            line,
+                            column,
+                            reply,
+                        } => {
                             let _ = request(
                                 &mut stdin,
                                 &responses,
@@ -560,7 +609,12 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::InlayHints { path, line, column, reply } => {
+                        LspCommand::InlayHints {
+                            path,
+                            line,
+                            column,
+                            reply,
+                        } => {
                             let _ = request(
                                 &mut stdin,
                                 &responses,
@@ -626,7 +680,12 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::CodeAction { path, line, column, reply } => {
+                        LspCommand::CodeAction {
+                            path,
+                            line,
+                            column,
+                            reply,
+                        } => {
                             let _ = request(
                                 &mut stdin,
                                 &responses,
@@ -663,7 +722,12 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::PrepareCallHierarchy { path, line, column, reply } => {
+                        LspCommand::PrepareCallHierarchy {
+                            path,
+                            line,
+                            column,
+                            reply,
+                        } => {
                             let _ = request(
                                 &mut stdin,
                                 &responses,
@@ -676,7 +740,11 @@ impl LspServer {
                                 }),
                             );
                         }
-                        LspCommand::CallHierarchyCalls { direction, item, reply } => {
+                        LspCommand::CallHierarchyCalls {
+                            direction,
+                            item,
+                            reply,
+                        } => {
                             let method = if direction == "incoming" {
                                 "callHierarchy/incomingCalls"
                             } else {
@@ -717,7 +785,9 @@ impl LspServer {
         Ok(server)
     }
     pub fn send(&self, command: LspCommand) -> Result<()> {
-        self.commands.send(command).map_err(|_| anyhow!("语言服务器已关闭"))
+        self.commands
+            .send(command)
+            .map_err(|_| anyhow!("语言服务器已关闭"))
     }
 
     pub fn open_file(&self, path: PathBuf, text: String) -> Result<()> {
@@ -725,7 +795,11 @@ impl LspServer {
     }
 
     pub fn change_file(&self, path: PathBuf, text: String, version: i32) -> Result<()> {
-        self.send(LspCommand::ChangeFile { path, text, version })
+        self.send(LspCommand::ChangeFile {
+            path,
+            text,
+            version,
+        })
     }
 
     /// Request completion items at a position; returns the raw JSON response.
@@ -796,7 +870,12 @@ impl LspServer {
     }
 
     /// Request signature help at a position; returns the raw JSON response.
-    pub fn signature_help(&self, path: PathBuf, line: usize, column: usize) -> Result<Receiver<Value>> {
+    pub fn signature_help(
+        &self,
+        path: PathBuf,
+        line: usize,
+        column: usize,
+    ) -> Result<Receiver<Value>> {
         let (reply, rx) = mpsc::channel();
         self.send(LspCommand::SignatureHelp {
             path,
@@ -808,7 +887,12 @@ impl LspServer {
     }
 
     /// Request inlay hints in the range up to the given position.
-    pub fn inlay_hints(&self, path: PathBuf, line: usize, column: usize) -> Result<Receiver<Value>> {
+    pub fn inlay_hints(
+        &self,
+        path: PathBuf,
+        line: usize,
+        column: usize,
+    ) -> Result<Receiver<Value>> {
         let (reply, rx) = mpsc::channel();
         self.send(LspCommand::InlayHints {
             path,
@@ -896,11 +980,7 @@ impl LspServer {
 
     /// Request incoming/outgoing calls for a prepared `CallHierarchyItem`.
     /// The response is a `CallHierarchyIncomingCall[]`/`CallHierarchyOutgoingCall[]`.
-    pub fn call_hierarchy_calls(
-        &self,
-        direction: &str,
-        item: Value,
-    ) -> Result<Receiver<Value>> {
+    pub fn call_hierarchy_calls(&self, direction: &str, item: Value) -> Result<Receiver<Value>> {
         let (reply, rx) = mpsc::channel();
         self.send(LspCommand::CallHierarchyCalls {
             direction: direction.to_string(),
@@ -974,12 +1054,7 @@ pub fn parse_symbols(value: &Value) -> Vec<SymbolInfo> {
         let children = item
             .get("children")
             .and_then(Value::as_array)
-            .map(|children| {
-                children
-                    .iter()
-                    .filter_map(parse_one)
-                    .collect()
-            })
+            .map(|children| children.iter().filter_map(parse_one).collect())
             .unwrap_or_default();
         Some(SymbolInfo {
             name,
@@ -1133,7 +1208,11 @@ pub fn parse_call_hierarchy_calls(value: &Value) -> Vec<CallHierarchyCall> {
                 .get("fromRanges")
                 .and_then(Value::as_array)
                 .and_then(|arr| arr.first())
-                .or_else(|| item.get("toRanges").and_then(Value::as_array).and_then(|a| a.first()));
+                .or_else(|| {
+                    item.get("toRanges")
+                        .and_then(Value::as_array)
+                        .and_then(|a| a.first())
+                });
             let (line, column) = site
                 .and_then(|r| r.get("start"))
                 .map(|start| {
@@ -1233,12 +1312,7 @@ fn request(
     Ok(())
 }
 
-fn write_request(
-    stdin: &mut impl Write,
-    id: u64,
-    method: &str,
-    params: Value,
-) -> Result<()> {
+fn write_request(stdin: &mut impl Write, id: u64, method: &str, params: Value) -> Result<()> {
     let payload = json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -1467,10 +1541,7 @@ while True:
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
-            MockServer {
-                bin,
-                _dir: dir,
-            }
+            MockServer { bin, _dir: dir }
         }
 
         /// Spawn the mock server in `root`. The mock binary is passed
@@ -1486,9 +1557,7 @@ while True:
         let root = tempdir::TempDir::new("ns-lsp-root").unwrap();
         let server = mock.spawn_server(root.path());
 
-        let rx = server
-            .completion(PathBuf::from("/mock/a.c"), 0, 5)
-            .unwrap();
+        let rx = server.completion(PathBuf::from("/mock/a.c"), 0, 5).unwrap();
         let response = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
         let items = response["result"]["items"].as_array().unwrap();
         assert_eq!(items.len(), 2);
@@ -1502,13 +1571,13 @@ while True:
         let root = tempdir::TempDir::new("ns-lsp-root").unwrap();
         let server = mock.spawn_server(root.path());
 
-        let rx = server
-            .definition(PathBuf::from("/mock/a.c"), 3, 1)
-            .unwrap();
+        let rx = server.definition(PathBuf::from("/mock/a.c"), 3, 1).unwrap();
         let response = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
         let uri = response["result"]["uri"].as_str().unwrap();
         assert_eq!(uri, "file:///mock/target.c");
-        let line = response["result"]["range"]["start"]["line"].as_u64().unwrap();
+        let line = response["result"]["range"]["start"]["line"]
+            .as_u64()
+            .unwrap();
         assert_eq!(line, 9);
     }
 
@@ -1518,7 +1587,10 @@ while True:
         let root = tempdir::TempDir::new("ns-lsp-root").unwrap();
         let server = mock.spawn_server(root.path());
         server
-            .open_file(PathBuf::from("/mock/a.c"), "int main() { return 0; }".to_string())
+            .open_file(
+                PathBuf::from("/mock/a.c"),
+                "int main() { return 0; }".to_string(),
+            )
             .unwrap();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1606,7 +1678,10 @@ while True:
 
         let server = LspServer::spawn(&ns_project::Language::C, root.path()).unwrap();
         server
-            .open_file(source.clone(), "int main() { return undefined_thing; }\n".to_string())
+            .open_file(
+                source.clone(),
+                "int main() { return undefined_thing; }\n".to_string(),
+            )
             .unwrap();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

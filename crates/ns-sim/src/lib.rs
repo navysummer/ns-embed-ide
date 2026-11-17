@@ -72,7 +72,6 @@ pub enum Arch {
     Rx,
     /// Renesas RL78 (16-bit CISC, IAR RL78).
     Rl78,
-
 }
 
 impl Arch {
@@ -97,15 +96,15 @@ impl Arch {
     /// Map an ELF `e_machine` field to an architecture.
     pub fn from_elf_machine(machine: u16) -> Option<Arch> {
         match machine {
-            243 => Some(Arch::RiscV),  // EM_RISCV
-            40 => Some(Arch::Arm),     // EM_ARM
-            94 => Some(Arch::Xtensa),  // EM_XTENSA
-            83 => Some(Arch::Avr),     // EM_AVR
+            243 => Some(Arch::RiscV),        // EM_RISCV
+            40 => Some(Arch::Arm),           // EM_ARM
+            94 => Some(Arch::Xtensa),        // EM_XTENSA
+            83 => Some(Arch::Avr),           // EM_AVR
             105 | 167 => Some(Arch::Msp430), // EM_MSP430 / EM_MSP430_2
-            87 => Some(Arch::V850),    // EM_V850
-            186 => Some(Arch::Stm8),   // EM_STM8
-            173 => Some(Arch::Rx),     // EM_RX (Renesas RX)
-            197 => Some(Arch::Rl78),   // EM_RL78 (Renesas RL78)
+            87 => Some(Arch::V850),          // EM_V850
+            186 => Some(Arch::Stm8),         // EM_STM8
+            173 => Some(Arch::Rx),           // EM_RX (Renesas RX)
+            197 => Some(Arch::Rl78),         // EM_RL78 (Renesas RL78)
             _ => None,
         }
     }
@@ -416,7 +415,6 @@ pub struct Simulator {
     pub last_instruction_cycles: u32,
 }
 
-
 /// A symbol (function/global) with its address and size.
 #[derive(Debug, Clone)]
 pub struct Symbol {
@@ -464,7 +462,6 @@ impl SimBreakpoint {
     pub fn hits(&self) -> u64 {
         self.hits
     }
-
 
     /// Record a hit at this breakpoint. Returns `true` when the simulator
     /// should pause: the hit count has reached the threshold (or it is
@@ -514,7 +511,6 @@ pub fn eval_condition(expr: &str, regs: &SimRegs, pc: u32, cycle: u64) -> bool {
         return true;
     }
     match CondParser::new(trimmed, regs, pc, cycle).parse_or() {
-
         Some(value) => value != 0,
         None => false,
     }
@@ -764,7 +760,10 @@ impl<'a> CondParser<'a> {
 
     fn parse_ident(&mut self) -> Option<i64> {
         let start = self.pos;
-        while self.peek().is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
+        while self
+            .peek()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_')
+        {
             self.pos += 1;
         }
         let name = std::str::from_utf8(&self.s[start..self.pos]).ok()?;
@@ -778,8 +777,6 @@ impl<'a> CondParser<'a> {
         }
     }
 }
-
-
 
 /// A single-step outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -939,9 +936,10 @@ impl Simulator {
     /// lowest load address and `image` the contiguous bytes from `ns_flash`'s
     /// Intel HEX decoder. Only valid when `arch == Arch::Mcs51`.
     pub fn load_mcs51(&mut self, base: u16, image: &[u8]) -> anyhow::Result<()> {
-        let core = self.mcs51.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("8051 内核未创建（目标架构非 8051）")
-        })?;
+        let core = self
+            .mcs51
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("8051 内核未创建（目标架构非 8051）"))?;
         for (i, byte) in image.iter().enumerate() {
             let addr = (base as usize).wrapping_add(i);
             if addr >= mcs51::ROM_SIZE {
@@ -957,9 +955,10 @@ impl Simulator {
     /// Load a decoded program image into the 80251 code space. `base` is the
     /// lowest load address. Only valid when `arch == Arch::Mcs251`.
     pub fn load_x51(&mut self, base: u32, image: &[u8]) -> anyhow::Result<()> {
-        let core = self.x51.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("80251 内核未创建（目标架构非 80251）")
-        })?;
+        let core = self
+            .x51
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("80251 内核未创建（目标架构非 80251）"))?;
         for (i, byte) in image.iter().enumerate() {
             let addr = (base as usize).wrapping_add(i);
             if addr >= x51::ROM_SIZE {
@@ -975,9 +974,10 @@ impl Simulator {
     /// Load a decoded program image into the C166 code space. `base` is the
     /// lowest load address. Only valid when `arch == Arch::C166`.
     pub fn load_c166(&mut self, base: u16, image: &[u8]) -> anyhow::Result<()> {
-        let core = self.c166.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("C166 内核未创建（目标架构非 C166）")
-        })?;
+        let core = self
+            .c166
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("C166 内核未创建（目标架构非 C166）"))?;
         for (i, byte) in image.iter().enumerate() {
             let addr = (base as usize).wrapping_add(i);
             if addr >= c166::ROM_SIZE {
@@ -992,9 +992,10 @@ impl Simulator {
     /// Load a program image into the AVR core's program memory. `base` is the
     /// byte address. Only valid when `arch == Arch::Avr`.
     pub fn load_avr(&mut self, base: u32, image: &[u8]) -> anyhow::Result<()> {
-        let core = self.avr.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("AVR 内核未创建（目标架构非 AVR）")
-        })?;
+        let core = self
+            .avr
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("AVR 内核未创建（目标架构非 AVR）"))?;
         for (i, byte) in image.iter().enumerate() {
             let addr = base as usize + i;
             if addr >= avr::ROM_SIZE {
@@ -1009,9 +1010,10 @@ impl Simulator {
 
     /// Load a program image into the MSP430 core (flat 64 KiB memory).
     pub fn load_msp430(&mut self, base: u32, image: &[u8]) -> anyhow::Result<()> {
-        let core = self.msp430.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("MSP430 内核未创建（目标架构非 MSP430）")
-        })?;
+        let core = self
+            .msp430
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("MSP430 内核未创建（目标架构非 MSP430）"))?;
         core.write_bytes(base, image);
         core.set_pc(base);
         core.halted = false;
@@ -1020,9 +1022,10 @@ impl Simulator {
 
     /// Load a program image into the V850 core (flat 1 MiB memory).
     pub fn load_v850(&mut self, base: u32, image: &[u8]) -> anyhow::Result<()> {
-        let core = self.v850.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("V850 内核未创建（目标架构非 V850）")
-        })?;
+        let core = self
+            .v850
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("V850 内核未创建（目标架构非 V850）"))?;
         core.write_bytes(base, image);
         core.set_pc(base);
         core.halted = false;
@@ -1031,26 +1034,29 @@ impl Simulator {
     /// Load a program image into the STM8 core (flat 16 MiB address space).
     /// `base` is the 24-bit load address; the core starts at `base`.
     pub fn load_stm8(&mut self, base: u32, image: &[u8]) -> anyhow::Result<()> {
-        let core = self.stm8.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("STM8 内核未创建（目标架构非 STM8）")
-        })?;
+        let core = self
+            .stm8
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("STM8 内核未创建（目标架构非 STM8）"))?;
         core.load_image(base, image);
         Ok(())
     }
     /// Load a program image into the RX core (flat 64 MiB memory window).
     pub fn load_rx(&mut self, base: u32, image: &[u8]) -> anyhow::Result<()> {
-        let core = self.rx.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("RX 内核未创建（目标架构非 RX）")
-        })?;
+        let core = self
+            .rx
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("RX 内核未创建（目标架构非 RX）"))?;
         core.load_image(base, image);
         Ok(())
     }
 
     /// Load a program image into the RL78 core (1 MiB flat memory window).
     pub fn load_rl78(&mut self, base: u32, image: &[u8]) -> anyhow::Result<()> {
-        let core = self.rl78.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("RL78 内核未创建（目标架构非 RL78）")
-        })?;
+        let core = self
+            .rl78
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("RL78 内核未创建（目标架构非 RL78）"))?;
         core.load_image(base, image);
         Ok(())
     }
@@ -1327,9 +1333,6 @@ impl Simulator {
         SimRegs { named }
     }
 
-
-
-
     /// Find the symbol containing `address` (function name + start), if any.
     pub fn symbol_at(&self, address: u32) -> Option<&Symbol> {
         self.symbols
@@ -1401,7 +1404,6 @@ impl Simulator {
         }
     }
 
-
     /// Execute one instruction. Returns what happened.
     pub fn step(&mut self) -> StepResult {
         let pc_before = self.program_counter();
@@ -1424,26 +1426,26 @@ impl Simulator {
             self.tick_peripherals_for(self.last_instruction_cycles as u64);
             return result;
         }
-         if let Some(core) = self.arm.as_mut() {
-             let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
+        if let Some(core) = self.arm.as_mut() {
+            let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
 
-             let result = core.step(&bps);
-             self.pc = core.regs[arm::PC];
-             self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
-             self.cycle_count += self.last_instruction_cycles as u64;
-             self.halted = core.halted;
+            let result = core.step(&bps);
+            self.pc = core.regs[arm::PC];
+            self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
+            self.cycle_count += self.last_instruction_cycles as u64;
+            self.halted = core.halted;
             let store_events = std::mem::take(&mut core.store_events);
-             let result = match result {
-                 arm::ArmStep::Advanced => StepResult::Advanced,
-                 arm::ArmStep::Breakpoint => StepResult::Breakpoint,
-                 arm::ArmStep::Halted => StepResult::Halted,
-             };
+            let result = match result {
+                arm::ArmStep::Advanced => StepResult::Advanced,
+                arm::ArmStep::Breakpoint => StepResult::Breakpoint,
+                arm::ArmStep::Halted => StepResult::Halted,
+            };
             for (address, byte) in store_events {
                 self.peripheral_write(address, byte);
             }
-             self.tick_peripherals_for(self.last_instruction_cycles as u64);
-             return result;
-         }
+            self.tick_peripherals_for(self.last_instruction_cycles as u64);
+            return result;
+        }
         if let Some(core) = self.x51.as_mut() {
             let bps: Vec<u32> = self.breakpoints.iter().map(|bp| bp.address).collect();
             let result = core.step(&bps);
@@ -1585,14 +1587,9 @@ impl Simulator {
         if self.halted {
             return StepResult::Halted;
         }
-        if let Some(index) = self
-            .breakpoints
-            .iter()
-            .position(|bp| bp.address == self.pc)
-        {
+        if let Some(index) = self.breakpoints.iter().position(|bp| bp.address == self.pc) {
             let regs = self.reg_view();
-            let should_stop = self.breakpoints[index]
-                .record_hit(&regs, self.pc, self.cycle_count);
+            let should_stop = self.breakpoints[index].record_hit(&regs, self.pc, self.cycle_count);
             if should_stop {
                 return StepResult::Breakpoint;
             }
@@ -1608,8 +1605,8 @@ impl Simulator {
         }
         let insn = self.read_u32(self.pc);
         self.execute(insn);
-            self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
-            self.cycle_count += self.last_instruction_cycles as u64;
+        self.last_instruction_cycles = if self.cycle_accurate { est.max(1) } else { 1 };
+        self.cycle_count += self.last_instruction_cycles as u64;
         self.tick_peripherals_for(self.last_instruction_cycles as u64);
         if self.halted {
             StepResult::Halted
@@ -1648,7 +1645,10 @@ impl Simulator {
     /// `arch == Arch::Arm`; returns `false` for Cortex-M (Thumb) and other
     /// architectures.
     pub fn arm_state(&self) -> bool {
-        self.arm.as_ref().map(|core| core.arm_state).unwrap_or(false)
+        self.arm
+            .as_ref()
+            .map(|core| core.arm_state)
+            .unwrap_or(false)
     }
 
     /// Set the program counter, routing to the active architecture core so the
@@ -1774,7 +1774,6 @@ impl Simulator {
         }
         StepResult::Advanced
     }
-
 
     pub fn read_reg(&self, index: usize) -> u32 {
         if let Some(core) = &self.arm {
@@ -1994,19 +1993,19 @@ impl Simulator {
         }
         self.memory[(address as usize) % MEMORY_SIZE]
     }
-     pub fn write_u32(&mut self, address: u32, value: u32) {
-         if let Some(core) = self.arm.as_mut() {
-             core.write_u32(address, value);
+    pub fn write_u32(&mut self, address: u32, value: u32) {
+        if let Some(core) = self.arm.as_mut() {
+            core.write_u32(address, value);
             self.peripheral_write(address, value as u8);
-             return;
-         }
-         if let Some(core) = self.xtensa.as_mut() {
-             core.write_u32(address, value);
+            return;
+        }
+        if let Some(core) = self.xtensa.as_mut() {
+            core.write_u32(address, value);
             self.peripheral_write(address, value as u8);
-             return;
-         }
+            return;
+        }
         if let Some(core) = self.avr.as_mut() {
-             for i in 0..4 {
+            for i in 0..4 {
                 let byte = (value >> (8 * i)) as u8;
                 let addr = address.wrapping_add(i as u32);
                 match addr {
@@ -2022,31 +2021,31 @@ impl Simulator {
             }
             return;
         }
-         if let Some(core) = self.msp430.as_mut() {
-             core.write_u32(address, value);
+        if let Some(core) = self.msp430.as_mut() {
+            core.write_u32(address, value);
             self.peripheral_write(address, value as u8);
-             return;
-         }
-         if let Some(core) = self.v850.as_mut() {
-             core.write_u32(address, value);
+            return;
+        }
+        if let Some(core) = self.v850.as_mut() {
+            core.write_u32(address, value);
             self.peripheral_write(address, value as u8);
-             return;
-         }
-         if let Some(core) = self.stm8.as_mut() {
-             core.write_mem_u32(address, value);
+            return;
+        }
+        if let Some(core) = self.stm8.as_mut() {
+            core.write_mem_u32(address, value);
             self.peripheral_write(address, value as u8);
-             return;
-         }
-         if let Some(core) = self.rx.as_mut() {
-             core.write_u32(address, value);
+            return;
+        }
+        if let Some(core) = self.rx.as_mut() {
+            core.write_u32(address, value);
             self.peripheral_write(address, value as u8);
-             return;
-         }
-         if let Some(core) = self.rl78.as_mut() {
-             core.write_u32(address, value);
+            return;
+        }
+        if let Some(core) = self.rl78.as_mut() {
+            core.write_u32(address, value);
             self.peripheral_write(address, value as u8);
-             return;
-         }
+            return;
+        }
         let base = (address as usize) & !3;
         for i in 0..4 {
             let idx = base.wrapping_add(i) % MEMORY_SIZE;
@@ -2092,7 +2091,6 @@ impl Simulator {
             self.memory[idx] = *byte;
         }
     }
-
 
     fn zero_bytes(&mut self, base: u32, count: usize) {
         if let Some(core) = self.arm.as_mut() {
@@ -2141,7 +2139,6 @@ impl Simulator {
             self.memory[idx] = 0;
         }
     }
-
 
     fn execute(&mut self, insn: u32) {
         let opcode = insn & 0x7f;
@@ -2310,7 +2307,7 @@ impl Simulator {
                         // CSRRW: write rs1 into csr, return old.
                         self.registers[rs1]
                     }
-                    2 => old | self.registers[rs1], // CSRRS
+                    2 => old | self.registers[rs1],  // CSRRS
                     3 => old & !self.registers[rs1], // CSRRC
                     5 => rs1 as u32,                 // CSRRWI
                     6 => old | (rs1 as u32),         // CSRRSI
@@ -2392,7 +2389,6 @@ impl Simulator {
             .any(|(line, p)| *p && (self.csr.mie >> line) & 1 == 1)
     }
 
-
     fn set_reg(&mut self, index: usize, value: u32) {
         if index != 0 {
             self.registers[index] = value;
@@ -2405,18 +2401,18 @@ impl Simulator {
             | ((self.memory[(base + 1) % MEMORY_SIZE] as u16) << 8)
     }
 
-     /// Route a store to virtual peripherals if the address is in their range.
+    /// Route a store to virtual peripherals if the address is in their range.
     fn peripheral_write(&mut self, address: u32, byte: u8) {
-         if address >= self.peripherals.uart_base && address < self.peripherals.uart_base + 8 {
+        if address >= self.peripherals.uart_base && address < self.peripherals.uart_base + 8 {
             if byte != 0 {
                 self.peripherals.outputs.push(byte);
                 (self.peripherals.putchar)(byte);
-             }
-         }
-         self.gpio_write(address);
-         self.timer_write(address);
-         self.watchdog_write(address);
-     }
+            }
+        }
+        self.gpio_write(address);
+        self.timer_write(address);
+        self.watchdog_write(address);
+    }
 
     /// Handle watchdog register writes: base+0x00 feed (0xAA55 resets the
     /// timer), base+0x04 enable/disable, base+0x08 timeout cycles.
@@ -2510,9 +2506,7 @@ impl Simulator {
 
     /// Read a memory-mapped peripheral register (GPIO / timers / UART status).
     fn peripheral_read(&self, address: u32) -> Option<u32> {
-        if address >= self.peripherals.gpio_base
-            && address < self.peripherals.gpio_base + 0x20
-        {
+        if address >= self.peripherals.gpio_base && address < self.peripherals.gpio_base + 0x20 {
             let offset = address.wrapping_sub(self.peripherals.gpio_base);
             return Some(match offset {
                 0x00 => self.peripherals.gpio_out,
@@ -2606,9 +2600,9 @@ fn read_u16(bytes: &[u8], offset: usize, little: bool) -> u16 {
 /// Human-readable register name (ABI).
 pub fn reg_name(index: usize) -> &'static str {
     const NAMES: [&str; 32] = [
-        "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3",
-        "a4", "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
-        "t3", "t4", "t5", "t6",
+        "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4",
+        "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4",
+        "t5", "t6",
     ];
     NAMES[index.min(31)]
 }
@@ -2673,7 +2667,6 @@ pub fn reg_label_for(arch: Arch, index: usize) -> String {
         Arch::Rx => rx::RxCore::register_label(index),
         Arch::Rl78 => rl78::Rl78Core::register_label(index),
     }
-
 }
 
 /// Disassemble a single instruction at the current PC for an architecture.
@@ -2705,7 +2698,7 @@ pub fn is_return_mnemonic(insn: &str) -> bool {
         if insn == prefix
             || insn
                 .strip_prefix(prefix)
-            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_whitespace() || c == ','))
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_whitespace() || c == ','))
         {
             return true;
         }
@@ -2794,7 +2787,12 @@ fn disassemble_riscv(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
                 7 => "bgeu",
                 _ => "br",
             };
-            format!("{cond} {}, {}, {:#x}", reg_name(rs1), reg_name(rs2), pc.wrapping_add(imm))
+            format!(
+                "{cond} {}, {}, {:#x}",
+                reg_name(rs1),
+                reg_name(rs2),
+                pc.wrapping_add(imm)
+            )
         }
         0x03 => {
             let name = match funct3 {
@@ -2845,7 +2843,12 @@ fn disassemble_riscv(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
                 7 => "and",
                 _ => "op",
             };
-            format!("{name} {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2))
+            format!(
+                "{name} {}, {}, {}",
+                reg_name(rd),
+                reg_name(rs1),
+                reg_name(rs2)
+            )
         }
         0x0f => {
             if insn & 0xfff == 0x73 {
@@ -2894,7 +2897,7 @@ fn disassemble_arm_state(pc: u32, read: &dyn Fn(u32) -> u8, arm_state: bool) -> 
         0x3000 => format!("adds r{}, #{}", (half >> 8) & 7, half & 0xff),
         // BX / BLX (register): 0x4700-0x477F. `bx lr` is a function return.
         _ if insn & 0xFF00 == 0x4700 => {
-            let r = ((half >> 3) & 0x0f) | (((half >> 4) & 0x8));
+            let r = ((half >> 3) & 0x0f) | ((half >> 4) & 0x8);
             let mnem = if half & 0x80 != 0 { "blx" } else { "bx" };
             format!("{mnem} r{}", r)
         }
@@ -2911,19 +2914,48 @@ fn disassemble_arm_state(pc: u32, read: &dyn Fn(u32) -> u8, arm_state: bool) -> 
             }
             format!("pop {{{}}}", regs.join(", "))
         }
-        0x6000 => format!("str r{}, [r{}, #{}]", (half >> 8) & 7, (half >> 3) & 7, ((half >> 6) & 0x1f) * 4),
-        0x6800 => format!("ldr r{}, [r{}, #{}]", (half >> 8) & 7, (half >> 3) & 7, ((half >> 6) & 0x1f) * 4),
-        0xD000 => format!("b{} {:#x}", cond_suffix(((half >> 8) & 0xf) as u8), pc.wrapping_add(4 + ((half as i8 as i32) * 2) as u32)),
-        0xE000 => format!("b {:#x}", pc.wrapping_add(4 + (((half & 0x7ff) as i16) * 2) as u32)),
+        0x6000 => format!(
+            "str r{}, [r{}, #{}]",
+            (half >> 8) & 7,
+            (half >> 3) & 7,
+            ((half >> 6) & 0x1f) * 4
+        ),
+        0x6800 => format!(
+            "ldr r{}, [r{}, #{}]",
+            (half >> 8) & 7,
+            (half >> 3) & 7,
+            ((half >> 6) & 0x1f) * 4
+        ),
+        0xD000 => format!(
+            "b{} {:#x}",
+            cond_suffix(((half >> 8) & 0xf) as u8),
+            pc.wrapping_add(4 + ((half as i8 as i32) * 2) as u32)
+        ),
+        0xE000 => format!(
+            "b {:#x}",
+            pc.wrapping_add(4 + (((half & 0x7ff) as i16) * 2) as u32)
+        ),
         // Format-2 data-processing (ALU) 0x4000-0x43FF. NOTE: `half & 0xF800`
         // (not `insn & 0xFFFF_8000`, which is always 0 for a 16-bit `insn`).
         _ if half & 0xF800 == 0x4000 => {
             let op = (half >> 6) & 0xf;
             let name = match op {
-                0x0 => "ands", 0x1 => "eors", 0x2 => "lsls", 0x3 => "lsrs",
-                0x4 => "asrs", 0x5 => "adcs", 0x6 => "sbcs", 0x7 => "rors",
-                0x8 => "tst", 0x9 => "rsbs", 0xA => "cmp", 0xB => "cmn",
-                0xC => "orrs", 0xD => "muls", 0xE => "bics", _ => "mvns",
+                0x0 => "ands",
+                0x1 => "eors",
+                0x2 => "lsls",
+                0x3 => "lsrs",
+                0x4 => "asrs",
+                0x5 => "adcs",
+                0x6 => "sbcs",
+                0x7 => "rors",
+                0x8 => "tst",
+                0x9 => "rsbs",
+                0xA => "cmp",
+                0xB => "cmn",
+                0xC => "orrs",
+                0xD => "muls",
+                0xE => "bics",
+                _ => "mvns",
             };
             // rd = bits 2-0, rm = bits 5-3 (not bits 10-8/6-3: that is the
             // Format-4 shift/imm encoding, not the ALU register fields).
@@ -2967,7 +2999,10 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let writeback = insn & (1 << 21) != 0;
         let load = insn & (1 << 20) != 0;
         let list = insn & 0xFFFF;
-        let regs: Vec<String> = (0..16).filter(|i| list & (1 << i) != 0).map(rname).collect();
+        let regs: Vec<String> = (0..16)
+            .filter(|i| list & (1 << i) != 0)
+            .map(rname)
+            .collect();
         let mode = match (add, pre) {
             (true, false) => "ia",
             (true, true) => "ib",
@@ -2976,7 +3011,11 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         };
         let mnem = if load { "ldm" } else { "stm" };
         let wb = if writeback { "!" } else { "" };
-        return format!("{mnem}{mode}{cc} {}{wb}, {{{}}}", rname(rn), regs.join(", "));
+        return format!(
+            "{mnem}{mode}{cc} {}{wb}, {{{}}}",
+            rname(rn),
+            regs.join(", ")
+        );
     }
     // Single data transfer (word/byte): 01xx.
     if insn & 0x0C00_0000 == 0x0400_0000 {
@@ -3015,7 +3054,11 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     if insn & 0x0FF0_0000 == 0x0300_0000 || insn & 0x0FF0_0000 == 0x0340_0000 {
         let movt = insn & 0x0040_0000 != 0;
         let imm16 = ((insn >> 4) & 0xF000) | (insn & 0x0FFF);
-        return format!("{}{cc} {}, #{imm16:#x}", if movt { "movt" } else { "movw" }, rname(rd));
+        return format!(
+            "{}{cc} {}, #{imm16:#x}",
+            if movt { "movt" } else { "movw" },
+            rname(rd)
+        );
     }
     // MRS Rd, CPSR.
     if insn & 0x0FBF_0FFF == 0x010F_0000 {
@@ -3036,7 +3079,13 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let acc = insn & (1 << 21) != 0;
         let rs = ((insn >> 8) & 0x0F) as usize;
         if acc {
-            return format!("mla{cc} {}, {}, {}, {}", rname(rd), rname(rm), rname(rs), rname(rn));
+            return format!(
+                "mla{cc} {}, {}, {}, {}",
+                rname(rd),
+                rname(rm),
+                rname(rs),
+                rname(rn)
+            );
         }
         return format!("mul{cc} {}, {}, {}", rname(rd), rname(rm), rname(rs));
     }
@@ -3053,7 +3102,13 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
             (true, false) => "smull",
             (true, true) => "smlal",
         };
-        return format!("{mnem}{cc} {}, {}, {}, {}", rname(rdlo), rname(rdhi), rname(rm), rname(rs));
+        return format!(
+            "{mnem}{cc} {}, {}, {}, {}",
+            rname(rdlo),
+            rname(rdhi),
+            rname(rm),
+            rname(rs)
+        );
     }
     // Halfword / signed transfer.
     if insn & 0x0E00_0090 == 0x0000_0090 && insn & 0x60 != 0 {
@@ -3069,7 +3124,11 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let pre = insn & (1 << 24) != 0;
         let add = insn & (1 << 23) != 0;
         // Positive offsets omit the `+` sign per ARM assembly convention.
-        let off_str = if add { format!("#{imm}") } else { format!("#-{imm}") };
+        let off_str = if add {
+            format!("#{imm}")
+        } else {
+            format!("#-{imm}")
+        };
         if pre {
             return format!("{mnem}{cc} {}, [{}, {off_str}]", rname(rd), rname(rn));
         }
@@ -3089,10 +3148,22 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let set_flags = insn & (1 << 20) != 0;
         let s = if set_flags { "s" } else { "" };
         let name = match opcode {
-            0x0 => "and", 0x1 => "eor", 0x2 => "sub", 0x3 => "rsb",
-            0x4 => "add", 0x5 => "adc", 0x6 => "sbc", 0x7 => "rsc",
-            0x8 => "tst", 0x9 => "teq", 0xA => "cmp", 0xB => "cmn",
-            0xC => "orr", 0xD => "mov", 0xE => "bic", _ => "mvn",
+            0x0 => "and",
+            0x1 => "eor",
+            0x2 => "sub",
+            0x3 => "rsb",
+            0x4 => "add",
+            0x5 => "adc",
+            0x6 => "sbc",
+            0x7 => "rsc",
+            0x8 => "tst",
+            0x9 => "teq",
+            0xA => "cmp",
+            0xB => "cmn",
+            0xC => "orr",
+            0xD => "mov",
+            0xE => "bic",
+            _ => "mvn",
         };
         let is_imm = insn & (1 << 25) != 0;
         let operand = if is_imm {
@@ -3135,9 +3206,21 @@ fn disassemble_a32(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
 
 fn cond_suffix(cond: u8) -> &'static str {
     match cond {
-        0 => "eq", 1 => "ne", 2 => "cs", 3 => "cc", 4 => "mi", 5 => "pl",
-        6 => "vs", 7 => "vc", 8 => "hi", 9 => "ls", 0xA => "ge", 0xB => "lt",
-        0xC => "gt", 0xD => "le", _ => "",
+        0 => "eq",
+        1 => "ne",
+        2 => "cs",
+        3 => "cc",
+        4 => "mi",
+        5 => "pl",
+        6 => "vs",
+        7 => "vc",
+        8 => "hi",
+        9 => "ls",
+        0xA => "ge",
+        0xB => "lt",
+        0xC => "gt",
+        0xD => "le",
+        _ => "",
     }
 }
 
@@ -3156,7 +3239,11 @@ fn disassemble_xtensa(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         (0x0, 0x2) if insn == 0x20 => "nop".to_string(),
         (0x0, 0x8) => {
             let name = match op2 {
-                0x8 => "add", 0x9 => "sub", 0xA => "and", 0xB => "or", 0xC => "xor",
+                0x8 => "add",
+                0x9 => "sub",
+                0xA => "and",
+                0xB => "or",
+                0xC => "xor",
                 _ => "rrr",
             };
             format!("{name} a{t}, a{s}, a{r}")
@@ -3171,10 +3258,26 @@ fn disassemble_xtensa(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         (0x2, 0x6) => format!("s32i a{t}, a{s}, {}", (op2 as u32).wrapping_mul(4)),
         (0x2, 0x0) => format!("l8ui a{t}, a{s}, {op2}"),
         (0x2, 0x4) => format!("s8i a{t}, a{s}, {op2}"),
-        (0x7, 0x0) => format!("beq a{r}, a{s}, {:#x}", pc.wrapping_add(4).wrapping_add((((insn >> 16) & 0xFF) as u32).wrapping_mul(4))),
-        (0x7, 0x4) => format!("bne a{r}, a{s}, {:#x}", pc.wrapping_add(4).wrapping_add((((insn >> 16) & 0xFF) as u32).wrapping_mul(4))),
-        (0x7, 0x8) => format!("blt a{r}, a{s}, {:#x}", pc.wrapping_add(4).wrapping_add((((insn >> 16) & 0xFF) as u32).wrapping_mul(4))),
-        (0x7, 0xC) => format!("bge a{r}, a{s}, {:#x}", pc.wrapping_add(4).wrapping_add((((insn >> 16) & 0xFF) as u32).wrapping_mul(4))),
+        (0x7, 0x0) => format!(
+            "beq a{r}, a{s}, {:#x}",
+            pc.wrapping_add(4)
+                .wrapping_add((((insn >> 16) & 0xFF) as u32).wrapping_mul(4))
+        ),
+        (0x7, 0x4) => format!(
+            "bne a{r}, a{s}, {:#x}",
+            pc.wrapping_add(4)
+                .wrapping_add((((insn >> 16) & 0xFF) as u32).wrapping_mul(4))
+        ),
+        (0x7, 0x8) => format!(
+            "blt a{r}, a{s}, {:#x}",
+            pc.wrapping_add(4)
+                .wrapping_add((((insn >> 16) & 0xFF) as u32).wrapping_mul(4))
+        ),
+        (0x7, 0xC) => format!(
+            "bge a{r}, a{s}, {:#x}",
+            pc.wrapping_add(4)
+                .wrapping_add((((insn >> 16) & 0xFF) as u32).wrapping_mul(4))
+        ),
         (0x5, 0x0) => {
             let imm = ((insn >> 12) & 0xFFFFF) as u32;
             format!("call0 {:#x}", (pc & !3).wrapping_add(imm.wrapping_mul(4)))
@@ -3182,7 +3285,11 @@ fn disassemble_xtensa(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         (0x5, 0x4) => format!("callx0 a{s}"),
         (0x0, 0x0) if r == 0 && op2 == 0 => "ret".to_string(),
         (0x6, 0x0) => format!("mov a{t}, a{s}"),
-        (0x4, 0x0) => format!("extui a{t}, a{s}, {}, {}", (insn >> 16) & 0x1f, (insn >> 24) & 0x0f),
+        (0x4, 0x0) => format!(
+            "extui a{t}, a{s}, {}, {}",
+            (insn >> 16) & 0x1f,
+            (insn >> 24) & 0x0f
+        ),
         _ => format!(".byte 0x{insn:06x}"),
     }
 }
@@ -3201,20 +3308,48 @@ fn disassemble_mcs51(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         0x84 => "div ab".to_string(),
         0x22 => "ret".to_string(),
         0x32 => "reti".to_string(),
-        0x02 => format!("ljmp 0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
-        0x12 => format!("lcall 0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
-        0x80 => format!("sjmp {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
-        0x60 => format!("jz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
-        0x70 => format!("jnz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
-        0x40 => format!("jc {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
-        0x50 => format!("jnc {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
+        0x02 => format!(
+            "ljmp 0x{:02x}{:02x}{:02x}",
+            read(pc + 1),
+            read(pc + 2),
+            read(pc + 3)
+        ),
+        0x12 => format!(
+            "lcall 0x{:02x}{:02x}{:02x}",
+            read(pc + 1),
+            read(pc + 2),
+            read(pc + 3)
+        ),
+        0x80 => format!(
+            "sjmp {:#x}",
+            pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
+        0x60 => format!(
+            "jz {:#x}",
+            pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
+        0x70 => format!(
+            "jnz {:#x}",
+            pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
+        0x40 => format!(
+            "jc {:#x}",
+            pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
+        0x50 => format!(
+            "jnc {:#x}",
+            pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
         n if (0xE8..=0xEF).contains(&n) => format!("mov a, r{}", n & 7),
         n if (0xF8..=0xFF).contains(&n) => format!("mov r{}, a", n & 7),
         n if (0x28..=0x2F).contains(&n) => format!("add a, r{}", n & 7),
         n if (0x98..=0x9F).contains(&n) => format!("subb a, r{}", n & 7),
         n if (0x08..=0x0F).contains(&n) => format!("inc r{}", n & 7),
         n if (0x18..=0x1F).contains(&n) => format!("dec r{}", n & 7),
-        n if (0x40..=0x4F).contains(&n) => format!("jc {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
+        n if (0x40..=0x4F).contains(&n) => format!(
+            "jc {:#x}",
+            pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
         _ => format!(".byte 0x{op:02x}"),
     }
 }
@@ -3234,12 +3369,36 @@ fn disassemble_mcs251(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         n if (0x98..=0x9F).contains(&n) => format!("subb a, r{}", n & 7),
         0xA4 => "mul ab".to_string(),
         0x84 => "div ab".to_string(),
-        0x90 => format!("mov dptr, #0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
-        0x02 => format!("ljmp 0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
-        0x12 => format!("lcall 0x{:02x}{:02x}{:02x}", read(pc + 1), read(pc + 2), read(pc + 3)),
-        0x80 => format!("sjmp {:#x}", pc.wrapping_add(3).wrapping_add((read(pc + 1) as i8) as u32)),
-        0x60 => format!("jz {:#x}", pc.wrapping_add(3).wrapping_add((read(pc + 1) as i8) as u32)),
-        0x70 => format!("jnz {:#x}", pc.wrapping_add(3).wrapping_add((read(pc + 1) as i8) as u32)),
+        0x90 => format!(
+            "mov dptr, #0x{:02x}{:02x}{:02x}",
+            read(pc + 1),
+            read(pc + 2),
+            read(pc + 3)
+        ),
+        0x02 => format!(
+            "ljmp 0x{:02x}{:02x}{:02x}",
+            read(pc + 1),
+            read(pc + 2),
+            read(pc + 3)
+        ),
+        0x12 => format!(
+            "lcall 0x{:02x}{:02x}{:02x}",
+            read(pc + 1),
+            read(pc + 2),
+            read(pc + 3)
+        ),
+        0x80 => format!(
+            "sjmp {:#x}",
+            pc.wrapping_add(3).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
+        0x60 => format!(
+            "jz {:#x}",
+            pc.wrapping_add(3).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
+        0x70 => format!(
+            "jnz {:#x}",
+            pc.wrapping_add(3).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
         0xE0 => "movx a, @dptr".to_string(),
         0xF0 => "movx @dptr, a".to_string(),
         _ => format!(".byte 0x{op:02x}"),
@@ -3260,11 +3419,24 @@ fn disassemble_c166(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         n if (0x40..=0x4F).contains(&n) => format!("sub r{}, r{}", n & 0x0F, read(pc + 1) & 0x0F),
         n if (0x60..=0x6F).contains(&n) => format!("mul r{}, r{}", n & 0x0F, read(pc + 1) & 0x0F),
         n if (0x70..=0x7F).contains(&n) => format!("div r{}, r{}", n & 0x0F, read(pc + 1) & 0x0F),
-        n if (0x80..=0x8F).contains(&n) => format!("load r{}, [r{}]", n & 0x0F, read(pc + 1) & 0x0F),
-        n if (0x90..=0x9F).contains(&n) => format!("store [r{}], r{}", n & 0x0F, read(pc + 1) & 0x0F),
-        0xA0 => format!("jmp {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
-        0xB0 => format!("jz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
-        0xB1 => format!("jnz {:#x}", pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)),
+        n if (0x80..=0x8F).contains(&n) => {
+            format!("load r{}, [r{}]", n & 0x0F, read(pc + 1) & 0x0F)
+        }
+        n if (0x90..=0x9F).contains(&n) => {
+            format!("store [r{}], r{}", n & 0x0F, read(pc + 1) & 0x0F)
+        }
+        0xA0 => format!(
+            "jmp {:#x}",
+            pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
+        0xB0 => format!(
+            "jz {:#x}",
+            pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
+        0xB1 => format!(
+            "jnz {:#x}",
+            pc.wrapping_add(2).wrapping_add((read(pc + 1) as i8) as u32)
+        ),
         0xC0 => format!("call 0x{:02x}{:02x}", read(pc + 1), read(pc + 2)),
         0xC1 => "ret".to_string(),
         _ => format!(".byte 0x{op:02x}"),
@@ -3376,10 +3548,20 @@ mod tests {
         // Return-class mnemonics across architectures are recognized.
         for insn in ["ret", "reti", "rts", "rti", "rfe", "rte", "retf", "mret"] {
             assert!(is_return_mnemonic(insn), "{insn}");
-            assert!(is_return_mnemonic(&format!("{insn} #0x10")), "{insn} with operand");
+            assert!(
+                is_return_mnemonic(&format!("{insn} #0x10")),
+                "{insn} with operand"
+            );
         }
         // ARM-family returns: `bx lr`/`bx r14` and `pop {.., pc}` / `ldm .. {.., pc}`.
-        for insn in ["bx lr", "bx r14", "blx lr", "pop {r4, pc}", "pop {pc}", "ldm sp!, {r4, pc}"] {
+        for insn in [
+            "bx lr",
+            "bx r14",
+            "blx lr",
+            "pop {r4, pc}",
+            "pop {pc}",
+            "ldm sp!, {r4, pc}",
+        ] {
             assert!(is_return_mnemonic(insn), "{insn}");
         }
         // Non-return instructions are rejected.
@@ -3403,10 +3585,13 @@ mod tests {
     fn step_out_stops_at_returns() {
         // RISC-V: a function that ends with `ret` (jalr x0, ra, 0).
         let mut sim = Simulator::for_arch(Arch::RiscV).expect("RISC-V core");
-        sim.load_image(0x8000_0000, &[
-            0x13, 0x03, 0x00, 0x00, // addi x6, x0, 0   (0x80000000)
-            0x67, 0x00, 0x00, 0x00, // ret              (0x80000004)
-        ]);
+        sim.load_image(
+            0x8000_0000,
+            &[
+                0x13, 0x03, 0x00, 0x00, // addi x6, x0, 0   (0x80000000)
+                0x67, 0x00, 0x00, 0x00, // ret              (0x80000004)
+            ],
+        );
         sim.set_program_counter(0x8000_0000);
         let result = sim.step_out(64);
         assert_eq!(result, StepResult::Advanced);
@@ -3418,7 +3603,10 @@ mod tests {
         // Write the bytes directly (no `load_image`: that would reset the core
         // and treat the code as a vector table, flipping the core to ARM state).
         sim.arm.as_mut().unwrap().set_arm_state(false);
-        sim.arm.as_mut().unwrap().write_bytes(0x0800_0000, &[0x70, 0x47]);
+        sim.arm
+            .as_mut()
+            .unwrap()
+            .write_bytes(0x0800_0000, &[0x70, 0x47]);
         sim.set_program_counter(0x0800_0000);
         sim.write_reg(14, 0x0800_0010); // LR = return address
         let result = sim.step_out(64);
@@ -3573,7 +3761,10 @@ mod tests {
         assert!(!sim.peripherals.gpio_events.is_empty());
         // The event must carry the PC of the store that changed the pin.
         let event = sim.peripherals.gpio_events.last().unwrap();
-        assert_eq!(event.pc, sim.pc, "event PC must match the current program counter");
+        assert_eq!(
+            event.pc, sim.pc,
+            "event PC must match the current program counter"
+        );
         assert_eq!(event.cycle, sim.cycle_count);
         assert_eq!(event.pin, 0);
         assert_eq!(event.value, 1);
@@ -3581,7 +3772,7 @@ mod tests {
         sim.write_u32(base + 0x08, 0x0000_0001);
         sim.gpio_write(base + 0x08);
         assert_eq!(sim.peripherals.gpio_out & 1, 0);
-     }
+    }
 
     /// Stores through the ARM core must route to the virtual peripherals:
     /// writing a nonzero byte to the UART data register produces output.
@@ -3597,8 +3788,11 @@ mod tests {
         );
         // A zero byte is a no-op (not echoed).
         sim.write_u32(uart, 0);
-        assert_eq!(sim.peripherals.outputs.iter().filter(|&&b| b == 0).count(), 0);
-     }
+        assert_eq!(
+            sim.peripherals.outputs.iter().filter(|&&b| b == 0).count(),
+            0
+        );
+    }
 
     /// A Thumb `str r0, [r1]` executed via `step()` must route the store to the
     /// virtual UART — the ARM core records byte stores and the simulator drains
@@ -3620,8 +3814,8 @@ mod tests {
             sim.peripherals.outputs
         );
     }
- 
-     /// The watchdog counts core cycles when enabled; feeding it (0xAA55)
+
+    /// The watchdog counts core cycles when enabled; feeding it (0xAA55)
     /// reloads the countdown, and an un-fed watchdog fires a reset whose
     /// `reset_count`/`last_reset_pc` the IDE can surface.
     #[test]
@@ -3686,9 +3880,21 @@ mod tests {
     fn line_mapping_round_trips() {
         let mut sim = Simulator::new();
         sim.line_table = vec![
-            LineEntry { address: 0x1000, file: 0, line: 1 },
-            LineEntry { address: 0x1004, file: 0, line: 2 },
-            LineEntry { address: 0x1008, file: 0, line: 3 },
+            LineEntry {
+                address: 0x1000,
+                file: 0,
+                line: 1,
+            },
+            LineEntry {
+                address: 0x1004,
+                file: 0,
+                line: 2,
+            },
+            LineEntry {
+                address: 0x1008,
+                file: 0,
+                line: 3,
+            },
         ];
         assert_eq!(sim.address_for_line(0, 2), Some(0x1004));
         assert_eq!(sim.line_for_address(0x1006), Some((0, 2)));
@@ -3700,8 +3906,16 @@ mod tests {
     fn symbol_lookup_finds_containing_function() {
         let mut sim = Simulator::new();
         sim.symbols = vec![
-            Symbol { name: "main".into(), address: 0x2000, size: 16 },
-            Symbol { name: "loop".into(), address: 0x2010, size: 8 },
+            Symbol {
+                name: "main".into(),
+                address: 0x2000,
+                size: 16,
+            },
+            Symbol {
+                name: "loop".into(),
+                address: 0x2010,
+                size: 8,
+            },
         ];
         assert_eq!(sim.symbol_at(0x2004).map(|s| s.name.as_str()), Some("main"));
         assert_eq!(sim.symbol_at(0x2014).map(|s| s.name.as_str()), Some("loop"));
@@ -3797,7 +4011,7 @@ mod tests {
         assert!(sim.peripherals.irq_pending[3], "timer IRQ latched");
         assert_eq!(sim.csr.mcause, 0x8000_0003, "entered ISR for line 3");
         assert_eq!(sim.csr.mepc, ENTRY_POINT, "interrupted the main loop PC");
-}
+    }
 
     #[test]
     fn arch_maps_from_elf_machine_and_target() {
@@ -3822,9 +4036,21 @@ mod tests {
         assert_eq!(Arch::from_target("xc2000"), Arch::C166);
         assert_eq!(Arch::from_target("lpc2148"), Arch::Arm, "ARM7 maps to Arm");
         assert_eq!(Arch::from_target("s3c2440"), Arch::Arm, "ARM9 maps to Arm");
-        assert_eq!(Arch::from_target("at91sam7"), Arch::Arm, "AT91 ARM7 maps to Arm");
-        assert_eq!(Arch::from_target("imx6"), Arch::Arm, "i.MX Cortex-A maps to Arm");
-        assert_eq!(Arch::from_target("arm926ej-s"), Arch::Arm, "ARM926 maps to Arm");
+        assert_eq!(
+            Arch::from_target("at91sam7"),
+            Arch::Arm,
+            "AT91 ARM7 maps to Arm"
+        );
+        assert_eq!(
+            Arch::from_target("imx6"),
+            Arch::Arm,
+            "i.MX Cortex-A maps to Arm"
+        );
+        assert_eq!(
+            Arch::from_target("arm926ej-s"),
+            Arch::Arm,
+            "ARM926 maps to Arm"
+        );
         // Unknown targets default to the only implemented core.
         assert_eq!(Arch::from_target("custom-riscv"), Arch::RiscV);
     }
@@ -3832,13 +4058,19 @@ mod tests {
     #[test]
     fn for_arch_supports_implemented_cores() {
         assert!(Simulator::for_arch(Arch::RiscV).is_ok());
-        assert!(Simulator::for_arch(Arch::Mcs51).is_ok(), "8051 is implemented");
+        assert!(
+            Simulator::for_arch(Arch::Mcs51).is_ok(),
+            "8051 is implemented"
+        );
         assert!(Simulator::for_arch(Arch::Arm).is_ok(), "ARM is implemented");
         assert!(
             Simulator::for_arch(Arch::Mcs251).is_ok(),
             "80251 is implemented"
         );
-        assert!(Simulator::for_arch(Arch::C166).is_ok(), "C166 is implemented");
+        assert!(
+            Simulator::for_arch(Arch::C166).is_ok(),
+            "C166 is implemented"
+        );
         assert!(
             Simulator::for_arch(Arch::Xtensa).is_ok(),
             "Xtensa is implemented"
@@ -3848,10 +4080,19 @@ mod tests {
             Simulator::for_arch(Arch::Msp430).is_ok(),
             "MSP430 is implemented"
         );
-        assert!(Simulator::for_arch(Arch::V850).is_ok(), "V850 is implemented");
-        assert!(Simulator::for_arch(Arch::Stm8).is_ok(), "STM8 is implemented");
+        assert!(
+            Simulator::for_arch(Arch::V850).is_ok(),
+            "V850 is implemented"
+        );
+        assert!(
+            Simulator::for_arch(Arch::Stm8).is_ok(),
+            "STM8 is implemented"
+        );
         assert!(Simulator::for_arch(Arch::Rx).is_ok(), "RX is implemented");
-        assert!(Simulator::for_arch(Arch::Rl78).is_ok(), "RL78 is implemented");
+        assert!(
+            Simulator::for_arch(Arch::Rl78).is_ok(),
+            "RL78 is implemented"
+        );
     }
 
     #[test]
@@ -4001,7 +4242,12 @@ mod tests {
     fn disassembles_riscv_instructions() {
         // add a0, a1, a2 (opcode 0x33, funct3=0, rd=10, rs1=11, rs2=12).
         let insn = 0x00C58533u32;
-        let bytes = [insn as u8, (insn >> 8) as u8, (insn >> 16) as u8, (insn >> 24) as u8];
+        let bytes = [
+            insn as u8,
+            (insn >> 8) as u8,
+            (insn >> 16) as u8,
+            (insn >> 24) as u8,
+        ];
         let read = |addr: u32| {
             let i = addr as usize;
             if i < 4 { bytes[i] } else { 0 }
@@ -4010,7 +4256,12 @@ mod tests {
         assert_eq!(text, "add a0, a1, a2");
         // addi a0, a1, 5 (opcode 0x13, funct3=0, rd=10, rs1=11, imm=5).
         let insn = 0x00558513u32;
-        let bytes = [insn as u8, (insn >> 8) as u8, (insn >> 16) as u8, (insn >> 24) as u8];
+        let bytes = [
+            insn as u8,
+            (insn >> 8) as u8,
+            (insn >> 16) as u8,
+            (insn >> 24) as u8,
+        ];
         let read = |addr: u32| {
             let i = addr as usize;
             if i < 4 { bytes[i] } else { 0 }
@@ -4059,7 +4310,12 @@ mod tests {
         assert_ne!(thumb, a32, "ARM state changes the decode");
         // ADD r0, r1, r2 (0xE0810002).
         let insn = 0xE081_0002u32;
-        let bytes = [insn as u8, (insn >> 8) as u8, (insn >> 16) as u8, (insn >> 24) as u8];
+        let bytes = [
+            insn as u8,
+            (insn >> 8) as u8,
+            (insn >> 16) as u8,
+            (insn >> 24) as u8,
+        ];
         let read = |addr: u32| {
             let i = addr as usize;
             if i < 4 { bytes[i] } else { 0 }
@@ -4070,7 +4326,12 @@ mod tests {
         );
         // LDR r0, [r1, #4] (0xE5910004).
         let insn = 0xE591_0004u32;
-        let bytes = [insn as u8, (insn >> 8) as u8, (insn >> 16) as u8, (insn >> 24) as u8];
+        let bytes = [
+            insn as u8,
+            (insn >> 8) as u8,
+            (insn >> 16) as u8,
+            (insn >> 24) as u8,
+        ];
         let read = |addr: u32| {
             let i = addr as usize;
             if i < 4 { bytes[i] } else { 0 }
@@ -4081,7 +4342,12 @@ mod tests {
         );
         // B +0 (0xEA000000) branches to pc+8 = 0x8.
         let insn = 0xEA00_0000u32;
-        let bytes = [insn as u8, (insn >> 8) as u8, (insn >> 16) as u8, (insn >> 24) as u8];
+        let bytes = [
+            insn as u8,
+            (insn >> 8) as u8,
+            (insn >> 16) as u8,
+            (insn >> 24) as u8,
+        ];
         let read = |addr: u32| {
             let i = addr as usize;
             if i < 4 { bytes[i] } else { 0 }
@@ -4116,7 +4382,6 @@ mod tests {
             );
         }
     }
-
 
     #[test]
     fn register_metadata_per_architecture() {
@@ -4409,8 +4674,6 @@ mod tests {
         result = sim.step();
         assert_eq!(result, StepResult::Breakpoint, "3rd hit pauses");
         assert_eq!(sim.breakpoint_hits(0), 3);
-
-
     }
 
     /// A condition breakpoint stops only when the register equals the target.
@@ -4428,5 +4691,4 @@ mod tests {
         assert_eq!(r, StepResult::Advanced);
         assert_eq!(sim.step(), StepResult::Breakpoint);
     }
-
 }

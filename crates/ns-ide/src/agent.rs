@@ -200,7 +200,11 @@ fn run_task(command: String, shared: Arc<Mutex<SharedTask>>, evt: Sender<AgentEv
     } else {
         "sh"
     };
-    let flag = if std::env::consts::OS == "windows" { "/C" } else { "-c" };
+    let flag = if std::env::consts::OS == "windows" {
+        "/C"
+    } else {
+        "-c"
+    };
     let spawned = Command::new(shell)
         .arg(flag)
         .arg(&command)
@@ -238,13 +242,15 @@ fn run_task(command: String, shared: Arc<Mutex<SharedTask>>, evt: Sender<AgentEv
     let out_thread = std::thread::spawn({
         let task_shared = shared.clone();
         let evt = evt.clone();
-        let pipe: Option<Box<dyn std::io::Read + Send>> = stdout.map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
+        let pipe: Option<Box<dyn std::io::Read + Send>> =
+            stdout.map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
         move || read_pipe(pipe, task_shared, evt)
     });
     let err_thread = std::thread::spawn({
         let task_shared = shared.clone();
         let evt = evt.clone();
-        let pipe: Option<Box<dyn std::io::Read + Send>> = stderr.map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
+        let pipe: Option<Box<dyn std::io::Read + Send>> =
+            stderr.map(|p| Box::new(p) as Box<dyn std::io::Read + Send>);
         move || read_pipe(pipe, task_shared, evt)
     });
     let _ = out_thread.join();
@@ -295,22 +301,18 @@ impl Render for AgentPanel {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(
-                                widgets::ghost_button("agent-clear", "清空").on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.clear();
-                                        cx.notify();
-                                    }),
-                                ),
-                            )
-                            .child(
-                                widgets::ghost_button("agent-cancel", "全部取消").on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.cancel_all();
-                                        cx.notify();
-                                    }),
-                                ),
-                            ),
+                            .child(widgets::ghost_button("agent-clear", "清空").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.clear();
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(widgets::ghost_button("agent-cancel", "全部取消").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.cancel_all();
+                                    cx.notify();
+                                }),
+                            )),
                     ),
             )
             .child(
@@ -437,13 +439,13 @@ impl Render for AgentPanel {
                     .border_color(theme::alpha(theme::STROKE, 0.09))
                     .child(div().flex_1().child(self.input.clone()))
                     .child(
-                        widgets::primary_button("agent-run", "运行").on_click(
-                            cx.listener(|this, _, _, cx| {
+                        widgets::primary_button("agent-run", "运行").on_click(cx.listener(
+                            |this, _, _, cx| {
                                 let cmd = this.input.read(cx).text();
                                 this.submit(&cmd, cx);
                                 this.input.update(cx, |field, cx| field.set_text("", cx));
-                            }),
-                        ),
+                            },
+                        )),
                     ),
             )
     }

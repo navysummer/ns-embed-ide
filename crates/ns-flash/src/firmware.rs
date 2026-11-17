@@ -89,11 +89,11 @@ pub fn load_firmware(path: &Path) -> Result<FirmwareImage> {
 /// their virtual address falls inside the target's flash or RAM window (from
 /// `ns_device::memory_map`). Intel HEX / BIN payloads have a single contiguous
 /// base and are attributed to whichever region contains `base`.
- pub struct FirmwareSize {
-     /// Bytes occupying the target's flash region (code + rodata).
-     pub flash: u64,
-     /// Bytes occupying the target's RAM region (data + bss initializers).
-     pub ram: u64,
+pub struct FirmwareSize {
+    /// Bytes occupying the target's flash region (code + rodata).
+    pub flash: u64,
+    /// Bytes occupying the target's RAM region (data + bss initializers).
+    pub ram: u64,
     /// Bytes in the `.text` section (code), from the `size` tool. `0` when
     /// the tool is unavailable or the artifact is not ELF.
     pub text: u64,
@@ -101,29 +101,29 @@ pub fn load_firmware(path: &Path) -> Result<FirmwareImage> {
     pub data: u64,
     /// Bytes in the `.bss` section (zeroed globals), from `size`.
     pub bss: u64,
-     /// Total payload bytes loaded (flash + ram).
-     pub total: u64,
+    /// Total payload bytes loaded (flash + ram).
+    pub total: u64,
     /// The lowest load address observed.
     pub base: u64,
     /// Largest symbols (by size) in the firmware, from `nm`. Empty when the
     /// symbol table is unavailable (non-ELF artifact or no `nm` tool).
     pub symbols: Vec<SymbolSize>,
- }
- 
- impl Default for FirmwareSize {
+}
+
+impl Default for FirmwareSize {
     fn default() -> Self {
-         FirmwareSize {
+        FirmwareSize {
             flash: 0,
-             ram: 0,
+            ram: 0,
             text: 0,
             data: 0,
             bss: 0,
-             total: 0,
-             base: 0,
-             symbols: Vec::new(),
-         }
-     }
- }
+            total: 0,
+            base: 0,
+            symbols: Vec::new(),
+        }
+    }
+}
 
 /// One symbol's size, name and section from `nm --size-sort`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,7 +131,7 @@ pub struct SymbolSize {
     pub name: String,
     pub size: u64,
     pub address: u64,
- }
+}
 
 /// Compute the memory-usage breakdown of the firmware at `path`, given the
 /// target's flash and RAM windows. Returns `Ok(None)` when the file is not a
@@ -206,20 +206,20 @@ pub fn analyze_firmware_size(
             }
         }
     }
-     size.base = first_addr.unwrap_or(0);
-     if size.total == 0 {
-         return Ok(None);
-     }
-     // For ELF artifacts, enrich with the largest symbols via `nm`.
-     if format == FirmwareFormat::Elf {
-         size.symbols = analyze_symbols(path);
+    size.base = first_addr.unwrap_or(0);
+    if size.total == 0 {
+        return Ok(None);
+    }
+    // For ELF artifacts, enrich with the largest symbols via `nm`.
+    if format == FirmwareFormat::Elf {
+        size.symbols = analyze_symbols(path);
         let (text, data, bss) = analyze_size_breakdown(path);
         size.text = text;
         size.data = data;
         size.bss = bss;
-     }
-     Ok(Some(size))
- }
+    }
+    Ok(Some(size))
+}
 
 /// Run `nm --size-sort --radix=d` on an ELF and return the largest symbols.
 /// Returns an empty vector when `nm` is unavailable or the file is not ELF.
@@ -239,17 +239,17 @@ pub fn analyze_symbols(path: &Path) -> Vec<SymbolSize> {
     };
     let text = String::from_utf8_lossy(&output.stdout);
     parse_nm_symbols(&text)
- }
- 
- /// Run `size` on an ELF and return the classic `text`/`data`/`bss` byte
- /// counts. Returns `(0, 0, 0)` when `size` is unavailable or the artifact is
- /// not an ELF. The `size` tool's default output has three columns
- /// (`text`, `data`, `bss`) followed by the file name; the GNU `size` also
- /// supports `--format=sysv` for a per-section listing, but the plain three
- /// column form is what cross toolchains (e.g. `arm-none-eabi-size`) emit by
- /// default and is the most portable.
- pub fn analyze_size_breakdown(path: &Path) -> (u64, u64, u64) {
-     let size = match ns_project::toolchain::find_command("size") {
+}
+
+/// Run `size` on an ELF and return the classic `text`/`data`/`bss` byte
+/// counts. Returns `(0, 0, 0)` when `size` is unavailable or the artifact is
+/// not an ELF. The `size` tool's default output has three columns
+/// (`text`, `data`, `bss`) followed by the file name; the GNU `size` also
+/// supports `--format=sysv` for a per-section listing, but the plain three
+/// column form is what cross toolchains (e.g. `arm-none-eabi-size`) emit by
+/// default and is the most portable.
+pub fn analyze_size_breakdown(path: &Path) -> (u64, u64, u64) {
+    let size = match ns_project::toolchain::find_command("size") {
         Some(size) => size,
         None => return (0, 0, 0),
     };
@@ -308,7 +308,11 @@ pub fn parse_nm_symbols(text: &str) -> Vec<SymbolSize> {
         if size == 0 {
             continue;
         }
-        symbols.push(SymbolSize { name, size, address });
+        symbols.push(SymbolSize {
+            name,
+            size,
+            address,
+        });
     }
     symbols.sort_by(|a, b| b.size.cmp(&a.size));
     symbols
@@ -349,9 +353,8 @@ pub fn decode_intel_hex(text: &str) -> Result<DecodedHex> {
         match record.record_type {
             0x00 => {
                 let addr = base + record.address as u64;
-                if let Some((_, seg_bytes)) = segments
-                    .iter_mut()
-                    .find(|(seg_addr, _)| *seg_addr == addr)
+                if let Some((_, seg_bytes)) =
+                    segments.iter_mut().find(|(seg_addr, _)| *seg_addr == addr)
                 {
                     seg_bytes.extend_from_slice(&record.data);
                 } else {
@@ -387,10 +390,7 @@ pub fn decode_intel_hex(text: &str) -> Result<DecodedHex> {
     }
 
     segments.sort_by_key(|(addr, _)| *addr);
-    let base_addr = segments
-        .first()
-        .map(|(addr, _)| *addr)
-        .unwrap_or(0);
+    let base_addr = segments.first().map(|(addr, _)| *addr).unwrap_or(0);
     let mut bytes = Vec::new();
     for (addr, data) in segments {
         let offset = (addr - base_addr) as usize;
@@ -429,7 +429,9 @@ fn parse_hex_record(line: &str) -> Result<HexRecord> {
     let record_type = bytes[3];
     let data = bytes[4..4 + byte_count].to_vec();
     let checksum = bytes[4 + byte_count];
-    let sum: u8 = bytes[..4 + byte_count].iter().fold(0, |acc, b| acc.wrapping_add(*b));
+    let sum: u8 = bytes[..4 + byte_count]
+        .iter()
+        .fold(0, |acc, b| acc.wrapping_add(*b));
     if sum.wrapping_add(checksum) != 0 {
         bail!("校验和错误");
     }
@@ -447,19 +449,12 @@ fn parse_hex_record(line: &str) -> Result<HexRecord> {
 /// learns the base address so it can pass it to the flasher. For Intel HEX,
 /// data records (00) plus extended linear address records (04) are emitted so
 /// the payload can be loaded above 64 KiB.
-pub fn convert_firmware(
-    bytes: &[u8],
-    format: FirmwareFormat,
-) -> Result<FirmwareImage> {
+pub fn convert_firmware(bytes: &[u8], format: FirmwareFormat) -> Result<FirmwareImage> {
     let segments = elf_load_segments(bytes)?;
     if segments.is_empty() {
         bail!("ELF 没有可加载的段（PT_LOAD）");
     }
-    let base = segments
-        .iter()
-        .map(|(addr, _)| *addr)
-        .min()
-        .unwrap_or(0);
+    let base = segments.iter().map(|(addr, _)| *addr).min().unwrap_or(0);
     let payload = match format {
         FirmwareFormat::IntelHex => encode_intel_hex(&segments, base),
         FirmwareFormat::Bin => {
@@ -649,31 +644,31 @@ mod tests {
 
     #[test]
     fn rejects_bad_checksum() {
-         let hex = ":0400000001020304FF\n:00000001FF";
-         assert!(decode_intel_hex(hex).is_err());
-     }
+        let hex = ":0400000001020304FF\n:00000001FF";
+        assert!(decode_intel_hex(hex).is_err());
+    }
 
     /// `parse_nm_symbols` keeps real, sized symbols, drops absolute/undefined/
     /// debug and zero-sized entries, and sorts by size descending.
     #[test]
-     fn parses_nm_symbols_and_sorts_by_size() {
-         let text = "\
+    fn parses_nm_symbols_and_sorts_by_size() {
+        let text = "\
             0000000010000000 0000000000000012 T main\n\
             0000000010000010 0000000000000032 t helper\n\
              0000000008000000 0000000000000000 A absolute\n\
              0000000000000000 0000000000000008 U undefined\n\
              0000000000000000 0000000000000004 n debug_symbol\n\
             0000000010000100 0000000000000024 T big_function\n";
-         let symbols = parse_nm_symbols(text);
-         assert_eq!(symbols.len(), 3);
+        let symbols = parse_nm_symbols(text);
+        assert_eq!(symbols.len(), 3);
         // Sorted descending by size: helper (32) > big_function (24) > main (18).
-         assert_eq!(symbols[0].name, "helper");
+        assert_eq!(symbols[0].name, "helper");
         assert_eq!(symbols[0].size, 32);
-         assert_eq!(symbols[1].name, "big_function");
+        assert_eq!(symbols[1].name, "big_function");
         assert_eq!(symbols[1].size, 24);
-         assert_eq!(symbols[2].name, "main");
+        assert_eq!(symbols[2].name, "main");
         assert_eq!(symbols[2].size, 12);
-     }
+    }
 
     #[test]
     fn missing_eof_is_error() {
@@ -739,101 +734,102 @@ mod tests {
     fn rejects_non_elf() {
         assert!(convert_firmware(b"not an elf", FirmwareFormat::Bin).is_err());
     }
-#[test]
-fn analyzes_elf_split_flash_and_ram() {
-    let dir = std::env::temp_dir().join("ns_flash_size_test");
-    std::fs::create_dir_all(&dir).unwrap();
-    let elf_path = dir.join("fw.elf");
-    // Build a 2-segment ELF32: flash @0x0800_0000 (3 bytes) + RAM @0x2000_0000 (2 bytes).
-    // Layout: ELF header(52) + phdr1(32) + phdr2(32) = 116; flash payload @116, RAM @119.
-    let mut out = vec![0u8; 52];
-    out[0..4].copy_from_slice(b"\x7fELF");
-    out[4] = 1; // ELFCLASS32
-    out[5] = 1; // little-endian
-    out[6] = 1;
-    out[16] = 2; // ET_EXEC
-    out[18] = 40; // e_machine = ARM
-    out[20..24].copy_from_slice(&1u32.to_le_bytes());
-    out[28..32].copy_from_slice(&52u32.to_le_bytes()); // e_phoff
-    out[42..44].copy_from_slice(&32u16.to_le_bytes()); // e_phentsize
-    out[44..46].copy_from_slice(&2u16.to_le_bytes()); // e_phnum = 2
-    // Program header #1: flash @ 0x0800_0000, payload at 116, 3 bytes.
-    out.extend_from_slice(&{
-        let mut h = vec![0u8; 32];
-        h[0..4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
-        h[4..8].copy_from_slice(&116u32.to_le_bytes());
-        h[8..12].copy_from_slice(&0x0800_0000u32.to_le_bytes());
-        h[12..16].copy_from_slice(&0x0800_0000u32.to_le_bytes());
-        h[16..20].copy_from_slice(&3u32.to_le_bytes()); // filesz
-        h[20..24].copy_from_slice(&3u32.to_le_bytes()); // memsz
-        h
-    });
-    // Program header #2: RAM @ 0x2000_0000, payload at 119, 2 bytes.
-    out.extend_from_slice(&{
-        let mut h = vec![0u8; 32];
-        h[0..4].copy_from_slice(&1u32.to_le_bytes());
-        h[4..8].copy_from_slice(&119u32.to_le_bytes());
-        h[8..12].copy_from_slice(&0x2000_0000u32.to_le_bytes());
-        h[12..16].copy_from_slice(&0x2000_0000u32.to_le_bytes());
-        h[16..20].copy_from_slice(&2u32.to_le_bytes());
-        h[20..24].copy_from_slice(&2u32.to_le_bytes());
-        h
-    });
-    // Payloads: flash at 116 (3), RAM at 119 (2) — contiguous, no padding.
-    out.extend_from_slice(&[0x01, 0x02, 0x03]);
-    out.extend_from_slice(&[0xAA, 0xBB]);
-    std::fs::write(&elf_path, &out).unwrap();
-    let flash = vec![(0x0800_0000u64, 0x1000u64)];
-    let ram = vec![(0x2000_0000u64, 0x2000u64)];
-    let size = analyze_firmware_size(&elf_path, &flash, &ram).unwrap().unwrap();
-    assert_eq!(size.flash, 3, "flash bytes");
-    assert_eq!(size.ram, 2, "ram bytes");
-    assert_eq!(size.total, 5, "total bytes");
-    assert_eq!(size.base, 0x0800_0000, "lowest load address");
-    std::fs::remove_dir_all(&dir).ok();
-}
+    #[test]
+    fn analyzes_elf_split_flash_and_ram() {
+        let dir = std::env::temp_dir().join("ns_flash_size_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let elf_path = dir.join("fw.elf");
+        // Build a 2-segment ELF32: flash @0x0800_0000 (3 bytes) + RAM @0x2000_0000 (2 bytes).
+        // Layout: ELF header(52) + phdr1(32) + phdr2(32) = 116; flash payload @116, RAM @119.
+        let mut out = vec![0u8; 52];
+        out[0..4].copy_from_slice(b"\x7fELF");
+        out[4] = 1; // ELFCLASS32
+        out[5] = 1; // little-endian
+        out[6] = 1;
+        out[16] = 2; // ET_EXEC
+        out[18] = 40; // e_machine = ARM
+        out[20..24].copy_from_slice(&1u32.to_le_bytes());
+        out[28..32].copy_from_slice(&52u32.to_le_bytes()); // e_phoff
+        out[42..44].copy_from_slice(&32u16.to_le_bytes()); // e_phentsize
+        out[44..46].copy_from_slice(&2u16.to_le_bytes()); // e_phnum = 2
+        // Program header #1: flash @ 0x0800_0000, payload at 116, 3 bytes.
+        out.extend_from_slice(&{
+            let mut h = vec![0u8; 32];
+            h[0..4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+            h[4..8].copy_from_slice(&116u32.to_le_bytes());
+            h[8..12].copy_from_slice(&0x0800_0000u32.to_le_bytes());
+            h[12..16].copy_from_slice(&0x0800_0000u32.to_le_bytes());
+            h[16..20].copy_from_slice(&3u32.to_le_bytes()); // filesz
+            h[20..24].copy_from_slice(&3u32.to_le_bytes()); // memsz
+            h
+        });
+        // Program header #2: RAM @ 0x2000_0000, payload at 119, 2 bytes.
+        out.extend_from_slice(&{
+            let mut h = vec![0u8; 32];
+            h[0..4].copy_from_slice(&1u32.to_le_bytes());
+            h[4..8].copy_from_slice(&119u32.to_le_bytes());
+            h[8..12].copy_from_slice(&0x2000_0000u32.to_le_bytes());
+            h[12..16].copy_from_slice(&0x2000_0000u32.to_le_bytes());
+            h[16..20].copy_from_slice(&2u32.to_le_bytes());
+            h[20..24].copy_from_slice(&2u32.to_le_bytes());
+            h
+        });
+        // Payloads: flash at 116 (3), RAM at 119 (2) — contiguous, no padding.
+        out.extend_from_slice(&[0x01, 0x02, 0x03]);
+        out.extend_from_slice(&[0xAA, 0xBB]);
+        std::fs::write(&elf_path, &out).unwrap();
+        let flash = vec![(0x0800_0000u64, 0x1000u64)];
+        let ram = vec![(0x2000_0000u64, 0x2000u64)];
+        let size = analyze_firmware_size(&elf_path, &flash, &ram)
+            .unwrap()
+            .unwrap();
+        assert_eq!(size.flash, 3, "flash bytes");
+        assert_eq!(size.ram, 2, "ram bytes");
+        assert_eq!(size.total, 5, "total bytes");
+        assert_eq!(size.base, 0x0800_0000, "lowest load address");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
-#[test]
-fn analyzes_hex_by_base_region() {
-    let hex = ":020000040800F2\n\
+    #[test]
+    fn analyzes_hex_by_base_region() {
+        let hex = ":020000040800F2\n\
               :0400000001020304F2\n\
               :00000001FF";
-    let dir = std::env::temp_dir().join("ns_flash_size_test_hex");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("fw.hex");
-    std::fs::write(&path, hex).unwrap();
-    let flash = vec![(0x0800_0000u64, 0x1000u64)];
-    let ram = vec![(0x2000_0000u64, 0x2000u64)];
-    let size = analyze_firmware_size(&path, &flash, &ram).unwrap().unwrap();
-    assert_eq!(size.flash, 4);
-    assert_eq!(size.ram, 0);
-    assert_eq!(size.total, 4);
-    std::fs::remove_dir_all(&dir).ok();
-}
+        let dir = std::env::temp_dir().join("ns_flash_size_test_hex");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fw.hex");
+        std::fs::write(&path, hex).unwrap();
+        let flash = vec![(0x0800_0000u64, 0x1000u64)];
+        let ram = vec![(0x2000_0000u64, 0x2000u64)];
+        let size = analyze_firmware_size(&path, &flash, &ram).unwrap().unwrap();
+        assert_eq!(size.flash, 4);
+        assert_eq!(size.ram, 0);
+        assert_eq!(size.total, 4);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
-#[test]
-fn unknown_format_returns_none() {
-    let dir = std::env::temp_dir().join("ns_flash_size_test_none");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("fw.txt");
-    std::fs::write(&path, b"hello").unwrap();
-    let size = analyze_firmware_size(&path, &[], &[]).unwrap();
-    assert!(size.is_none());
-    std::fs::remove_dir_all(&dir).ok();
- }
+    #[test]
+    fn unknown_format_returns_none() {
+        let dir = std::env::temp_dir().join("ns_flash_size_test_none");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fw.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        let size = analyze_firmware_size(&path, &[], &[]).unwrap();
+        assert!(size.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
-#[test]
-fn parses_size_three_column_breakdown() {
-    // GNU `size` default output: `text data bss dec hex filename`.
-    let report = "   text    data     bss     dec     hex filename\n\
+    #[test]
+    fn parses_size_three_column_breakdown() {
+        // GNU `size` default output: `text data bss dec hex filename`.
+        let report = "   text    data     bss     dec     hex filename\n\
                   1024       64     512    1600     640 fw.elf\n";
-    assert_eq!(parse_size_breakdown(report), (1024, 64, 512));
-    // A cross toolchain may omit the header; the first numeric line still wins.
-    let bare = "  2048      128    1024    3200     c80 fw.elf\n";
-    assert_eq!(parse_size_breakdown(bare), (2048, 128, 1024));
-    // Non-numeric or empty output degrades to zeros.
-    assert_eq!(parse_size_breakdown(""), (0, 0, 0));
-     assert_eq!(parse_size_breakdown("text data bss\n"), (0, 0, 0));
- }
-
+        assert_eq!(parse_size_breakdown(report), (1024, 64, 512));
+        // A cross toolchain may omit the header; the first numeric line still wins.
+        let bare = "  2048      128    1024    3200     c80 fw.elf\n";
+        assert_eq!(parse_size_breakdown(bare), (2048, 128, 1024));
+        // Non-numeric or empty output degrades to zeros.
+        assert_eq!(parse_size_breakdown(""), (0, 0, 0));
+        assert_eq!(parse_size_breakdown("text data bss\n"), (0, 0, 0));
+    }
 }

@@ -84,8 +84,8 @@ impl Wizard {
 
     pub fn set_language(&mut self, language: Language) {
         self.language = language;
-        self.compiler = toolchain::preferred_or_first(&toolchain::compilers(language))
-            .unwrap_or_default();
+        self.compiler =
+            toolchain::preferred_or_first(&toolchain::compilers(language)).unwrap_or_default();
         self.simulator =
             toolchain::preferred_or_first(&toolchain::simulators(language)).unwrap_or_default();
         self.debugger =
@@ -178,7 +178,7 @@ impl Wizard {
             4 => self.render_tool_step(
                 cx,
                 "仿真软件",
-                "选择仿真器，或暂时跳过。仿真能力将在后续里程碑接入。",
+                "选择仿真器；内置 ns-sim 可直接运行指令级仿真，也可选 QEMU（需安装）。",
                 toolchain::simulators(self.language)
                     .into_iter()
                     .map(|tool| {
@@ -379,21 +379,17 @@ impl Wizard {
                             .child(widgets::brand_mark(38.)),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .child(sidebar)
-                            .child(
-                                div()
-                                    .id("wizard-body")
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .overflow_y_scroll()
-                                    .px(px(26.))
-                                    .py(px(24.))
-                                    .child(content),
-                            ),
+                        div().flex().flex_1().child(sidebar).child(
+                            div()
+                                .id("wizard-body")
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .overflow_y_scroll()
+                                .px(px(26.))
+                                .py(px(24.))
+                                .child(content),
+                        ),
                     )
                     .child(footer),
             )
@@ -459,84 +455,82 @@ impl Wizard {
             .flex()
             .flex_col()
             .gap(px(18.))
-            .child(self.heading(
-                "选择编程语言",
-                "语言决定默认编译器、语法高亮与构建后端。",
-            ))
+            .child(self.heading("选择编程语言", "语言决定默认编译器、语法高亮与构建后端。"))
             .child(
-                div()
-                    .grid()
-                    .grid_cols(2)
-                    .gap(px(10.))
-                    .children(Language::ALL.into_iter().enumerate().map(|(index, language)| {
-                        let selected = language == self.language;
-                        div()
-                            .id(("wizard-language", index))
-                            .h(px(72.))
-                            .px(px(14.))
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .rounded(px(11.))
-                            .bg(if selected {
-                                theme::alpha(theme::ACCENT, 0.1)
-                            } else {
-                                theme::alpha(0xffffff, 0.02)
-                            })
-                            .border_1()
-                            .border_color(if selected {
-                                theme::alpha(theme::ACCENT, 0.6)
-                            } else {
-                                theme::alpha(theme::STROKE, 0.12)
-                            })
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.06)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(wizard) = this.wizard.as_mut() {
-                                    wizard.set_language(language);
-                                }
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .size(px(36.))
-                                    .rounded(px(9.))
-                                    .bg(if selected {
-                                        theme::gold_gradient()
-                                    } else {
-                                        theme::alpha(theme::STROKE, 0.08).into()
-                                    })
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_color(if selected {
-                                        theme::color(theme::DARK_TEXT)
-                                    } else {
-                                        theme::color(theme::TEXT_DIM)
-                                    })
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_size(px(12.))
-                                    .child(language_short(language)),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.))
-                                    .child(
-                                        div()
-                                            .text_size(px(13.5))
-                                            .text_color(theme::color(theme::TEXT))
-                                            .child(language.as_str()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(10.5))
-                                            .text_color(theme::color(theme::TEXT_FAINT))
-                                            .child(language_descriptor(language)),
-                                    ),
-                            )
-                    })),
+                div().grid().grid_cols(2).gap(px(10.)).children(
+                    Language::ALL
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, language)| {
+                            let selected = language == self.language;
+                            div()
+                                .id(("wizard-language", index))
+                                .h(px(72.))
+                                .px(px(14.))
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .rounded(px(11.))
+                                .bg(if selected {
+                                    theme::alpha(theme::ACCENT, 0.1)
+                                } else {
+                                    theme::alpha(0xffffff, 0.02)
+                                })
+                                .border_1()
+                                .border_color(if selected {
+                                    theme::alpha(theme::ACCENT, 0.6)
+                                } else {
+                                    theme::alpha(theme::STROKE, 0.12)
+                                })
+                                .cursor_pointer()
+                                .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.06)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(wizard) = this.wizard.as_mut() {
+                                        wizard.set_language(language);
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .size(px(36.))
+                                        .rounded(px(9.))
+                                        .bg(if selected {
+                                            theme::gold_gradient()
+                                        } else {
+                                            theme::alpha(theme::STROKE, 0.08).into()
+                                        })
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(if selected {
+                                            theme::color(theme::DARK_TEXT)
+                                        } else {
+                                            theme::color(theme::TEXT_DIM)
+                                        })
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_size(px(12.))
+                                        .child(language_short(language)),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(3.))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.5))
+                                                .text_color(theme::color(theme::TEXT))
+                                                .child(language.as_str()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(10.5))
+                                                .text_color(theme::color(theme::TEXT_FAINT))
+                                                .child(language_descriptor(language)),
+                                        ),
+                                )
+                        }),
+                ),
             )
             .into_any_element()
     }
@@ -557,36 +551,31 @@ impl Wizard {
                 "模板决定 src/main.c 的初始内容；之后可随时编辑。",
             ))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .children(
-                        ns_project::CTemplate::ALL
-                            .iter()
-                            .copied()
-                            .enumerate()
-                            .map(|(index, template)| {
-                                let selected = template == self.c_template;
-                                option_row(
-                                    ("wizard-template", index),
-                                    template.label().to_string(),
-                                    String::new(),
-                                    selected,
-                                    true,
-                                )
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                div().flex().flex_col().gap(px(8.)).children(
+                    ns_project::CTemplate::ALL.iter().copied().enumerate().map(
+                        |(index, template)| {
+                            let selected = template == self.c_template;
+                            option_row(
+                                ("wizard-template", index),
+                                template.label().to_string(),
+                                String::new(),
+                                selected,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     if let Some(wizard) = this.wizard.as_mut() {
                                         wizard.c_template = template;
                                     }
                                     cx.notify();
-                                }))
-                            }),
+                                },
+                            ))
+                        },
                     ),
+                ),
             )
             .into_any_element()
     }
-
 
     fn render_tool_step(
         &self,
@@ -611,40 +600,46 @@ impl Wizard {
                     .flex()
                     .flex_col()
                     .gap(px(7.))
-                    .children(options.into_iter().enumerate().map(|(index, (name, path, _))| {
-                        let is_selected = selected == name;
-                        let subtitle = match &path {
-                            Some(path) => path.clone(),
-                            None if name == "跳过" => "不选择此工具".to_string(),
-                            None => {
-                                let guide = toolchain::missing_guide(&name)
-                                    .unwrap_or("未在 PATH 中找到；请安装后重试");
-                                format!("未在 PATH 中找到 · 安装: {guide}")
-                            }
-                        };
-                        option_row(
-                            ("wizard-tool", index),
-                            name.clone(),
-                            subtitle,
-                            is_selected,
-                            path.is_some() || name == "跳过",
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(wizard) = this.wizard.as_mut() {
-                                wizard.set_selection(kind, name.clone());
-                            }
-                            cx.notify();
-                        }))
-                    })),
+                    .children(
+                        options
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, (name, path, _))| {
+                                let is_selected = selected == name;
+                                let subtitle = match &path {
+                                    Some(path) => path.clone(),
+                                    None if name == "跳过" => "不选择此工具".to_string(),
+                                    None => {
+                                        let guide = toolchain::missing_guide(&name)
+                                            .unwrap_or("未在 PATH 中找到；请安装后重试");
+                                        format!("未在 PATH 中找到 · 安装: {guide}")
+                                    }
+                                };
+                                option_row(
+                                    ("wizard-tool", index),
+                                    name.clone(),
+                                    subtitle,
+                                    is_selected,
+                                    path.is_some() || name == "跳过",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if let Some(wizard) = this.wizard.as_mut() {
+                                            wizard.set_selection(kind, name.clone());
+                                        }
+                                        cx.notify();
+                                    },
+                                ))
+                            }),
+                    ),
             )
             .into_any_element()
     }
 
-
-
-
-
-    pub fn generate_device_files(&self, root: &std::path::Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    pub fn generate_device_files(
+        &self,
+        root: &std::path::Path,
+    ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
         let linker = ns_device::linker_script(&self.target)?;
         let startup = ns_device::startup_file(&self.target)?;
         let linker_path = root.join("link.ld");
@@ -693,16 +688,12 @@ impl Wizard {
                 cx.notify();
             }))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(
-                        div()
-                            .text_size(px(12.5))
-                            .text_color(theme::color(theme::TEXT))
-                            .child(selected_label),
-                    ),
+                div().flex().items_center().gap(px(10.)).child(
+                    div()
+                        .text_size(px(12.5))
+                        .text_color(theme::color(theme::TEXT))
+                        .child(selected_label),
+                ),
             )
             .child(
                 div()
@@ -760,21 +751,19 @@ impl Wizard {
                                         theme::alpha(theme::STROKE, 0.3)
                                     })
                                     .when(selected, |style| {
-                                        style
-                                            .bg(theme::color(theme::ACCENT))
-                                            .child(
-                                                div()
-                                                    .size_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .child(
-                                                        div()
-                                                            .size(px(4.))
-                                                            .rounded_full()
-                                                            .bg(theme::color(theme::DARK_TEXT)),
-                                                    ),
-                                            )
+                                        style.bg(theme::color(theme::ACCENT)).child(
+                                            div()
+                                                .size_full()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(
+                                                    div()
+                                                        .size(px(4.))
+                                                        .rounded_full()
+                                                        .bg(theme::color(theme::DARK_TEXT)),
+                                                ),
+                                        )
                                     }),
                             )
                             .child(
@@ -840,9 +829,7 @@ impl Wizard {
                 .into_any_element()
         } else {
             div().into_any_element()
-        }
-        ;
-
+        };
 
         div()
             .flex()
@@ -886,11 +873,14 @@ impl Wizard {
     fn render_summary(&self, cx: &mut Context<IdeApp>) -> AnyElement {
         let spec = self.spec(cx);
         let mut rows = vec![
-            ("项目", if spec.name.is_empty() {
-                "（未命名）".to_string()
-            } else {
-                spec.name.clone()
-            }),
+            (
+                "项目",
+                if spec.name.is_empty() {
+                    "（未命名）".to_string()
+                } else {
+                    spec.name.clone()
+                },
+            ),
             ("位置", spec.location.display().to_string()),
             ("语言", spec.language.to_string()),
             ("编译器", value_or_auto(&spec.compiler)),
@@ -928,7 +918,9 @@ impl Wizard {
                             .justify_between()
                             .gap(px(20.))
                             .when(index > 0, |style| {
-                                style.border_t_1().border_color(theme::alpha(theme::STROKE, 0.08))
+                                style
+                                    .border_t_1()
+                                    .border_color(theme::alpha(theme::STROKE, 0.08))
                             })
                             .child(
                                 div()
@@ -983,7 +975,11 @@ impl Wizard {
     }
 
     fn set_selection(&mut self, kind: StepKind, name: String) {
-        let value = if name == "跳过" { String::new() } else { name };
+        let value = if name == "跳过" {
+            String::new()
+        } else {
+            name
+        };
         match kind {
             StepKind::Compiler => self.compiler = value,
             StepKind::Simulator => self.simulator = value,

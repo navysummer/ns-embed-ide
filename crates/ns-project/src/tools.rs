@@ -107,8 +107,8 @@ impl ToolStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
 

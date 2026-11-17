@@ -48,13 +48,10 @@ impl ConfigKeys {
         let Some(dir) = config_dir() else {
             anyhow::bail!("无法确定用户配置目录");
         };
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("创建配置目录 {} 失败", dir.display()))?;
+        fs::create_dir_all(&dir).with_context(|| format!("创建配置目录 {} 失败", dir.display()))?;
         let path = dir.join(CONFIG_KEYS_FILE);
-        let text = serde_json::to_string_pretty(self)
-            .context("序列化 config.json 失败")?;
-        fs::write(&path, text)
-            .with_context(|| format!("写入 {} 失败", path.display()))
+        let text = serde_json::to_string_pretty(self).context("序列化 config.json 失败")?;
+        fs::write(&path, text).with_context(|| format!("写入 {} 失败", path.display()))
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -146,8 +143,8 @@ pub fn expand(text: &str, config: &ConfigKeys, vars: &BuiltinVars) -> String {
             }
         }
         // `$var` (built-in, single word until a non-identifier char).
-        if let Some(name_end) = after[1..]
-            .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        if let Some(name_end) =
+            after[1..].find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
         {
             let name = &after[1..1 + name_end];
             if let Some(value) = vars.get(name) {
@@ -173,11 +170,7 @@ pub fn expand(text: &str, config: &ConfigKeys, vars: &BuiltinVars) -> String {
 /// Expand all path-like fields of a `ProjectConfig`-agnostic string map.
 ///
 /// Provided for the IDE's config page and `project.toml` consumers.
-pub fn expand_field(
-    value: &str,
-    config: &ConfigKeys,
-    vars: &BuiltinVars,
-) -> String {
+pub fn expand_field(value: &str, config: &ConfigKeys, vars: &BuiltinVars) -> String {
     expand(value, config, vars)
 }
 
@@ -228,10 +221,7 @@ mod tests {
     fn expands_builtin_vars() {
         let config = ConfigKeys::default();
         let vars = vars();
-        assert_eq!(
-            expand("$home/.cargo", &config, &vars),
-            "/home/user/.cargo"
-        );
+        assert_eq!(expand("$home/.cargo", &config, &vars), "/home/user/.cargo");
         assert_eq!(expand("$os/$arch", &config, &vars), "linux/x86_64");
         assert_eq!(
             expand("$project_dir/build", &config, &vars),

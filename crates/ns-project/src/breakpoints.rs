@@ -253,10 +253,9 @@ impl BreakpointStore {
     /// imported. Malformed entries are skipped; a structurally invalid file is
     /// an error.
     pub fn import_from(&mut self, path: &Path) -> Result<usize> {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("读取 {} 失败", path.display()))?;
-        let incoming: BreakpointStore =
-            serde_json::from_str(&text).context("断点文件格式无效")?;
+        let text =
+            fs::read_to_string(path).with_context(|| format!("读取 {} 失败", path.display()))?;
+        let incoming: BreakpointStore = serde_json::from_str(&text).context("断点文件格式无效")?;
         let mut imported = 0;
         for breakpoint in incoming.breakpoints {
             // Skip entries without a usable source location.
@@ -742,7 +741,8 @@ impl BreakpointStore {
     }
 
     pub fn clear_file(&mut self, path: &str) {
-        self.breakpoints.retain(|breakpoint| breakpoint.path != path);
+        self.breakpoints
+            .retain(|breakpoint| breakpoint.path != path);
     }
 
     pub fn lines(&self, path: &str) -> BTreeSet<usize> {
@@ -804,10 +804,8 @@ mod tests {
 
     #[test]
     fn roundtrip_through_state_file() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-breakpoints-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-breakpoints-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
 
@@ -831,13 +829,10 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-
     #[test]
     fn import_export_roundtrip_and_dedup() {
-        let dir = std::env::temp_dir().join(format!(
-            "ns-embed-ide-breakpoint-io-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("ns-embed-ide-breakpoint-io-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let export_path = dir.join("breakpoints-export.json");
@@ -919,7 +914,6 @@ mod tests {
         // Absent breakpoints report None.
         assert_eq!(store.set_hardware("src/other.c", 9), None);
     }
-
 
     #[test]
     fn clear_file_keeps_other_files() {
@@ -1041,7 +1035,11 @@ mod tests {
         assert!(!store.add_watchpoint("   ", WatchAccess::Write));
         assert!(store.add_watchpoint("marker", WatchAccess::Write));
         assert!(store.add_watchpoint("marker", WatchAccess::ReadWrite));
-        assert_eq!(store.watchpoints().len(), 1, "same expression is deduplicated");
+        assert_eq!(
+            store.watchpoints().len(),
+            1,
+            "same expression is deduplicated"
+        );
         assert_eq!(store.watchpoints()[0].access, WatchAccess::ReadWrite);
         assert!(store.add_watchpoint("obj.field", WatchAccess::Read));
         // Alphabetical ordering keeps the panel stable.
@@ -1063,11 +1061,20 @@ mod tests {
         assert_eq!(watchpoint.state_label(), "已验证");
         assert_eq!(watchpoint.adapter_id, Some(7));
         store.mark_watchpoint_hit("marker");
-        assert_eq!(store.find_watchpoint("marker").unwrap().state_label(), "命中");
+        assert_eq!(
+            store.find_watchpoint("marker").unwrap().state_label(),
+            "命中"
+        );
         store.clear_watchpoint_hits();
-        assert_eq!(store.find_watchpoint("marker").unwrap().state_label(), "已验证");
+        assert_eq!(
+            store.find_watchpoint("marker").unwrap().state_label(),
+            "已验证"
+        );
         store.set_watchpoint_enabled("marker", false);
-        assert_eq!(store.find_watchpoint("marker").unwrap().state_label(), "已禁用");
+        assert_eq!(
+            store.find_watchpoint("marker").unwrap().state_label(),
+            "已禁用"
+        );
         store.set_watchpoint_enabled("marker", true);
         store.reset_verification();
         let watchpoint = store.find_watchpoint("marker").unwrap();
@@ -1115,7 +1122,11 @@ mod tests {
         let short = store.find("src/main.c", 9).unwrap();
         assert!(short.stale);
         assert_eq!(short.state_label(), "失效");
-        assert!(short.reason.contains("3 行"), "reason was {:?}", short.reason);
+        assert!(
+            short.reason.contains("3 行"),
+            "reason was {:?}",
+            short.reason
+        );
         let missing = store.find("src/gone.c", 1).unwrap();
         assert!(missing.stale);
         assert_eq!(missing.reason, "源文件不存在");

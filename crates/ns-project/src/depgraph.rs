@@ -65,8 +65,8 @@ impl IncludeGraph {
         }
         order
     }
- }
- 
+}
+
 /// A positioned node for the graphical DAG rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DagNode {
@@ -161,7 +161,7 @@ pub fn dag_layout(graph: &IncludeGraph) -> (Vec<DagNode>, Vec<DagEdge>, Vec<Vec<
     (nodes, edges, ordered_columns)
 }
 
- /// Parse a single `#include` line. Returns `(kind, path)` for a valid directive.
+/// Parse a single `#include` line. Returns `(kind, path)` for a valid directive.
 pub fn parse_include(line: &str) -> Option<(IncludeKind, String)> {
     let trimmed = line.trim_start();
     if !trimmed.starts_with('#') {
@@ -191,21 +191,21 @@ fn resolve_include(
     include_dirs: &[String],
     include: &str,
 ) -> Option<String> {
-     let mut candidates: Vec<PathBuf> = Vec::new();
-     // Quoted includes resolve relative to the including file first.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    // Quoted includes resolve relative to the including file first.
     candidates.push(project_root.join(base_dir).join(include));
-     // Then against the project root and each configured include dir.
-     candidates.push(project_root.join(include));
+    // Then against the project root and each configured include dir.
+    candidates.push(project_root.join(include));
     for dir in include_dirs {
         candidates.push(project_root.join(dir).join(include));
     }
-     for candidate in candidates {
-         if candidate.is_file() {
-             if let Ok(relative) = candidate.strip_prefix(project_root) {
-                 return Some(normalize_path(relative));
-             }
-         }
-     }
+    for candidate in candidates {
+        if candidate.is_file() {
+            if let Ok(relative) = candidate.strip_prefix(project_root) {
+                return Some(normalize_path(relative));
+            }
+        }
+    }
     // An include that cannot be resolved to a project file is still recorded as
     // a named node (system header or generated file) so the graph shows it.
     if include.contains('.') {
@@ -259,22 +259,18 @@ pub fn build_include_graph(
             let Some((_kind, include)) = parse_include(line) else {
                 continue;
             };
-            if let Some(resolved) =
-                resolve_include(project_root, &base_dir, include_dirs, &include)
+            if let Some(resolved) = resolve_include(project_root, &base_dir, include_dirs, &include)
             {
                 if resolved != key {
                     deps.insert(resolved);
                 }
             }
         }
-        let node = graph
-            .nodes
-            .entry(key.clone())
-            .or_insert_with(|| DepNode {
-                path: String::new(),
-                deps: Vec::new(),
-                dependents: Vec::new(),
-            });
+        let node = graph.nodes.entry(key.clone()).or_insert_with(|| DepNode {
+            path: String::new(),
+            deps: Vec::new(),
+            dependents: Vec::new(),
+        });
         node.path = key.clone();
         node.deps = deps.iter().cloned().collect();
         node.deps.sort();
@@ -284,14 +280,11 @@ pub fn build_include_graph(
     for key in &keys {
         let deps = graph.nodes[key].deps.clone();
         for dep in deps {
-            let dependent_node = graph
-                .nodes
-                .entry(dep.clone())
-                .or_insert_with(|| DepNode {
-                    path: dep.clone(),
-                    deps: Vec::new(),
-                    dependents: Vec::new(),
-                });
+            let dependent_node = graph.nodes.entry(dep.clone()).or_insert_with(|| DepNode {
+                path: dep.clone(),
+                deps: Vec::new(),
+                dependents: Vec::new(),
+            });
             dependent_node.path = dep.clone();
             if !dependent_node.dependents.contains(key) {
                 dependent_node.dependents.push(key.clone());
@@ -335,15 +328,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ns-dep-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::create_dir_all(dir.join("include")).unwrap();
-        write(&dir, "src/main.c", "#include \"app.h\"\n#include <board.h>\n");
+        write(
+            &dir,
+            "src/main.c",
+            "#include \"app.h\"\n#include <board.h>\n",
+        );
         write(&dir, "src/app.h", "#pragma once\n");
         write(&dir, "include/board.h", "#pragma once\n");
         let sources = vec![dir.join("src/main.c"), dir.join("src/app.h")];
         let include_dirs = vec!["include".to_string()];
         let graph = build_include_graph(&dir, &sources, &include_dirs);
-         let main = graph.nodes.get("src/main.c").unwrap();
-         assert!(main.deps.contains(&"src/app.h".to_string()));
-         assert!(main.deps.contains(&"include/board.h".to_string()));
+        let main = graph.nodes.get("src/main.c").unwrap();
+        assert!(main.deps.contains(&"src/app.h".to_string()));
+        assert!(main.deps.contains(&"include/board.h".to_string()));
         // app.h has main.c as a dependent.
         let app = graph.nodes.get("src/app.h").unwrap();
         assert!(app.dependents.contains(&"src/main.c".to_string()));
@@ -366,8 +363,8 @@ mod tests {
         let dependents = graph.transitive_dependents("src/base.h");
         assert!(dependents.contains(&"src/mid.h".to_string()));
         assert!(dependents.contains(&"src/main.c".to_string()));
-         let _ = std::fs::remove_dir_all(&dir);
-     }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn dag_layout_layers_by_longest_dependency_path() {
@@ -403,4 +400,4 @@ mod tests {
         }));
         let _ = std::fs::remove_dir_all(&dir);
     }
- }
+}

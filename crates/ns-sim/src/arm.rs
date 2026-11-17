@@ -46,14 +46,14 @@ pub struct ArmCore {
     /// ARM7/ARM9/Cortex-A reset with a vector whose bit 0 is clear; Cortex-M
     /// always boots in Thumb state (this stays `false`).
     pub arm_state: bool,
-     /// Whether execution should stop.
-     pub halted: bool,
-     /// Number of instructions executed since reset.
-     pub cycle_count: u64,
+    /// Whether execution should stop.
+    pub halted: bool,
+    /// Number of instructions executed since reset.
+    pub cycle_count: u64,
     /// Byte-level stores performed since the last drain, as (address, byte).
     /// The `Simulator` routes these to its virtual peripherals after each step.
     pub store_events: Vec<(u32, u8)>,
- }
+}
 
 impl ArmCore {
     pub fn new() -> Self {
@@ -67,10 +67,10 @@ impl ArmCore {
             memory: vec![0; ADDR_SIZE],
             vtor: 0,
             arm_state: false,
-             halted: false,
-             cycle_count: 0,
+            halted: false,
+            cycle_count: 0,
             store_events: Vec::new(),
-         }
+        }
     }
 
     /// Set the program counter (keeps the Thumb bit in the low bit).
@@ -100,7 +100,11 @@ impl ArmCore {
     }
     fn set_nz(&mut self, value: u32) {
         self.xpsr = (self.xpsr & !0xC000_0000)
-            | (if value & 0x8000_0000 != 0 { 0x8000_0000 } else { 0 });
+            | (if value & 0x8000_0000 != 0 {
+                0x8000_0000
+            } else {
+                0
+            });
         if value == 0 {
             self.xpsr |= 0x4000_0000;
         }
@@ -168,24 +172,27 @@ impl ArmCore {
             self.memory[base + 3],
         ])
     }
-     pub fn write_u32(&mut self, address: u32, value: u32) {
-         let Some(base) = self.map_addr(address & !3) else {
-             for i in 0..4 {
-                 self.store_events.push((address.wrapping_add(i as u32), (value >> (8 * i)) as u8));
-             }
-             return; // unbacked address: drop write
-         };
-         if base + 4 > self.memory.len() {
-             for i in 0..4 {
-                 self.store_events.push((address.wrapping_add(i as u32), (value >> (8 * i)) as u8));
-             }
-             return;
-         }
-         self.memory[base..base + 4].copy_from_slice(&value.to_le_bytes());
-         for i in 0..4 {
-             self.store_events.push((address.wrapping_add(i as u32), (value >> (8 * i)) as u8));
-         }
-     }
+    pub fn write_u32(&mut self, address: u32, value: u32) {
+        let Some(base) = self.map_addr(address & !3) else {
+            for i in 0..4 {
+                self.store_events
+                    .push((address.wrapping_add(i as u32), (value >> (8 * i)) as u8));
+            }
+            return; // unbacked address: drop write
+        };
+        if base + 4 > self.memory.len() {
+            for i in 0..4 {
+                self.store_events
+                    .push((address.wrapping_add(i as u32), (value >> (8 * i)) as u8));
+            }
+            return;
+        }
+        self.memory[base..base + 4].copy_from_slice(&value.to_le_bytes());
+        for i in 0..4 {
+            self.store_events
+                .push((address.wrapping_add(i as u32), (value >> (8 * i)) as u8));
+        }
+    }
     pub fn read_u16(&self, address: u32) -> u16 {
         let Some(base) = self.map_addr(address) else {
             return 0;
@@ -195,35 +202,38 @@ impl ArmCore {
         }
         u16::from_le_bytes([self.memory[base], self.memory[base + 1]])
     }
-     pub fn write_u16(&mut self, address: u32, value: u16) {
-         let Some(base) = self.map_addr(address) else {
+    pub fn write_u16(&mut self, address: u32, value: u16) {
+        let Some(base) = self.map_addr(address) else {
             self.store_events.push((address, value as u8));
-            self.store_events.push((address.wrapping_add(1), (value >> 8) as u8));
-             return;
-         };
-         if base + 2 > self.memory.len() {
+            self.store_events
+                .push((address.wrapping_add(1), (value >> 8) as u8));
+            return;
+        };
+        if base + 2 > self.memory.len() {
             self.store_events.push((address, value as u8));
-            self.store_events.push((address.wrapping_add(1), (value >> 8) as u8));
-             return;
-         }
-         self.memory[base..base + 2].copy_from_slice(&value.to_le_bytes());
-         self.store_events.push((address, value as u8));
-         self.store_events.push((address.wrapping_add(1), (value >> 8) as u8));
-     }
-     pub fn read_u8(&self, address: u32) -> u8 {
-         let Some(base) = self.map_addr(address) else {
-             return 0;
-         };
-         self.memory[base]
-     }
-     pub fn write_u8(&mut self, address: u32, value: u8) {
-         let Some(base) = self.map_addr(address) else {
+            self.store_events
+                .push((address.wrapping_add(1), (value >> 8) as u8));
+            return;
+        }
+        self.memory[base..base + 2].copy_from_slice(&value.to_le_bytes());
+        self.store_events.push((address, value as u8));
+        self.store_events
+            .push((address.wrapping_add(1), (value >> 8) as u8));
+    }
+    pub fn read_u8(&self, address: u32) -> u8 {
+        let Some(base) = self.map_addr(address) else {
+            return 0;
+        };
+        self.memory[base]
+    }
+    pub fn write_u8(&mut self, address: u32, value: u8) {
+        let Some(base) = self.map_addr(address) else {
             self.store_events.push((address, value));
-             return;
-         };
-         self.memory[base] = value;
-         self.store_events.push((address, value));
-     }
+            return;
+        };
+        self.memory[base] = value;
+        self.store_events.push((address, value));
+    }
 
     /// Write a block of bytes (e.g. an ELF segment).
     pub fn write_bytes(&mut self, base: u32, bytes: &[u8]) {
@@ -259,7 +269,11 @@ impl ArmCore {
             self.set_thumb(thumb);
         } else {
             // Cortex-M data vector: word0 = initial SP, word1 = reset PC.
-            let initial_sp = if word0 >= 0x2000_0000 { word0 } else { 0x2000_0000 };
+            let initial_sp = if word0 >= 0x2000_0000 {
+                word0
+            } else {
+                0x2000_0000
+            };
             let thumb = word1 & 1 != 0;
             let pc = if word1 != 0 { word1 } else { entry };
             self.regs[SP] = initial_sp;
@@ -280,11 +294,7 @@ impl ArmCore {
             return None;
         }
         let value = self.read_u32(addr);
-        if value == 0 {
-            None
-        } else {
-            Some(value)
-        }
+        if value == 0 { None } else { Some(value) }
     }
 }
 
@@ -346,7 +356,6 @@ pub enum ArmStep {
 }
 
 impl ArmCore {
-
     /// Decode and execute a 16-bit Thumb-1 instruction.
     fn execute_thumb1(&mut self, insn: u16) {
         let top = insn >> 12; // bits 15-12: the Thumb-1 major group
@@ -366,16 +375,16 @@ impl ArmCore {
                     0 => {
                         let r = if shift == 0 { value } else { value << shift };
                         if shift != 0 {
-                            self.xpsr = (self.xpsr & !0x2000_0000)
-                                | (((value >> (32 - shift)) & 1) << 29);
+                            self.xpsr =
+                                (self.xpsr & !0x2000_0000) | (((value >> (32 - shift)) & 1) << 29);
                         }
                         r
                     }
                     1 => {
                         let r = if shift == 0 { 0 } else { value >> shift };
                         if shift != 0 {
-                            self.xpsr = (self.xpsr & !0x2000_0000)
-                                | (((value >> (shift - 1)) & 1) << 29);
+                            self.xpsr =
+                                (self.xpsr & !0x2000_0000) | (((value >> (shift - 1)) & 1) << 29);
                         }
                         r
                     }
@@ -383,8 +392,8 @@ impl ArmCore {
                         let shift = if shift == 0 { 32 } else { shift };
                         let r = ((value as i32) >> shift) as u32;
                         if shift != 32 {
-                            self.xpsr = (self.xpsr & !0x2000_0000)
-                                | (((value >> (shift - 1)) & 1) << 29);
+                            self.xpsr =
+                                (self.xpsr & !0x2000_0000) | (((value >> (shift - 1)) & 1) << 29);
                         }
                         r
                     }
@@ -499,43 +508,43 @@ impl ArmCore {
                     _ => {}
                 }
             }
-             // 0x6: load/store word immediate offset (bit 11 = load)
-             0x6 => {
-                 let load = (insn >> 11) & 1 != 0;
+            // 0x6: load/store word immediate offset (bit 11 = load)
+            0x6 => {
+                let load = (insn >> 11) & 1 != 0;
                 // Thumb: `STR/LDR Rt, [Rn, #imm]` — Rn = bits 2-0, Rt = bits 5-3.
                 let base = (insn & 0x07) as usize;
                 let data = ((insn >> 3) & 0x07) as usize;
                 let addr = self.regs[base].wrapping_add(imm5 * 4);
-                 if load {
+                if load {
                     self.regs[data] = self.read_u32(addr);
-                 } else {
+                } else {
                     self.write_u32(addr, self.regs[data]);
-                 }
-             }
-             // 0x7: load/store byte immediate offset (bit 11 = load)
-             0x7 => {
-                 let load = (insn >> 11) & 1 != 0;
+                }
+            }
+            // 0x7: load/store byte immediate offset (bit 11 = load)
+            0x7 => {
+                let load = (insn >> 11) & 1 != 0;
                 let base = (insn & 0x07) as usize;
                 let data = ((insn >> 3) & 0x07) as usize;
                 let addr = self.regs[base].wrapping_add(imm5);
-                 if load {
+                if load {
                     self.regs[data] = self.read_u8(addr) as u32;
-                 } else {
+                } else {
                     self.write_u8(addr, self.regs[data] as u8);
-                 }
-             }
-             // 0x8: load/store half immediate offset (bit 11 = load)
-             0x8 => {
-                 let load = (insn >> 11) & 1 != 0;
+                }
+            }
+            // 0x8: load/store half immediate offset (bit 11 = load)
+            0x8 => {
+                let load = (insn >> 11) & 1 != 0;
                 let base = (insn & 0x07) as usize;
                 let data = ((insn >> 3) & 0x07) as usize;
                 let addr = self.regs[base].wrapping_add(imm5 * 2);
-                 if load {
+                if load {
                     self.regs[data] = self.read_u16(addr) as u32;
-                 } else {
+                } else {
                     self.write_u16(addr, self.regs[data] as u16);
-                 }
-             }
+                }
+            }
             // 0x9: SP-relative load/store word (bit 11 = load)
             0x9 => {
                 let load = (insn >> 11) & 1 != 0;
@@ -676,20 +685,20 @@ impl ArmCore {
         let c = self.flag_c();
         let v = self.flag_v();
         match cond {
-            0 => z,                                  // EQ
-            1 => !z,                                 // NE
-            2 => c,                                  // CS
-            3 => !c,                                 // CC
-            4 => n,                                  // MI
-            5 => !n,                                 // PL
-            6 => v,                                  // VS
-            7 => !v,                                 // VC
-            8 => c && !z,                            // HI
-            9 => !c || z,                            // LS
-            10 => n == v,                            // GE
-            11 => n != v,                            // LT
-            12 => !z && n == v,                      // GT
-            13 => z || n != v,                       // LE
+            0 => z,             // EQ
+            1 => !z,            // NE
+            2 => c,             // CS
+            3 => !c,            // CC
+            4 => n,             // MI
+            5 => !n,            // PL
+            6 => v,             // VS
+            7 => !v,            // VC
+            8 => c && !z,       // HI
+            9 => !c || z,       // LS
+            10 => n == v,       // GE
+            11 => n != v,       // LT
+            12 => !z && n == v, // GT
+            13 => z || n != v,  // LE
             _ => true,
         }
     }
@@ -704,15 +713,14 @@ impl ArmCore {
         let b = self.regs[rm];
         // Thumb-1 ALU opcodes (Format 4, op = (insn >> 6) & 0xF).
         let (result, write, flags) = match alu {
-            0 => (a & b, true, true),            // AND
-            1 => (a ^ b, true, true),            // EOR
+            0 => (a & b, true, true), // AND
+            1 => (a ^ b, true, true), // EOR
             2 => {
                 // LSL Rd,Rs
                 let shift = b & 0xFF;
                 let r = if shift == 0 { a } else { a << shift };
                 if shift != 0 {
-                    self.xpsr = (self.xpsr & !0x2000_0000)
-                        | (((a >> (32 - shift)) & 1) << 29);
+                    self.xpsr = (self.xpsr & !0x2000_0000) | (((a >> (32 - shift)) & 1) << 29);
                 }
                 (r, true, false)
             }
@@ -721,8 +729,7 @@ impl ArmCore {
                 let shift = b & 0xFF;
                 let r = if shift == 0 { a } else { a >> shift };
                 if shift != 0 {
-                    self.xpsr = (self.xpsr & !0x2000_0000)
-                        | (((a >> (shift - 1)) & 1) << 29);
+                    self.xpsr = (self.xpsr & !0x2000_0000) | (((a >> (shift - 1)) & 1) << 29);
                 }
                 (r, true, false)
             }
@@ -732,8 +739,7 @@ impl ArmCore {
                 let shift = if shift == 0 { 32 } else { shift };
                 let r = ((a as i32) >> shift) as u32;
                 if shift != 32 {
-                    self.xpsr = (self.xpsr & !0x2000_0000)
-                        | (((a >> (shift - 1)) & 1) << 29);
+                    self.xpsr = (self.xpsr & !0x2000_0000) | (((a >> (shift - 1)) & 1) << 29);
                 }
                 (r, true, false)
             }
@@ -758,12 +764,11 @@ impl ArmCore {
                 let shift = b & 0x1F;
                 let r = if shift == 0 { a } else { a.rotate_right(shift) };
                 if shift != 0 {
-                    self.xpsr = (self.xpsr & !0x2000_0000)
-                        | (((a >> (shift - 1)) & 1) << 29);
+                    self.xpsr = (self.xpsr & !0x2000_0000) | (((a >> (shift - 1)) & 1) << 29);
                 }
                 (r, true, false)
             }
-            8 => (a & b, false, true),           // TST
+            8 => (a & b, false, true), // TST
             9 => {
                 // NEG Rd,0,Rm
                 let (r, c) = 0u32.overflowing_sub(b);
@@ -782,14 +787,14 @@ impl ArmCore {
                 self.xpsr = (self.xpsr & !0x2000_0000) | ((c as u32) << 29);
                 (r, false, true)
             }
-            12 => (a | b, true, true),           // ORR
+            12 => (a | b, true, true), // ORR
             13 => {
                 // MUL Rd,Rm
                 let r = a.wrapping_mul(b);
                 (r, true, false)
             }
-            14 => (a & !b, true, true),          // BIC
-            _ => (!a, true, true),               // MVN
+            14 => (a & !b, true, true), // BIC
+            _ => (!a, true, true),      // MVN
         };
         if flags {
             self.set_nz(result);
@@ -855,10 +860,7 @@ impl ArmCore {
         }
 
         // B.W unconditional (0xF000 prefix, second bits 15-14 = 10, 13-12 = 10).
-        if first & 0xF800 == 0xF000
-            && first & 0x0C00 == 0x0800
-            && second & 0xD000 == 0x8000
-        {
+        if first & 0xF800 == 0xF000 && first & 0x0C00 == 0x0800 && second & 0xD000 == 0x8000 {
             let s = ((first >> 10) & 1) as u32;
             let j1 = ((second >> 13) & 1) as u32;
             let j2 = ((second >> 11) & 1) as u32;
@@ -952,7 +954,11 @@ impl ArmCore {
     /// Read an ARM-state register, substituting the pipeline-adjusted PC
     /// value for R15 (reads of PC see the instruction address + 8).
     fn arm_reg(&self, index: usize, pc_base: u32) -> u32 {
-        if index == PC { pc_base } else { self.regs[index] }
+        if index == PC {
+            pc_base
+        } else {
+            self.regs[index]
+        }
     }
 
     fn set_nzcv(&mut self, n: bool, z: bool, c: bool, v: bool) {
@@ -1114,7 +1120,9 @@ impl ArmCore {
             let rn = ((insn >> 12) & 0x0F) as usize;
             let rs = ((insn >> 8) & 0x0F) as usize;
             let rm = (insn & 0x0F) as usize;
-            let mut result = self.arm_reg(rm, pc_base).wrapping_mul(self.arm_reg(rs, pc_base));
+            let mut result = self
+                .arm_reg(rm, pc_base)
+                .wrapping_mul(self.arm_reg(rs, pc_base));
             if accumulate {
                 result = result.wrapping_add(self.arm_reg(rn, pc_base));
             }
@@ -1138,8 +1146,7 @@ impl ArmCore {
                     * self.arm_reg(rs, pc_base) as i32 as i64;
                 ((product >> 32) as u32, product as u32)
             } else {
-                let product =
-                    self.arm_reg(rm, pc_base) as u64 * self.arm_reg(rs, pc_base) as u64;
+                let product = self.arm_reg(rm, pc_base) as u64 * self.arm_reg(rs, pc_base) as u64;
                 ((product >> 32) as u32, product as u32)
             };
             let (mut hi, mut lo) = (hi, lo);
@@ -1153,7 +1160,12 @@ impl ArmCore {
             self.regs[rdlo] = lo;
             self.regs[rdhi] = hi;
             if set_flags {
-                self.set_nzcv(hi & 0x8000_0000 != 0, hi == 0 && lo == 0, self.flag_c(), self.flag_v());
+                self.set_nzcv(
+                    hi & 0x8000_0000 != 0,
+                    hi == 0 && lo == 0,
+                    self.flag_c(),
+                    self.flag_v(),
+                );
             }
             return;
         }
@@ -1208,8 +1220,8 @@ impl ArmCore {
         let compare_only = (8..=11).contains(&opcode);
         let mut flags: Option<(bool, bool, bool, bool)> = None;
         let result = match opcode {
-            0 => a & b,                              // AND
-            1 => a ^ b,                              // EOR
+            0 => a & b, // AND
+            1 => a ^ b, // EOR
             2 | 3 => {
                 let (r, c, v) = if opcode == 2 {
                     Self::arm_sub(a, b, true)
@@ -1253,15 +1265,20 @@ impl ArmCore {
                 flags = Some((r & 0x8000_0000 != 0, r == 0, c, v));
                 r
             }
-            12 => a | b,                            // ORR
-            13 => b,                                // MOV
-            14 => a & !b,                           // BIC
-            _ => !b,                                // MVN
+            12 => a | b,  // ORR
+            13 => b,      // MOV
+            14 => a & !b, // BIC
+            _ => !b,      // MVN
         };
         if (set_flags || compare_only) && flags.is_none() {
             // Logical operations only update N/Z from the result, C from the
             // shifter and leave V untouched.
-            flags = Some((result & 0x8000_0000 != 0, result == 0, shifter_carry, self.flag_v()));
+            flags = Some((
+                result & 0x8000_0000 != 0,
+                result == 0,
+                shifter_carry,
+                self.flag_v(),
+            ));
         }
         if set_flags || compare_only {
             if let Some((n, z, c, v)) = flags {
@@ -1295,7 +1312,11 @@ impl ArmCore {
             insn & 0x0FFF
         };
         let base = self.arm_reg(rn, pc_base);
-        let address = if add { base.wrapping_add(offset) } else { base.wrapping_sub(offset) };
+        let address = if add {
+            base.wrapping_add(offset)
+        } else {
+            base.wrapping_sub(offset)
+        };
         let effective = if pre_index { address } else { base };
         if load {
             let value = if byte {
@@ -1340,7 +1361,11 @@ impl ArmCore {
             self.arm_reg((insn & 0x0F) as usize, pc_base)
         };
         let base = self.arm_reg(rn, pc_base);
-        let address = if add { base.wrapping_add(offset) } else { base.wrapping_sub(offset) };
+        let address = if add {
+            base.wrapping_add(offset)
+        } else {
+            base.wrapping_sub(offset)
+        };
         let effective = if pre_index { address } else { base };
         if load {
             let value = match sh {
@@ -1379,10 +1404,10 @@ impl ArmCore {
         }
         let base = self.arm_reg(rn, pc_base);
         let start = match (add, pre_index) {
-            (true, false) => base,                          // IA
-            (true, true) => base.wrapping_add(4),           // IB
+            (true, false) => base,                                          // IA
+            (true, true) => base.wrapping_add(4),                           // IB
             (false, false) => base.wrapping_sub(4 * count).wrapping_add(4), // DA (reverse)
-            (false, true) => base.wrapping_sub(4 * count),  // DB
+            (false, true) => base.wrapping_sub(4 * count),                  // DB
         };
         let mut address = start;
         let writeback_value = if add {
@@ -1543,9 +1568,9 @@ mod tests {
         let mut c = core();
         c.regs[0] = 0x2000_0000;
         c.regs[1] = 0xDEAD_BEEF;
-         // STR r1, [r0, #0]  (0x6008: Rn=0, Rt=1)
-         // LDR r2, [r0, #0]  (0x6810: Rn=0, Rt=2)
-         run(&mut c, &[0x6008, 0x6810], 2);
+        // STR r1, [r0, #0]  (0x6008: Rn=0, Rt=1)
+        // LDR r2, [r0, #0]  (0x6810: Rn=0, Rt=2)
+        run(&mut c, &[0x6008, 0x6810], 2);
         assert_eq!(c.regs[2], 0xDEAD_BEEF);
     }
 
@@ -1680,11 +1705,7 @@ mod tests {
     fn arm_data_processing_flags_and_conditional_execution() {
         let mut c = core();
         // MOV r0, #3; CMP r0, #3; MOVEQ r1, #7 (EQ executes)
-        run_arm(
-            &mut c,
-            &[0xE3A0_0003, 0xE350_0003, 0x03A0_1007],
-            3,
-        );
+        run_arm(&mut c, &[0xE3A0_0003, 0xE350_0003, 0x03A0_1007], 3);
         assert!(c.flag_z(), "CMP should set Z");
         assert_eq!(c.regs[1], 7);
     }

@@ -265,7 +265,6 @@ fn replace_walk(
     }
 }
 
-
 fn relative_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -286,7 +285,9 @@ fn collect_walk(dir: &Path, root: &Path, files: &mut Vec<String>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    let mut children: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
+    let mut children: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
     children.sort();
     for path in children {
         if path.is_dir() {
@@ -312,7 +313,6 @@ fn collect_walk(dir: &Path, root: &Path, files: &mut Vec<String>) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,7 +320,11 @@ mod tests {
     fn write_fixture(dir: &Path) {
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::create_dir_all(dir.join("build")).unwrap();
-        fs::write(dir.join("src/main.c"), "int main(void) {\n    ticks++;\n    return 0;\n}\n").unwrap();
+        fs::write(
+            dir.join("src/main.c"),
+            "int main(void) {\n    ticks++;\n    return 0;\n}\n",
+        )
+        .unwrap();
         fs::write(dir.join("src/other.c"), "int other(void) { return 42; }\n").unwrap();
         fs::write(dir.join("build/generated.c"), "int generated_marker;\n").unwrap();
         fs::write(dir.join("data.bin"), [0xff, 0xd8, 0x00, 0x01]).unwrap();
@@ -328,10 +332,8 @@ mod tests {
     }
 
     fn fixture_root(test_name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "ns-search-test-{}-{test_name}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-search-test-{}-{test_name}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         write_fixture(&root);
@@ -356,13 +358,20 @@ mod tests {
     #[test]
     fn search_options_case_sensitive_and_whole_word() {
         let root = fixture_root("search_options_case_sensitive_and_whole_word");
-        fs::write(root.join("src/other.c"), "int TICKS;\nint ticks_counter;\nint ticks;\n").unwrap();
+        fs::write(
+            root.join("src/other.c"),
+            "int TICKS;\nint ticks_counter;\nint ticks;\n",
+        )
+        .unwrap();
         // Case-sensitive "TICKS": matches only the uppercase occurrence.
         let cs = search_project_with_options(
             &root,
             "TICKS",
             100,
-            SearchOptions { case_sensitive: true, whole_word: false },
+            SearchOptions {
+                case_sensitive: true,
+                whole_word: false,
+            },
         );
         let cs_other: Vec<_> = cs
             .iter()
@@ -376,7 +385,10 @@ mod tests {
             &root,
             "ticks",
             100,
-            SearchOptions { case_sensitive: false, whole_word: true },
+            SearchOptions {
+                case_sensitive: false,
+                whole_word: true,
+            },
         );
         let ww_other: Vec<_> = ww
             .iter()
@@ -384,7 +396,9 @@ mod tests {
             .collect();
         assert_eq!(ww_other.len(), 2, "standalone TICKS + ticks: {ww_other:?}");
         assert!(
-            ww_other.iter().all(|m| !m.line_text.contains("ticks_counter")),
+            ww_other
+                .iter()
+                .all(|m| !m.line_text.contains("ticks_counter")),
             "whole-word must not match the `ticks_counter` prefix: {ww_other:?}"
         );
         let _ = fs::remove_dir_all(root);
@@ -450,7 +464,11 @@ mod tests {
     fn binary_files_match_by_name_but_never_by_content() {
         let root = fixture_root("binary_files_match_by_name_but_never_by_content");
         let matches = search_project(&root, "data", 100);
-        assert!(matches.iter().all(|m| !(m.path.ends_with("data.bin") && m.origin == MatchOrigin::Content)));
+        assert!(
+            matches
+                .iter()
+                .all(|m| !(m.path.ends_with("data.bin") && m.origin == MatchOrigin::Content))
+        );
         let _ = fs::remove_dir_all(root);
     }
 

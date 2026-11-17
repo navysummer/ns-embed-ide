@@ -676,14 +676,14 @@ impl Msp430Core {
         let condition = (insn >> 10) & 7;
         let offset = insn & 0x3FF;
         let take = match condition {
-            0 => !self.flag(FLAG_Z),                       // JNE
-            1 => self.flag(FLAG_Z),                        // JEQ
-            2 => !self.flag(FLAG_C),                       // JNC
-            3 => self.flag(FLAG_C),                        // JC
-            4 => self.flag(FLAG_N),                        // JN
-            5 => self.flag(FLAG_N) == self.flag(FLAG_V),   // JGE
-            6 => self.flag(FLAG_N) != self.flag(FLAG_V),   // JL
-            _ => true,                                     // JMP
+            0 => !self.flag(FLAG_Z),                     // JNE
+            1 => self.flag(FLAG_Z),                      // JEQ
+            2 => !self.flag(FLAG_C),                     // JNC
+            3 => self.flag(FLAG_C),                      // JC
+            4 => self.flag(FLAG_N),                      // JN
+            5 => self.flag(FLAG_N) == self.flag(FLAG_V), // JGE
+            6 => self.flag(FLAG_N) != self.flag(FLAG_V), // JL
+            _ => true,                                   // JMP
         };
         if take {
             let delta = (((offset << 6) as i16) >> 6) as i32 * 2;
@@ -718,8 +718,7 @@ fn sub_values(a: u16, b: u16, borrow_in: u16, byte: bool) -> (u16, bool, bool) {
         let diff = a8 - b8 - borrow_in as i32;
         let result = (diff & 0x00FF) as u16;
         let carry = diff >= 0;
-        let overflow =
-            ((a8 as u8 ^ b8 as u8) & (a8 as u8 ^ result as u8) & 0x80) != 0;
+        let overflow = ((a8 as u8 ^ b8 as u8) & (a8 as u8 ^ result as u8) & 0x80) != 0;
         (result, carry, overflow)
     } else {
         let diff = a as i32 - b as i32 - borrow_in as i32;
@@ -813,8 +812,8 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
 
     if top >= 0x4000 {
         let names = [
-            "?", "?", "?", "?", "MOV", "ADD", "ADDC", "SUBC", "SUB", "CMP", "DADD",
-            "BIT", "BIC", "BIS", "XOR", "AND",
+            "?", "?", "?", "?", "MOV", "ADD", "ADDC", "SUBC", "SUB", "CMP", "DADD", "BIT", "BIC",
+            "BIS", "XOR", "AND",
         ];
         let op = ((insn >> 12) & 0xF) as usize;
         let byte = (insn >> 6) & 1 == 1;
@@ -1043,7 +1042,10 @@ mod tests {
         overflow.r[4] = 0x7FFF;
         run(&mut overflow, 1);
         assert_eq!(overflow.read_reg(4), 0x8000);
-        assert!(sr_flag(&overflow, FLAG_V), "positive minus negative overflows");
+        assert!(
+            sr_flag(&overflow, FLAG_V),
+            "positive minus negative overflows"
+        );
         assert!(sr_flag(&overflow, FLAG_N));
         assert!(!sr_flag(&overflow, FLAG_C));
 

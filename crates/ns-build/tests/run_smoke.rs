@@ -40,10 +40,18 @@ int main(void) {
 
     let plan = ns_build::plan_build(&project).expect("plan build");
     let outcome = ns_build::execute(&plan);
-    assert!(outcome.success, "build failed:\n{}", outcome.combined_output());
+    assert!(
+        outcome.success,
+        "build failed:\n{}",
+        outcome.combined_output()
+    );
 
     let artifact = project.artifact_path();
-    assert!(artifact.exists(), "artifact missing: {}", artifact.display());
+    assert!(
+        artifact.exists(),
+        "artifact missing: {}",
+        artifact.display()
+    );
 
     let mut child = Command::new(&artifact)
         .current_dir(&project.root)

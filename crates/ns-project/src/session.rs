@@ -53,7 +53,7 @@ pub struct FileView {
     /// Whether soft word wrap was enabled for this view.
     #[serde(default)]
     pub word_wrap: bool,
- }
+}
 
 /// Folded regions for one file, restored from the session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

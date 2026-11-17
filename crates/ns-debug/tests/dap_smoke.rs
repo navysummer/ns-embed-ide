@@ -23,8 +23,7 @@ static FIXTURE_SLOT: AtomicU32 = AtomicU32::new(0);
 
 fn compile_fixture() -> (PathBuf, PathBuf, PathBuf) {
     let slot = FIXTURE_SLOT.fetch_add(1, Ordering::SeqCst);
-    let root =
-        std::env::temp_dir().join(format!("ns-debug-e2e-{}-{}", std::process::id(), slot));
+    let root = std::env::temp_dir().join(format!("ns-debug-e2e-{}-{}", std::process::id(), slot));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let source = root.join("e2e.c");
@@ -106,7 +105,12 @@ fn dap_launch_hit_continue_terminate() {
 
     let handle = ns_debug::spawn(&config).expect("failed to launch debug session");
 
-    wait_for(&handle, |msg| matches!(msg, DebugMessage::Ready), Duration::from_secs(10), "Ready");
+    wait_for(
+        &handle,
+        |msg| matches!(msg, DebugMessage::Ready),
+        Duration::from_secs(10),
+        "Ready",
+    );
 
     // First hit: i == 0
     let stop = wait_for(
@@ -120,7 +124,9 @@ fn dap_launch_hit_continue_terminate() {
     };
 
     // Stack trace must contain our fixture file and line.
-    handle.send(DebugCommand::GetStackTrace { thread_id }).unwrap();
+    handle
+        .send(DebugCommand::GetStackTrace { thread_id })
+        .unwrap();
     let trace = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::StackTrace { .. }),
@@ -154,7 +160,7 @@ fn dap_launch_hit_continue_terminate() {
     );
 
     let _ = fs::remove_dir_all(root);
- }
+}
 
 /// The DAP `restart` request restarts the debuggee in place: after hitting a
 /// breakpoint and restarting, the program runs from `main` again and stops at
@@ -185,7 +191,12 @@ fn dap_restart_reruns_from_main() {
     };
 
     let handle = ns_debug::spawn(&config).expect("failed to launch debug session");
-    wait_for(&handle, |msg| matches!(msg, DebugMessage::Ready), Duration::from_secs(10), "Ready");
+    wait_for(
+        &handle,
+        |msg| matches!(msg, DebugMessage::Ready),
+        Duration::from_secs(10),
+        "Ready",
+    );
 
     // First stop at line 4 (i == 0).
     let stop = wait_for(
@@ -194,12 +205,12 @@ fn dap_restart_reruns_from_main() {
         Duration::from_secs(10),
         "first breakpoint stop",
     );
-     let DebugMessage::Stopped { thread_id: _, .. } = stop else {
+    let DebugMessage::Stopped { thread_id: _, .. } = stop else {
         unreachable!()
     };
 
-     // Native restart: the adapter stays alive and the debuggee re-runs.
-     handle.send(DebugCommand::Restart).unwrap();
+    // Native restart: the adapter stays alive and the debuggee re-runs.
+    handle.send(DebugCommand::Restart).unwrap();
     // After a restart the program runs from `main` again; drive it through
     // the loop's two iterations and out to a clean process exit, continuing
     // from whichever thread stops next.
@@ -220,11 +231,11 @@ fn dap_restart_reruns_from_main() {
             _ => unreachable!(),
         }
     }
- 
-     let _ = fs::remove_dir_all(root);
+
+    let _ = fs::remove_dir_all(root);
 }
- 
- #[test]
+
+#[test]
 fn dap_conditional_breakpoint_fires_only_when_true() {
     if ns_debug::find_dap_adapter().is_none() {
         eprintln!("lldb-dap 不可用，跳过端到端测试");
@@ -252,7 +263,12 @@ fn dap_conditional_breakpoint_fires_only_when_true() {
     };
 
     let handle = ns_debug::spawn(&config).expect("failed to launch debug session");
-    wait_for(&handle, |msg| matches!(msg, DebugMessage::Ready), Duration::from_secs(10), "Ready");
+    wait_for(
+        &handle,
+        |msg| matches!(msg, DebugMessage::Ready),
+        Duration::from_secs(10),
+        "Ready",
+    );
 
     // With `i == 1`, the first stop happens on the second iteration, not the first.
     let stop = wait_for(
@@ -266,7 +282,9 @@ fn dap_conditional_breakpoint_fires_only_when_true() {
     };
 
     // Ask for the stack to confirm the frame; then disconnect.
-    handle.send(DebugCommand::GetStackTrace { thread_id }).unwrap();
+    handle
+        .send(DebugCommand::GetStackTrace { thread_id })
+        .unwrap();
     let _ = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::StackTrace { .. }),
@@ -309,7 +327,12 @@ fn dap_registers_memory_disassembly() {
         }],
     };
     let handle = ns_debug::spawn(&config).expect("failed to launch debug session");
-    wait_for(&handle, |msg| matches!(msg, DebugMessage::Ready), Duration::from_secs(10), "Ready");
+    wait_for(
+        &handle,
+        |msg| matches!(msg, DebugMessage::Ready),
+        Duration::from_secs(10),
+        "Ready",
+    );
     let stop = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::Stopped { .. }),
@@ -321,7 +344,9 @@ fn dap_registers_memory_disassembly() {
     };
 
     // Stack trace -> pick frame 0 -> pc.
-    handle.send(DebugCommand::GetStackTrace { thread_id }).unwrap();
+    handle
+        .send(DebugCommand::GetStackTrace { thread_id })
+        .unwrap();
     let trace = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::StackTrace { .. }),
@@ -331,10 +356,16 @@ fn dap_registers_memory_disassembly() {
     let DebugMessage::StackTrace { frames } = trace else {
         unreachable!()
     };
-    let pc = frames[0].pc.expect("lldb-dap should report the instruction pointer");
+    let pc = frames[0]
+        .pc
+        .expect("lldb-dap should report the instruction pointer");
 
     // Scopes -> find the Registers scope.
-    handle.send(DebugCommand::GetScopes { frame_id: frames[0].id }).unwrap();
+    handle
+        .send(DebugCommand::GetScopes {
+            frame_id: frames[0].id,
+        })
+        .unwrap();
     let scopes_message = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::Scopes { .. }),
@@ -350,14 +381,21 @@ fn dap_registers_memory_disassembly() {
         .expect("lldb-dap should expose a Registers scope");
 
     // Expand Registers -> groups (General Purpose / Floating Point / Exception State).
-    handle.send(DebugCommand::GetVariables { variables_reference: registers_scope.id }).unwrap();
+    handle
+        .send(DebugCommand::GetVariables {
+            variables_reference: registers_scope.id,
+        })
+        .unwrap();
     let groups = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::Variables { reference, .. } if reference == &registers_scope.id),
         Duration::from_secs(10),
         "register groups",
     );
-    let DebugMessage::Variables { variables: groups, .. } = groups else {
+    let DebugMessage::Variables {
+        variables: groups, ..
+    } = groups
+    else {
         unreachable!()
     };
     let general = groups
@@ -366,21 +404,34 @@ fn dap_registers_memory_disassembly() {
         .expect("Registers scope should include General Purpose Registers");
 
     // Expand General Purpose -> actual registers, non-empty.
-    handle.send(DebugCommand::GetVariables { variables_reference: general.variables_reference }).unwrap();
+    handle
+        .send(DebugCommand::GetVariables {
+            variables_reference: general.variables_reference,
+        })
+        .unwrap();
     let registers = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::Variables { reference, .. } if reference == &general.variables_reference),
         Duration::from_secs(10),
         "general purpose registers",
     );
-    let DebugMessage::Variables { variables: registers, .. } = registers else {
+    let DebugMessage::Variables {
+        variables: registers,
+        ..
+    } = registers
+    else {
         unreachable!()
     };
     assert!(!registers.is_empty(), "expected at least one register");
     assert!(registers.iter().any(|register| !register.value.is_empty()));
 
     // Read 32 bytes at the pc.
-    handle.send(DebugCommand::ReadMemory { reference: format!("0x{pc:x}"), count: 32 }).unwrap();
+    handle
+        .send(DebugCommand::ReadMemory {
+            reference: format!("0x{pc:x}"),
+            count: 32,
+        })
+        .unwrap();
     let memory = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::Memory { .. }),
@@ -394,7 +445,12 @@ fn dap_registers_memory_disassembly() {
     assert_eq!(data.len(), 32);
 
     // Disassemble at the pc.
-    handle.send(DebugCommand::Disassemble { reference: format!("0x{pc:x}"), instruction_count: 4 }).unwrap();
+    handle
+        .send(DebugCommand::Disassemble {
+            reference: format!("0x{pc:x}"),
+            instruction_count: 4,
+        })
+        .unwrap();
     let disassembly = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::Disassembly { .. }),
@@ -508,7 +564,10 @@ fn dap_breakpoint_results_reported_and_hit_condition_pauses() {
     assert_eq!(file, source_display);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].line, 4);
-    assert!(results[0].verified, "expected the adapter to confirm the location");
+    assert!(
+        results[0].verified,
+        "expected the adapter to confirm the location"
+    );
 
     // hitCondition "2" pauses only on the second hit even when the debuggee
     // starts out stopped at the same line for a different reason.
@@ -521,14 +580,18 @@ fn dap_breakpoint_results_reported_and_hit_condition_pauses() {
     let (reason, thread_id) = take(
         stop,
         |msg| match msg {
-            DebugMessage::Stopped { reason, thread_id, .. } => Ok((reason, thread_id)),
+            DebugMessage::Stopped {
+                reason, thread_id, ..
+            } => Ok((reason, thread_id)),
             other => Err(other),
         },
         "breakpoint stop",
     );
     assert_eq!(reason, "breakpoint");
 
-    handle.send(DebugCommand::GetStackTrace { thread_id }).unwrap();
+    handle
+        .send(DebugCommand::GetStackTrace { thread_id })
+        .unwrap();
     let frames = collect_until(
         &handle,
         |msg| matches!(msg, DebugMessage::StackTrace { .. }),
@@ -601,7 +664,9 @@ fn dap_watchpoint_resolves_and_stops_on_write() {
         },
         "breakpoint stop",
     );
-    handle.send(DebugCommand::GetStackTrace { thread_id }).unwrap();
+    handle
+        .send(DebugCommand::GetStackTrace { thread_id })
+        .unwrap();
     let frames = collect_until(
         &handle,
         |msg| matches!(msg, DebugMessage::StackTrace { .. }),
@@ -652,9 +717,10 @@ fn dap_watchpoint_resolves_and_stops_on_write() {
         let variables = take(
             batch,
             |msg| match msg {
-                DebugMessage::Variables { reference, variables } if reference == scope.id => {
-                    Ok(variables)
-                }
+                DebugMessage::Variables {
+                    reference,
+                    variables,
+                } if reference == scope.id => Ok(variables),
                 other => Err(other),
             },
             "scope variables",
@@ -706,11 +772,13 @@ fn dap_watchpoint_resolves_and_stops_on_write() {
     );
 
     handle
-        .send(DebugCommand::SetDataBreakpoints(vec![ns_debug::WatchpointRequest {
-            expression: "marker".into(),
-            data_id,
-            access_type: "write".into(),
-        }]))
+        .send(DebugCommand::SetDataBreakpoints(vec![
+            ns_debug::WatchpointRequest {
+                expression: "marker".into(),
+                data_id,
+                access_type: "write".into(),
+            },
+        ]))
         .unwrap();
     let results = collect_until(
         &handle,
@@ -816,7 +884,9 @@ fn dap_hardware_breakpoint_binds_and_stops() {
     let DebugMessage::Stopped { thread_id, .. } = stop else {
         unreachable!()
     };
-    handle.send(DebugCommand::GetStackTrace { thread_id }).unwrap();
+    handle
+        .send(DebugCommand::GetStackTrace { thread_id })
+        .unwrap();
     let frames = wait_for(
         &handle,
         |msg| matches!(msg, DebugMessage::StackTrace { .. }),

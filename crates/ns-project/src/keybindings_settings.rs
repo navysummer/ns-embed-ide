@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::recents::config_dir;
 
-
 pub const KEYBINDINGS_FILE: &str = "keybindings.json";
 ///
 /// A `BTreeMap` keeps the file deterministic and diff-friendly. An empty value
@@ -42,8 +41,7 @@ impl KeybindingOverrides {
         let Some(dir) = config_dir() else {
             anyhow::bail!("无法定位用户配置目录");
         };
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("创建配置目录 {} 失败", dir.display()))?;
+        fs::create_dir_all(&dir).with_context(|| format!("创建配置目录 {} 失败", dir.display()))?;
         // Drop empty values so unbound actions round-trip as absent.
         let cleaned: BTreeMap<String, String> = self
             .overrides
@@ -51,8 +49,7 @@ impl KeybindingOverrides {
             .filter(|(_, v)| !v.trim().is_empty())
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let text = serde_json::to_string_pretty(&cleaned)
-            .context("序列化快捷键覆盖失败")?;
+        let text = serde_json::to_string_pretty(&cleaned).context("序列化快捷键覆盖失败")?;
         fs::write(dir.join(KEYBINDINGS_FILE), text)
             .with_context(|| format!("写入 {} 失败", dir.join(KEYBINDINGS_FILE).display()))
     }
@@ -78,7 +75,8 @@ mod tests {
     #[test]
     fn overrides_round_trip_via_serde() {
         let mut map = KeybindingOverrides::default();
-        map.overrides.insert("Build".to_string(), "cmd-b".to_string());
+        map.overrides
+            .insert("Build".to_string(), "cmd-b".to_string());
         map.overrides
             .insert("Debug".to_string(), "shift-f5".to_string());
         let json = serde_json::to_string(&map).unwrap();
@@ -102,7 +100,8 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join(KEYBINDINGS_FILE);
         let mut map = KeybindingOverrides::default();
-        map.overrides.insert("Build".to_string(), "cmd-b".to_string());
+        map.overrides
+            .insert("Build".to_string(), "cmd-b".to_string());
         map.overrides.insert("Debug".to_string(), "".to_string());
         // Save writes to the real config dir only; emulate by serializing.
         let cleaned: BTreeMap<String, String> = map

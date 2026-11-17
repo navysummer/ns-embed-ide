@@ -80,7 +80,7 @@ impl Language {
             "s" | "S" | "asm" | "inc" | "ld" => Some(Language::Asm),
             _ => None,
         }
-     }
+    }
 
     /// The line-comment prefix for this language (`//` for C/C++/Rust/ZR,
     /// `///`-style is not needed; Zig uses `//` too). Assembly and unknown
@@ -93,7 +93,7 @@ impl Language {
             Language::Asm => None,
         }
     }
- }
+}
 /// A selectable C starter template for a new project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CTemplate {
@@ -128,7 +128,8 @@ impl CTemplate {
 
     pub fn source(self) -> &'static str {
         match self {
-            CTemplate::Empty => r#"#include <stdint.h>
+            CTemplate::Empty => {
+                r#"#include <stdint.h>
 
 /*
  * ns-embed-ide 项目模板
@@ -142,8 +143,10 @@ int main(void) {
         counter++;
     }
 }
-"#,
-            CTemplate::LedBlink => r#"#include <stdint.h>
+"#
+            }
+            CTemplate::LedBlink => {
+                r#"#include <stdint.h>
 
 /*
  * ns-embed-ide LED Blink 模板
@@ -168,8 +171,10 @@ int main(void) {
         delay(500000);
     }
 }
-"#,
-            CTemplate::UartLoopback => r#"#include <stdint.h>
+"#
+            }
+            CTemplate::UartLoopback => {
+                r#"#include <stdint.h>
 
 /*
  * ns-embed-ide UART 回环模板
@@ -199,8 +204,10 @@ int main(void) {
         }
     }
 }
-}"#,
-            CTemplate::Freertos => r#"#include <stdint.h>
+}"#
+            }
+            CTemplate::Freertos => {
+                r#"#include <stdint.h>
 
 /*
  * ns-embed-ide FreeRTOS 风格模板
@@ -261,7 +268,8 @@ int main(void) {
         }
     }
 }
-"#,
+"#
+            }
         }
     }
 }
@@ -485,13 +493,31 @@ mod tests {
 
     #[test]
     fn from_path_recognizes_assembly_and_linker_scripts() {
-        assert_eq!(Language::from_path(Path::new("src/startup.s")), Some(Language::Asm));
-        assert_eq!(Language::from_path(Path::new("src/startup.S")), Some(Language::Asm));
-        assert_eq!(Language::from_path(Path::new("boot.asm")), Some(Language::Asm));
-        assert_eq!(Language::from_path(Path::new("link.ld")), Some(Language::Asm));
-        assert_eq!(Language::from_path(Path::new("stm32.inc")), Some(Language::Asm));
+        assert_eq!(
+            Language::from_path(Path::new("src/startup.s")),
+            Some(Language::Asm)
+        );
+        assert_eq!(
+            Language::from_path(Path::new("src/startup.S")),
+            Some(Language::Asm)
+        );
+        assert_eq!(
+            Language::from_path(Path::new("boot.asm")),
+            Some(Language::Asm)
+        );
+        assert_eq!(
+            Language::from_path(Path::new("link.ld")),
+            Some(Language::Asm)
+        );
+        assert_eq!(
+            Language::from_path(Path::new("stm32.inc")),
+            Some(Language::Asm)
+        );
         assert_eq!(Language::from_path(Path::new("main.c")), Some(Language::C));
-        assert_eq!(Language::from_path(Path::new("main.rs")), Some(Language::Rust));
+        assert_eq!(
+            Language::from_path(Path::new("main.rs")),
+            Some(Language::Rust)
+        );
         assert_eq!(Language::from_path(Path::new("notes.txt")), None);
     }
 

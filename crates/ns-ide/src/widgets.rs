@@ -22,10 +22,7 @@ pub fn brand_mark(size: f32) -> Div {
         .child("墨")
 }
 
-pub fn primary_button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-) -> Stateful<Div> {
+pub fn primary_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     let label: SharedString = label.into();
     div()
         .id(id)
@@ -47,10 +44,7 @@ pub fn primary_button(
         .child(label)
 }
 
-pub fn ghost_button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-) -> Stateful<Div> {
+pub fn ghost_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     let label: SharedString = label.into();
     div()
         .id(id)
@@ -77,10 +71,7 @@ pub fn ghost_button(
 }
 
 /// A destructive confirm button (cinnabar fill, light text).
-pub fn danger_button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-) -> Stateful<Div> {
+pub fn danger_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     let label: SharedString = label.into();
     div()
         .id(id)
@@ -130,7 +121,6 @@ pub fn icon_button(
         .child(glyph)
 }
 
-
 /// A small toggle chip for the in-editor find bar (case-sensitive / whole-word).
 pub fn find_toggle(
     id: impl Into<ElementId>,
@@ -152,7 +142,11 @@ pub fn find_toggle(
         } else {
             theme::alpha(theme::STROKE, 0.06)
         })
-        .text_color(theme::color(if active { theme::ACCENT } else { theme::TEXT_FAINT }))
+        .text_color(theme::color(if active {
+            theme::ACCENT
+        } else {
+            theme::TEXT_FAINT
+        }))
         .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.14)))
         .on_click(on_click)
         .child(label)

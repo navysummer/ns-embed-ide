@@ -70,7 +70,6 @@ impl Default for RtosLayout {
     }
 }
 
-
 /// One task snapshot recovered from a real FreeRTOS kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtTask {
@@ -97,7 +96,10 @@ fn read_uint(read: ReadFn, address: u64, width: usize) -> Option<u64> {
 /// Read a NUL-terminated ASCII name from `pcTaskName`.
 fn read_name(read: ReadFn, address: u64, len: usize) -> Option<String> {
     let bytes = read(address, len)?;
-    let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
     let name = String::from_utf8_lossy(&bytes[..end]).trim().to_string();
     Some(name)
 }
@@ -133,7 +135,6 @@ fn walk_list(
     if first == px_head {
         return Some(());
     }
-
 
     let mut current = first;
     for _ in 0..count {
@@ -178,7 +179,6 @@ fn walk_list(
         }
         current = next;
         let _ = _word;
-
     }
     Some(())
 }
@@ -255,7 +255,6 @@ mod tests {
             }
             Some(self.data[off..off + len].to_vec())
         }
-
     }
 
     #[test]
@@ -283,8 +282,10 @@ mod tests {
             mem.addr(ready_item),
         );
 
-
-        mem.write_u32(ready_item + layout.list_item_px_next, mem.addr(ready_head) + layout.list_x_list_end as u64);
+        mem.write_u32(
+            ready_item + layout.list_item_px_next,
+            mem.addr(ready_head) + layout.list_x_list_end as u64,
+        );
         mem.write_u32(ready_item + layout.list_item_pv_owner, mem.addr(tcb_a));
 
         // Delayed list 1 head at 0x2000: one item (taskB).
@@ -296,15 +297,19 @@ mod tests {
             mem.addr(delayed_item),
         );
 
-
-        mem.write_u32(delayed_item + layout.list_item_px_next, mem.addr(delayed_head) + layout.list_x_list_end as u64);
+        mem.write_u32(
+            delayed_item + layout.list_item_px_next,
+            mem.addr(delayed_head) + layout.list_x_list_end as u64,
+        );
         mem.write_u32(delayed_item + layout.list_item_pv_owner, mem.addr(tcb_b));
 
-        let lists = vec![
-            (mem.addr(ready_head), 0u32),
-            (mem.addr(delayed_head), 1u32),
-        ];
-        let tasks = walk_free_rtos(&|addr, len| mem.read(addr, len), &layout, &lists, Some(mem.addr(tcb_a)));
+        let lists = vec![(mem.addr(ready_head), 0u32), (mem.addr(delayed_head), 1u32)];
+        let tasks = walk_free_rtos(
+            &|addr, len| mem.read(addr, len),
+            &layout,
+            &lists,
+            Some(mem.addr(tcb_a)),
+        );
 
         assert_eq!(tasks.len(), 2, "{tasks:?}");
         let a = tasks.iter().find(|t| t.name == "taskA").unwrap();
@@ -350,15 +355,14 @@ mod tests {
             head + layout.list_x_list_end + layout.list_item_px_next,
             mem.addr(item),
         );
-        mem.write_u32(item + layout.list_item_px_next, mem.addr(head) + layout.list_x_list_end as u64);
+        mem.write_u32(
+            item + layout.list_item_px_next,
+            mem.addr(head) + layout.list_x_list_end as u64,
+        );
         mem.write_u32(item + layout.list_item_pv_owner, mem.addr(tcb));
 
-
         // Same TCB claimed by two lists; walker must report it once.
-        let lists = vec![
-            (mem.addr(head), 0u32),
-            (mem.addr(head), 1u32),
-        ];
+        let lists = vec![(mem.addr(head), 0u32), (mem.addr(head), 1u32)];
         let tasks = walk_free_rtos(&|addr, len| mem.read(addr, len), &layout, &lists, None);
         assert_eq!(tasks.len(), 1, "{tasks:?}");
     }

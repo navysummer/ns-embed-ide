@@ -39,7 +39,6 @@ pub enum Parity {
     Odd,
 }
 
-
 /// Flow control setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FlowControl {
@@ -252,9 +251,7 @@ impl SerialMonitor {
     fn send_bytes(&mut self, cx: &mut Context<Self>) {
         let (text, hex_send) = {
             let field = self.send_field.clone();
-            let text = field
-                .map(|f| f.read(cx).text())
-                .unwrap_or_default();
+            let text = field.map(|f| f.read(cx).text()).unwrap_or_default();
             let hex = self.inner.lock().unwrap().hex_send;
             (text, hex)
         };
@@ -290,7 +287,6 @@ impl SerialMonitor {
         self.inner.lock().unwrap().config.port = name;
         cx.notify();
     }
-
 }
 
 impl EventEmitter<SerialEvent> for SerialMonitor {}
@@ -341,18 +337,15 @@ impl Render for SerialMonitor {
                                     }),
                             )
                             .child(
-                                div()
-                                    .flex()
-                                    .gap(px(3.))
-                                    .children(
-                                        SerialMonitor::list_ports()
-                                            .into_iter()
-                                            .map(|port| {
-                                                port_chip(port.name, &config.port, cx)
-                                                    .into_any_element()
-                                            })
-                                            .collect::<Vec<_>>(),
-                                    ),
+                                div().flex().gap(px(3.)).children(
+                                    SerialMonitor::list_ports()
+                                        .into_iter()
+                                        .map(|port| {
+                                            port_chip(port.name, &config.port, cx)
+                                                .into_any_element()
+                                        })
+                                        .collect::<Vec<_>>(),
+                                ),
                             ),
                     )
                     .child(baud_selector(config.baud, is_open, cx))
@@ -409,20 +402,17 @@ impl Render for SerialMonitor {
                     .items_center()
                     .gap(px(6.))
                     .child(
-                        div()
-                            .flex_1()
-                            .child(
-                                self.send_field
-                                    .clone()
-                                    .map(|field| field.clone().into_any_element())
-                                    .unwrap_or_else(|| div().into_any_element()),
-                            ),
+                        div().flex_1().child(
+                            self.send_field
+                                .clone()
+                                .map(|field| field.clone().into_any_element())
+                                .unwrap_or_else(|| div().into_any_element()),
+                        ),
                     )
                     .child(toggle("hex-send", "HEX 发送", hex_send, cx))
                     .child(
-                        widgets::ghost_button("serial-send", "发送").on_click(cx.listener(
-                            |this, _, _, cx| this.send_bytes(cx),
-                        )),
+                        widgets::ghost_button("serial-send", "发送")
+                            .on_click(cx.listener(|this, _, _, cx| this.send_bytes(cx))),
                     ),
             )
             .when(error.is_some(), |style| {
@@ -436,7 +426,11 @@ impl Render for SerialMonitor {
     }
 }
 
-fn baud_selector(current: u32, _is_open: bool, cx: &mut Context<SerialMonitor>) -> impl IntoElement {
+fn baud_selector(
+    current: u32,
+    _is_open: bool,
+    cx: &mut Context<SerialMonitor>,
+) -> impl IntoElement {
     let rates = [9600u32, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
     let mut cells = Vec::new();
     for rate in rates {
@@ -453,7 +447,11 @@ fn baud_selector(current: u32, _is_open: bool, cx: &mut Context<SerialMonitor>) 
                     theme::alpha(theme::STROKE, 0.05)
                 })
                 .text_size(px(9.))
-                .text_color(if selected { theme::color(theme::ACCENT) } else { theme::color(theme::TEXT_DIM) })
+                .text_color(if selected {
+                    theme::color(theme::ACCENT)
+                } else {
+                    theme::color(theme::TEXT_DIM)
+                })
                 .child(rate.to_string())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.inner.lock().unwrap().config.baud = rate;
@@ -477,13 +475,16 @@ fn port_chip(name: String, current: &str, cx: &mut Context<SerialMonitor>) -> im
             theme::alpha(theme::STROKE, 0.05)
         })
         .text_size(px(9.))
-        .text_color(if selected { theme::color(theme::ACCENT) } else { theme::color(theme::TEXT_DIM) })
+        .text_color(if selected {
+            theme::color(theme::ACCENT)
+        } else {
+            theme::color(theme::TEXT_DIM)
+        })
         .child(name.clone())
         .on_click(cx.listener(move |this, _, _, cx| {
             this.set_port(name.clone(), cx);
         }))
 }
-
 
 fn toggle(
     id: &'static str,
@@ -502,7 +503,11 @@ fn toggle(
             theme::alpha(theme::STROKE, 0.05)
         })
         .text_size(px(9.))
-        .text_color(if checked { theme::color(theme::ACCENT) } else { theme::color(theme::TEXT_FAINT) })
+        .text_color(if checked {
+            theme::color(theme::ACCENT)
+        } else {
+            theme::color(theme::TEXT_FAINT)
+        })
         .child(label.to_string())
         .on_click(cx.listener(move |this, _, _, cx| {
             let mut inner = this.inner.lock().unwrap();
@@ -537,5 +542,11 @@ fn timestamp() -> String {
         .unwrap_or_default();
     let secs = now.as_secs();
     let millis = now.subsec_millis();
-    format!("[{:02}:{:02}:{:02}.{:03}] ", secs / 3600, (secs / 60) % 60, secs % 60, millis)
+    format!(
+        "[{:02}:{:02}:{:02}.{:03}] ",
+        secs / 3600,
+        (secs / 60) % 60,
+        secs % 60,
+        millis
+    )
 }

@@ -68,7 +68,9 @@ impl Device {
 
     /// Look up a peripheral by name.
     pub fn peripheral(&self, name: &str) -> Option<&Peripheral> {
-        self.peripherals.iter().find(|peripheral| peripheral.name == name)
+        self.peripherals
+            .iter()
+            .find(|peripheral| peripheral.name == name)
     }
 }
 
@@ -88,7 +90,6 @@ pub fn parse_svd(xml: &str) -> Result<Device> {
         .and_then(|node| node.text())
         .map(|text| text.trim().to_string())
         .unwrap_or_default();
-
 
     let mut peripherals = Vec::new();
     let mut memory = Vec::new();
@@ -145,7 +146,6 @@ pub fn load_svd_file(path: &Path) -> Result<Device> {
         .map_err(|error| anyhow::anyhow!("读取 SVD 文件失败: {error}"))?;
     parse_svd(&xml)
 }
-
 
 fn parse_peripheral(node: roxmltree::Node) -> Option<Peripheral> {
     let name = text_of(node, "name").unwrap_or_default();
@@ -301,6 +301,16 @@ pub struct CatalogDevice {
 /// The built-in device catalog (small set of common MCUs).
 pub const CATALOG: &[CatalogDevice] = &[
     CatalogDevice {
+        key: "stm32f103c6",
+        label: "STM32F103C6 · Cortex-M3 · 32KB Flash",
+        core: "ARM Cortex-M3",
+        flash_start: 0x0800_0000,
+        flash_size: 32 * 1024,
+        ram_start: 0x2000_0000,
+        ram_size: 10 * 1024,
+        svd: include_str!("svd/stm32f103c6.svd"),
+    },
+    CatalogDevice {
         key: "stm32f103c8",
         label: "STM32F103C8 · Cortex-M3 · 64KB Flash",
         core: "ARM Cortex-M3",
@@ -309,6 +319,16 @@ pub const CATALOG: &[CatalogDevice] = &[
         ram_start: 0x2000_0000,
         ram_size: 20 * 1024,
         svd: include_str!("svd/stm32f103c8.svd"),
+    },
+    CatalogDevice {
+        key: "stm32f103cb",
+        label: "STM32F103CB · Cortex-M3 · 128KB Flash",
+        core: "ARM Cortex-M3",
+        flash_start: 0x0800_0000,
+        flash_size: 128 * 1024,
+        ram_start: 0x2000_0000,
+        ram_size: 20 * 1024,
+        svd: include_str!("svd/stm32f103cb.svd"),
     },
     CatalogDevice {
         key: "stm32f407vg",
@@ -756,8 +776,8 @@ pub struct PeripheralConfig {
 /// peripheral's clock-enable bit and writes reset values for registers the
 /// SVD describes, so the user can fill in the exact configuration. `target` is
 /// the catalog key (e.g. `stm32f103c8`); returns `None` for unknown targets.
- pub fn generate_peripheral_init(target: &str, configs: &[PeripheralConfig]) -> Option<String> {
-     let device = device_for_target(target)?;
+pub fn generate_peripheral_init(target: &str, configs: &[PeripheralConfig]) -> Option<String> {
+    let device = device_for_target(target)?;
     let mut lines = String::new();
     lines.push_str(&format!(
         "/* Auto-generated peripheral initialization for {target}.\n"
@@ -811,8 +831,10 @@ pub struct PeripheralConfig {
                     desc = register.description
                 ));
             }
-            let written: std::collections::BTreeSet<&str> =
-                named.iter().map(|(register, _)| register.name.as_str()).collect();
+            let written: std::collections::BTreeSet<&str> = named
+                .iter()
+                .map(|(register, _)| register.name.as_str())
+                .collect();
             for register in peripheral.registers.iter() {
                 if written.contains(register.name.as_str()) {
                     continue;
@@ -876,10 +898,10 @@ pub fn peripheral_names(target: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
- }
- 
- #[cfg(test)]
- mod tests {
+}
+
+#[cfg(test)]
+mod tests {
     use super::*;
 
     const SAMPLE: &str = r#"<?xml version="1.0"?>
@@ -946,6 +968,102 @@ pub fn peripheral_names(target: &str) -> Vec<String> {
     }
 
     #[test]
+    fn f407_rcc_exposes_pllcfgr_and_cfgr_for_clock_tree() {
+        let device = device_for_target("stm32f407vg").unwrap();
+        let rcc = device.peripheral("RCC").expect("F407 has RCC");
+        let pllcfgr = rcc
+            .registers
+            .iter()
+            .find(|register| register.name == "PLLCFGR")
+            .expect("F407 RCC exposes PLLCFGR");
+        assert_eq!(pllcfgr.address, 0x4002_3804);
+        let names: Vec<&str> = pllcfgr
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect();
+        assert!(names.contains(&"PLLM"));
+        assert!(names.contains(&"PLLN"));
+        assert!(names.contains(&"PLLP"));
+        assert!(names.contains(&"PLLSRC"));
+        assert!(names.contains(&"PLLQ"));
+        let cfgr = rcc
+            .registers
+            .iter()
+            .find(|register| register.name == "CFGR")
+            .expect("F407 RCC exposes CFGR");
+        assert_eq!(cfgr.address, 0x4002_3808);
+    }
+
+    #[test]
+    fn f407_gpio_exposes_af_registers_for_pin_mapping() {
+        let device = device_for_target("stm32f407vg").unwrap();
+        for (name, base) in [
+            ("GPIOA", 0x4002_0000u64),
+            ("GPIOB", 0x4002_0400u64),
+            ("GPIOC", 0x4002_0800u64),
+            ("GPIOD", 0x4002_0C00u64),
+            ("GPIOE", 0x4002_1000u64),
+        ] {
+            let gpio = device.peripheral(name).expect("F407 GPIO port");
+            assert_eq!(gpio.base_address, base, "{name} base");
+            let moder = gpio
+                .registers
+                .iter()
+                .find(|register| register.name == "MODER")
+                .expect("MODER");
+            assert_eq!(moder.address, base, "{name} MODER");
+            let otyper = gpio
+                .registers
+                .iter()
+                .find(|register| register.name == "OTYPER")
+                .expect("OTYPER");
+            assert_eq!(otyper.address, base + 0x4, "{name} OTYPER");
+            let ospeedr = gpio
+                .registers
+                .iter()
+                .find(|register| register.name == "OSPEEDR")
+                .expect("OSPEEDR");
+            assert_eq!(ospeedr.address, base + 0x8, "{name} OSPEEDR");
+            let pupdr = gpio
+                .registers
+                .iter()
+                .find(|register| register.name == "PUPDR")
+                .expect("PUPDR");
+            assert_eq!(pupdr.address, base + 0xC, "{name} PUPDR");
+            let afrl = gpio
+                .registers
+                .iter()
+                .find(|register| register.name == "AFRL")
+                .expect("AFRL");
+            assert_eq!(afrl.address, base + 0x20, "{name} AFRL");
+            let afrh = gpio
+                .registers
+                .iter()
+                .find(|register| register.name == "AFRH")
+                .expect("AFRH");
+            assert_eq!(afrh.address, base + 0x24, "{name} AFRH");
+        }
+
+        let rcc = device.peripheral("RCC").expect("F407 has RCC");
+        let ahb1 = rcc
+            .registers
+            .iter()
+            .find(|register| register.name == "AHB1ENR")
+            .expect("F407 RCC exposes AHB1ENR");
+        let names: Vec<&str> = ahb1
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect();
+        assert!(names.contains(&"GPIOAEN"));
+        assert!(names.contains(&"GPIOBEN"));
+        assert!(names.contains(&"GPIOCEN"));
+        assert!(names.contains(&"GPIODEN"));
+        assert!(names.contains(&"GPIOEEN"));
+    }
+
+    #[test]
     fn parses_hex_and_binary() {
         assert_eq!(parse_hex_or_dec("0x1F"), Some(31));
         assert_eq!(parse_hex_or_dec("0b101"), Some(5));
@@ -973,7 +1091,36 @@ pub fn peripheral_names(target: &str) -> Vec<String> {
         assert!(linker_script("unknown-mcu").is_none());
         assert!(startup_file("unknown-mcu").is_none());
         assert!(device_for_target("unknown-mcu").is_none());
-     }
+    }
+
+    #[test]
+    fn stm32f103_lqfp48_variants_have_distinct_memory_and_same_peripherals() {
+        for (target, flash, ram) in [
+            ("stm32f103c6", 32 * 1024, 10 * 1024),
+            ("stm32f103c8", 64 * 1024, 20 * 1024),
+            ("stm32f103cb", 128 * 1024, 20 * 1024),
+        ] {
+            let entry = catalog_entry(target).unwrap();
+            assert_eq!(entry.flash_size, flash, "{target} flash");
+            assert_eq!(entry.ram_size, ram, "{target} ram");
+            let device = device_for_target(target).unwrap();
+            assert_eq!(device.name, target.to_ascii_uppercase(), "{target} name");
+            let linker = linker_script(target).unwrap();
+            assert!(
+                linker.contains(&format!("LENGTH = {flash}")),
+                "{target} linker"
+            );
+            let map = memory_map(target);
+            assert_eq!(map.len(), 3, "{target} map");
+        }
+
+        // The peripheral set is the same across the family (same die, LQFP48).
+        let c6 = device_for_target("stm32f103c6").unwrap();
+        let cb = device_for_target("stm32f103cb").unwrap();
+        let c6_names: Vec<&str> = c6.peripherals.iter().map(|p| p.name.as_str()).collect();
+        let cb_names: Vec<&str> = cb.peripherals.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(c6_names, cb_names);
+    }
 
     #[test]
     fn generates_peripheral_init_for_catalog_target() {
@@ -999,26 +1146,26 @@ pub fn peripheral_names(target: &str) -> Vec<String> {
         assert!(code.contains("#include <stdint.h>"));
     }
 
-/// When `register_values` are supplied, `generate_peripheral_init` emits real
-/// register writes (`PERIPH->REG = value;`) in address order instead of the
-/// reset-value comment skeleton.
-#[test]
-fn peripheral_init_emits_real_register_writes() {
-    let mut values = BTreeMap::new();
-    values.insert("CRL".to_string(), 0x33333333u64);
-    values.insert("CRH".to_string(), 0x44444444u64);
-    let configs = vec![PeripheralConfig {
-        name: "GPIOA".to_string(),
-        purpose: "LED 输出".to_string(),
-        options: Vec::new(),
-        register_values: values,
-    }];
-    let code = generate_peripheral_init("stm32f103c8", &configs).unwrap();
-    assert!(code.contains("GPIOA->CRL = 0x33333333;"), "{code}");
-    assert!(code.contains("GPIOA->CRH = 0x44444444;"), "{code}");
-    // A config register the user did not set is still noted, not silently dropped.
-    assert!(code.contains("GPIOA->CRL"), "{code}");
-}
+    /// When `register_values` are supplied, `generate_peripheral_init` emits real
+    /// register writes (`PERIPH->REG = value;`) in address order instead of the
+    /// reset-value comment skeleton.
+    #[test]
+    fn peripheral_init_emits_real_register_writes() {
+        let mut values = BTreeMap::new();
+        values.insert("CRL".to_string(), 0x33333333u64);
+        values.insert("CRH".to_string(), 0x44444444u64);
+        let configs = vec![PeripheralConfig {
+            name: "GPIOA".to_string(),
+            purpose: "LED 输出".to_string(),
+            options: Vec::new(),
+            register_values: values,
+        }];
+        let code = generate_peripheral_init("stm32f103c8", &configs).unwrap();
+        assert!(code.contains("GPIOA->CRL = 0x33333333;"), "{code}");
+        assert!(code.contains("GPIOA->CRH = 0x44444444;"), "{code}");
+        // A config register the user did not set is still noted, not silently dropped.
+        assert!(code.contains("GPIOA->CRL"), "{code}");
+    }
 
     #[test]
     fn peripheral_init_skips_unknown_peripheral() {
@@ -1043,4 +1190,4 @@ fn peripheral_init_emits_real_register_writes() {
     fn peripheral_init_unknown_target_is_none() {
         assert!(generate_peripheral_init("unknown-mcu", &[]).is_none());
     }
- }
+}

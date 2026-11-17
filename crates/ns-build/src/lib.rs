@@ -11,16 +11,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc::RecvTimeoutError};
 use std::time::{Duration, Instant};
 
- use anyhow::{Context, Result, bail};
- use ns_project::{Language, Project};
- 
- pub mod layout;
- 
+use anyhow::{Context, Result, bail};
+use ns_project::{Language, Project};
+
+pub mod layout;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
- pub struct BuildPlan {
-     pub program: String,
-     pub args: Vec<String>,
-     pub cwd: PathBuf,
+pub struct BuildPlan {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
     pub artifact: PathBuf,
 }
@@ -36,14 +36,14 @@ impl BuildPlan {
     }
 }
 
- #[derive(Debug, Clone)]
- pub struct BuildOutcome {
-     pub success: bool,
-     pub code: Option<i32>,
-     pub stdout: String,
-     pub stderr: String,
-     pub duration: Duration,
-     pub plan: BuildPlan,
+#[derive(Debug, Clone)]
+pub struct BuildOutcome {
+    pub success: bool,
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub duration: Duration,
+    pub plan: BuildPlan,
     /// Estimated per-source-file compile time, parsed from the build output.
     /// Only populated when the toolchain prints per-file progress (Make/CMake
     /// `Building ...` lines) or per-file `-c` invocations; otherwise empty.
@@ -58,7 +58,7 @@ impl BuildPlan {
 pub struct FileTiming {
     pub file: String,
     pub elapsed_ms: u64,
- }
+}
 
 impl BuildOutcome {
     pub fn diagnostics(&self, root: &Path) -> Vec<Diagnostic> {
@@ -125,7 +125,7 @@ impl Diagnostic {
             _ => "构建输出".to_string(),
         }
     }
- }
+}
 
 /// A suggested quick fix for a build diagnostic that does not require a
 /// language server (missing include, undefined reference, undeclared
@@ -162,10 +162,10 @@ pub fn suggest_quick_fix(diagnostic: &Diagnostic, source_text: Option<&str>) -> 
             )));
         }
         return Some(QuickFix::Hint(
-            "未定义引用：检查链接器库标志（`[compiler]` 的链接参数）与源文件是否全部参与构建。".to_string(),
+            "未定义引用：检查链接器库标志（`[compiler]` 的链接参数）与源文件是否全部参与构建。"
+                .to_string(),
         ));
     }
-
 
     // `fatal error: xxx.h: No such file or directory` -> AddInclude.
     if lower.contains("no such file or directory")
@@ -173,11 +173,13 @@ pub fn suggest_quick_fix(diagnostic: &Diagnostic, source_text: Option<&str>) -> 
     {
         let header = message
             .split_whitespace()
-             .find(|token| token.contains(".h"))
-             .map(|token| {
-                token.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '/')
-             })
-             .unwrap_or_default();
+            .find(|token| token.contains(".h"))
+            .map(|token| {
+                token.trim_matches(|c: char| {
+                    !c.is_alphanumeric() && c != '.' && c != '_' && c != '/'
+                })
+            })
+            .unwrap_or_default();
         if !header.is_empty() {
             let already = source_text
                 .map(|text| text.contains(&format!("<{header}>")))
@@ -223,7 +225,6 @@ pub fn suggest_quick_fix(diagnostic: &Diagnostic, source_text: Option<&str>) -> 
         }
     }
 
-
     // `expected ';' before ...` -> missing semicolon hint.
     if lower.contains("expected ';'") {
         return Some(QuickFix::Hint(
@@ -238,12 +239,12 @@ pub fn suggest_quick_fix(diagnostic: &Diagnostic, source_text: Option<&str>) -> 
 fn extract_symbol_after(message: &str, marker: &str) -> Option<String> {
     let idx = message.find(marker)?;
     let rest = &message[idx + marker.len()..];
-     let symbol: String = rest
-         .trim_start()
+    let symbol: String = rest
+        .trim_start()
         .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_')
-         .chars()
-         .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '$'))
-         .collect();
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '$'))
+        .collect();
     if symbol.is_empty() {
         None
     } else {
@@ -268,19 +269,45 @@ fn library_for_symbol(symbol: &str) -> Option<&'static str> {
     }
     // libpthread: POSIX threads.
     const LIBPTHREAD: &[&str] = &[
-        "pthread_create", "pthread_join", "pthread_mutex_lock", "pthread_mutex_unlock",
-        "pthread_mutex_init", "pthread_mutex_destroy", "pthread_cond_wait", "pthread_cond_signal",
-        "pthread_cond_broadcast", "pthread_cond_init", "pthread_cond_destroy", "pthread_exit",
-        "pthread_detach", "pthread_self", "pthread_equal", "pthread_once",
+        "pthread_create",
+        "pthread_join",
+        "pthread_mutex_lock",
+        "pthread_mutex_unlock",
+        "pthread_mutex_init",
+        "pthread_mutex_destroy",
+        "pthread_cond_wait",
+        "pthread_cond_signal",
+        "pthread_cond_broadcast",
+        "pthread_cond_init",
+        "pthread_cond_destroy",
+        "pthread_exit",
+        "pthread_detach",
+        "pthread_self",
+        "pthread_equal",
+        "pthread_once",
     ];
     if LIBPTHREAD.contains(&symbol) {
         return Some("pthread");
     }
     // librt: real-time clocks/timers.
     const LIBRT: &[&str] = &[
-        "clock_gettime", "clock_settime", "timer_create", "timer_settime", "timer_delete",
-        "nanosleep", "clock_nanosleep", "mq_open", "mq_send", "mq_receive", "shm_open", "shm_unlink",
-        "sigqueue", "aio_read", "aio_write", "sched_setparam", "sched_getparam",
+        "clock_gettime",
+        "clock_settime",
+        "timer_create",
+        "timer_settime",
+        "timer_delete",
+        "nanosleep",
+        "clock_nanosleep",
+        "mq_open",
+        "mq_send",
+        "mq_receive",
+        "shm_open",
+        "shm_unlink",
+        "sigqueue",
+        "aio_read",
+        "aio_write",
+        "sched_setparam",
+        "sched_getparam",
     ];
     if LIBRT.contains(&symbol) {
         return Some("rt");
@@ -307,11 +334,41 @@ fn header_for_symbol(symbol: &str) -> Option<&'static str> {
     // C standard library: one header per family of identifiers.
     if matches!(
         symbol,
-        "printf" | "fprintf" | "sprintf" | "snprintf" | "scanf" | "fscanf" | "sscanf" | "puts"
-            | "putchar" | "getchar" | "fgets" | "fputs" | "fopen" | "fclose" | "fread" | "fwrite"
-            | "fseek" | "ftell" | "rewind" | "fgetc" | "fputc" | "feof" | "ferror" | "perror"
-            | "remove" | "rename" | "tmpfile" | "printf_s" | "vfprintf" | "vprintf"
-            | "stdin" | "stdout" | "stderr" | "FILE" | "fpos_t"
+        "printf"
+            | "fprintf"
+            | "sprintf"
+            | "snprintf"
+            | "scanf"
+            | "fscanf"
+            | "sscanf"
+            | "puts"
+            | "putchar"
+            | "getchar"
+            | "fgets"
+            | "fputs"
+            | "fopen"
+            | "fclose"
+            | "fread"
+            | "fwrite"
+            | "fseek"
+            | "ftell"
+            | "rewind"
+            | "fgetc"
+            | "fputc"
+            | "feof"
+            | "ferror"
+            | "perror"
+            | "remove"
+            | "rename"
+            | "tmpfile"
+            | "printf_s"
+            | "vfprintf"
+            | "vprintf"
+            | "stdin"
+            | "stdout"
+            | "stderr"
+            | "FILE"
+            | "fpos_t"
     ) {
         return Some("stdio.h");
     }
@@ -323,40 +380,129 @@ fn header_for_symbol(symbol: &str) -> Option<&'static str> {
     }
     if matches!(
         symbol,
-        "strlen" | "strcpy" | "strncpy" | "strcat" | "strncat" | "strcmp" | "strncmp" | "strchr"
-            | "strrchr" | "strstr" | "strtok" | "memcpy" | "memmove" | "memset" | "memcmp"
-            | "memchr" | "strdup" | "strcasecmp" | "strncasecmp" | "strcoll" | "strxfrm"
+        "strlen"
+            | "strcpy"
+            | "strncpy"
+            | "strcat"
+            | "strncat"
+            | "strcmp"
+            | "strncmp"
+            | "strchr"
+            | "strrchr"
+            | "strstr"
+            | "strtok"
+            | "memcpy"
+            | "memmove"
+            | "memset"
+            | "memcmp"
+            | "memchr"
+            | "strdup"
+            | "strcasecmp"
+            | "strncasecmp"
+            | "strcoll"
+            | "strxfrm"
     ) {
         return Some("string.h");
     }
     if matches!(
         symbol,
-        "sqrt" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "pow" | "log"
-            | "log10" | "exp" | "floor" | "ceil" | "fmod" | "fabs" | "round" | "trunc"
-            | "M_PI" | "M_E" | "INFINITY" | "NAN"
+        "sqrt"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "atan2"
+            | "pow"
+            | "log"
+            | "log10"
+            | "exp"
+            | "floor"
+            | "ceil"
+            | "fmod"
+            | "fabs"
+            | "round"
+            | "trunc"
+            | "M_PI"
+            | "M_E"
+            | "INFINITY"
+            | "NAN"
     ) {
         return Some("math.h");
     }
-    if matches!(
-        symbol,
-        "assert" | "NDEBUG" | "static_assert" | "assert_hdr"
-    ) {
+    if matches!(symbol, "assert" | "NDEBUG" | "static_assert" | "assert_hdr") {
         return Some("assert.h");
     }
     if matches!(symbol, "errno" | "errno_t" | "EINVAL" | "ERANGE" | "EDOM") {
         return Some("errno.h");
     }
-    if matches!(symbol, "time" | "clock" | "difftime" | "mktime" | "asctime" | "ctime" | "gmtime" | "localtime" | "strftime" | "clock_t" | "time_t" | "tm" | "timespec") {
+    if matches!(
+        symbol,
+        "time"
+            | "clock"
+            | "difftime"
+            | "mktime"
+            | "asctime"
+            | "ctime"
+            | "gmtime"
+            | "localtime"
+            | "strftime"
+            | "clock_t"
+            | "time_t"
+            | "tm"
+            | "timespec"
+    ) {
         return Some("time.h");
     }
-    if matches!(symbol, "isalpha" | "isdigit" | "isalnum" | "isspace" | "toupper" | "tolower" | "isupper" | "islower" | "ispunct" | "isxdigit") {
+    if matches!(
+        symbol,
+        "isalpha"
+            | "isdigit"
+            | "isalnum"
+            | "isspace"
+            | "toupper"
+            | "tolower"
+            | "isupper"
+            | "islower"
+            | "ispunct"
+            | "isxdigit"
+    ) {
         return Some("ctype.h");
     }
-    if matches!(symbol, "qsort" | "bsearch" | "abs" | "labs" | "div" | "ldiv" | "atoi" | "atol" | "atof" | "strtol" | "strtoul" | "strtod" | "rand" | "srand" | "EXIT_SUCCESS" | "EXIT_FAILURE" | "RAND_MAX") {
+    if matches!(
+        symbol,
+        "qsort"
+            | "bsearch"
+            | "abs"
+            | "labs"
+            | "div"
+            | "ldiv"
+            | "atoi"
+            | "atol"
+            | "atof"
+            | "strtol"
+            | "strtoul"
+            | "strtod"
+            | "rand"
+            | "srand"
+            | "EXIT_SUCCESS"
+            | "EXIT_FAILURE"
+            | "RAND_MAX"
+    ) {
         return Some("stdlib.h");
     }
     // POSIX threads.
-    if symbol.starts_with("pthread_") || matches!(symbol, "pthread_t" | "pthread_mutex_t" | "pthread_cond_t" | "PTHREAD_MUTEX_INITIALIZER" | "PTHREAD_COND_INITIALIZER") {
+    if symbol.starts_with("pthread_")
+        || matches!(
+            symbol,
+            "pthread_t"
+                | "pthread_mutex_t"
+                | "pthread_cond_t"
+                | "PTHREAD_MUTEX_INITIALIZER"
+                | "PTHREAD_COND_INITIALIZER"
+        )
+    {
         return Some("pthread.h");
     }
     None
@@ -459,7 +605,11 @@ pub fn plan_build(project: &Project) -> Result<BuildPlan> {
     }
     // C166-family targets need a vendor toolchain (Tasking/Keil) that is not
     // bundled; surface a clear error instead of silently compiling host code.
-    if target.contains("c166") || target.contains("xc166") || target.contains("xc2000") || target.contains("st10") {
+    if target.contains("c166")
+        || target.contains("xc166")
+        || target.contains("xc2000")
+        || target.contains("st10")
+    {
         bail!(
             "C166/XC166/XC2000 构建需要供应商工具链(Tasking/Keil C166),当前环境未安装;请先在 project.toml 的 compiler.path 指定"
         );
@@ -529,9 +679,7 @@ pub fn plan_build(project: &Project) -> Result<BuildPlan> {
 /// `artifact_path()` predicts. Requires a `CMakeLists.txt` in the project root.
 fn plan_cmake(project: &Project, artifact: PathBuf) -> Result<BuildPlan> {
     if !project.root.join("CMakeLists.txt").is_file() {
-        bail!(
-            "项目缺少 CMakeLists.txt；请在项目根目录创建它，或将 [build] system 改为 \"direct\""
-        );
+        bail!("项目缺少 CMakeLists.txt；请在项目根目录创建它，或将 [build] system 改为 \"direct\"");
     }
     let out_dir = project.build_dir();
     let cmake_build = out_dir.join("cmake");
@@ -976,30 +1124,30 @@ pub fn collect_stack_usage(out_dir: &Path) -> Vec<StackUsageEntry> {
     entries
 }
 
- /// Aggregate line-coverage summary for one source file, from `gcov`.
- #[derive(Debug, Clone, PartialEq, Eq)]
- pub struct CoverageFile {
-     /// Source file path as reported by gcov.
-     pub file: String,
-     /// Lines executed at least once.
-     pub executed: u64,
-     /// Lines never executed.
-     pub not_executed: u64,
+/// Aggregate line-coverage summary for one source file, from `gcov`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverageFile {
+    /// Source file path as reported by gcov.
+    pub file: String,
+    /// Lines executed at least once.
+    pub executed: u64,
+    /// Lines never executed.
+    pub not_executed: u64,
     /// Per-line coverage from `gcov -t` (0-based line → count of executions).
     /// Only executable lines appear; `None` means line-level data is absent.
     pub line_hits: Option<Vec<u64>>,
- }
- 
- impl CoverageFile {
-     /// Percentage of executable lines covered (0-100), rounded down.
-     pub fn percent(&self) -> u64 {
-         let total = self.executed + self.not_executed;
-         if total == 0 {
-             return 0;
-         }
-         self.executed * 100 / total
-     }
- }
+}
+
+impl CoverageFile {
+    /// Percentage of executable lines covered (0-100), rounded down.
+    pub fn percent(&self) -> u64 {
+        let total = self.executed + self.not_executed;
+        if total == 0 {
+            return 0;
+        }
+        self.executed * 100 / total
+    }
+}
 
 /// Parse `gcov -t` per-line output into a flat line-hit map.
 ///
@@ -1060,7 +1208,6 @@ pub fn parse_gcov_lines(text: &str) -> Vec<(String, Vec<u64>)> {
     files
 }
 
-
 /// Parse `gcov` aggregate output (produced without `-t`) into per-file line
 /// coverage. Each file appears as a `File '<path>'` header followed by a
 /// `Lines executed:<pct>% of <n>` summary line.
@@ -1072,12 +1219,12 @@ pub fn parse_gcov_report(text: &str) -> Vec<CoverageFile> {
         // `File 'src/main.c'` opens a per-file section.
         if let Some(rest) = trimmed.strip_prefix("File '") {
             let file = rest.trim_end_matches('\'').to_string();
-             current = Some(CoverageFile {
-                 file,
-                 executed: 0,
-                 not_executed: 0,
+            current = Some(CoverageFile {
+                file,
+                executed: 0,
+                not_executed: 0,
                 line_hits: None,
-             });
+            });
             continue;
         }
         // A `Lines executed: N% of M` line closes the current file's summary.
@@ -1234,21 +1381,21 @@ pub fn run_coverage(
     if stems.is_empty() {
         return Ok(None);
     }
-     let mut output = Vec::new();
-     for stem in &stems {
-         let report = Command::new(&gcov)
-             .arg("-o")
-             .arg(out_dir)
+    let mut output = Vec::new();
+    for stem in &stems {
+        let report = Command::new(&gcov)
+            .arg("-o")
+            .arg(out_dir)
             .arg("-t")
-             .arg(stem)
-             .current_dir(project_root)
-             .output();
-         if let Ok(report) = report {
-             output.extend(report.stdout);
-             output.push(b'\n');
-         }
-     }
-     let text = String::from_utf8_lossy(&output);
+            .arg(stem)
+            .current_dir(project_root)
+            .output();
+        if let Ok(report) = report {
+            output.extend(report.stdout);
+            output.push(b'\n');
+        }
+    }
+    let text = String::from_utf8_lossy(&output);
     let mut files = parse_gcov_report(&text);
     // Attach per-line hit data from the same `-t` output.
     let lines = parse_gcov_lines(&text);
@@ -1259,7 +1406,7 @@ pub fn run_coverage(
         }
     }
     Ok((!files.is_empty()).then_some(files))
- }
+}
 
 fn find_program(name: &str) -> Option<String> {
     let path = ns_project::toolchain::find_command(name)?;
@@ -1338,7 +1485,7 @@ pub fn plan_preprocess(project: &Project) -> Option<BuildPlan> {
     })
 }
 
- fn plan_native(project: &Project, compiler: &str, artifact: PathBuf) -> Result<BuildPlan> {
+fn plan_native(project: &Project, compiler: &str, artifact: PathBuf) -> Result<BuildPlan> {
     let sources = project.source_files()?;
     if sources.is_empty() {
         bail!("src/ 下没有找到源文件");
@@ -1396,7 +1543,6 @@ pub fn plan_preprocess(project: &Project) -> Option<BuildPlan> {
         };
         args.push(format!("-I{}", path.display()));
     }
-
 
     for source in &sources {
         args.push(source.display().to_string());
@@ -1645,7 +1791,12 @@ fn plan_arm_a32(project: &Project, compiler: &str, artifact: PathBuf) -> Result<
         // ARM7TDMI (LPC21xx/22xx, AT91SAM7, generic ARM7/ARM9).
         "arm7tdmi"
     };
-    plan_cross(project, compiler, artifact, &["-marm", &format!("-mcpu={mcpu}")])
+    plan_cross(
+        project,
+        compiler,
+        artifact,
+        &["-marm", &format!("-mcpu={mcpu}")],
+    )
 }
 
 /// Build plan for an MSP430 target with `msp430-elf-gcc`.
@@ -1911,7 +2062,9 @@ pub fn generate_compile_commands(project: &Project) -> Result<usize> {
         command.push("-c".to_string());
         entries.push(format!(
             "{{ \"directory\": {:?}, \"file\": {:?}, \"command\": {:?} }}",
-            cwd, file, command.join(" ")
+            cwd,
+            file,
+            command.join(" ")
         ));
     }
     let json = format!("[\n{}\n]\n", entries.join(",\n"));
@@ -1957,11 +2110,11 @@ pub fn execute(plan: &BuildPlan) -> BuildOutcome {
             code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-             duration: started.elapsed(),
-             plan: plan.clone(),
+            duration: started.elapsed(),
+            plan: plan.clone(),
             file_timings: Vec::new(),
-         },
-         Err(error) => BuildOutcome {
+        },
+        Err(error) => BuildOutcome {
             success: false,
             code: None,
             stdout: String::new(),
@@ -1971,10 +2124,10 @@ pub fn execute(plan: &BuildPlan) -> BuildOutcome {
                 plan.command_line(),
                 error
             ),
-             duration: started.elapsed(),
-             plan: plan.clone(),
+            duration: started.elapsed(),
+            plan: plan.clone(),
             file_timings: Vec::new(),
-         },
+        },
     }
 }
 
@@ -2033,10 +2186,10 @@ fn execute_stream_inner(
                     plan.command_line(),
                     error
                 ),
-                 duration: started.elapsed(),
-                 plan: plan.clone(),
+                duration: started.elapsed(),
+                plan: plan.clone(),
                 file_timings: Vec::new(),
-             };
+            };
         }
     };
 
@@ -2052,7 +2205,10 @@ fn execute_stream_inner(
         for line in reader.lines() {
             let Ok(line) = line else { break };
             if writer
-                .send(StreamLine { is_stderr: false, text: line })
+                .send(StreamLine {
+                    is_stderr: false,
+                    text: line,
+                })
                 .is_err()
             {
                 break;
@@ -2065,7 +2221,10 @@ fn execute_stream_inner(
         for line in reader.lines() {
             let Ok(line) = line else { break };
             if writer
-                .send(StreamLine { is_stderr: true, text: line })
+                .send(StreamLine {
+                    is_stderr: true,
+                    text: line,
+                })
                 .is_err()
             {
                 break;
@@ -2074,24 +2233,24 @@ fn execute_stream_inner(
     });
     drop(tx);
 
-     let mut stdout_buf = String::new();
-     let mut stderr_buf = String::new();
-     let mut cancelled = false;
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+    let mut cancelled = false;
     // Real per-file timing: when a per-file marker line arrives, close the
     // previous file's window (gap to this marker) and start a new one. The
     // last window closes at the end of the build.
     let mut marker: Option<(String, std::time::Instant)> = None;
     let mut file_timings: Vec<FileTiming> = Vec::new();
-     loop {
-         match rx.recv_timeout(Duration::from_millis(100)) {
-             Ok(line) => {
-                 if line.is_stderr {
-                     stderr_buf.push_str(&line.text);
-                     stderr_buf.push('\n');
-                 } else {
-                     stdout_buf.push_str(&line.text);
-                     stdout_buf.push('\n');
-                 }
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) => {
+                if line.is_stderr {
+                    stderr_buf.push_str(&line.text);
+                    stderr_buf.push('\n');
+                } else {
+                    stdout_buf.push_str(&line.text);
+                    stdout_buf.push('\n');
+                }
                 if let Some(file) = file_from_build_line(&line.text) {
                     let now = std::time::Instant::now();
                     if let Some((prev_file, prev_at)) = marker.take() {
@@ -2102,24 +2261,29 @@ fn execute_stream_inner(
                     }
                     marker = Some((file, now));
                 }
-                 on_line(line);
-             }
-             Err(RecvTimeoutError::Timeout) => {
-                 if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-                     cancelled = true;
-                     let _ = child.kill();
-                     break;
-                 }
-             }
-             Err(RecvTimeoutError::Disconnected) => break,
-         }
-     }
+                on_line(line);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                {
+                    cancelled = true;
+                    let _ = child.kill();
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
     // Close the final window against the total build duration.
     if let Some((prev_file, prev_at)) = marker.take() {
         file_timings.push(FileTiming {
-             file: prev_file,
-            elapsed_ms: std::time::Instant::now().duration_since(prev_at).as_millis() as u64,
-         });
+            file: prev_file,
+            elapsed_ms: std::time::Instant::now()
+                .duration_since(prev_at)
+                .as_millis() as u64,
+        });
     }
     let _ = stdout_thread.join();
     let _ = stderr_thread.join();
@@ -2140,12 +2304,12 @@ fn execute_stream_inner(
         code,
         stdout: stdout_buf,
         stderr,
-         duration: started.elapsed(),
-         plan: plan.clone(),
+        duration: started.elapsed(),
+        plan: plan.clone(),
         file_timings,
-     }
- }
- /// Extract a source file name from a build progress/compile line. Handles
+    }
+}
+/// Extract a source file name from a build progress/compile line. Handles
 /// `[ 25%] Building C object .../foo.c.o`, `cc ... -c foo.c`, and
 /// `clang ... -c /path/foo.c`.
 fn file_from_build_line(line: &str) -> Option<String> {
@@ -2174,9 +2338,9 @@ fn file_from_build_line(line: &str) -> Option<String> {
     }
     None
 }
- 
- /// Parse GCC/Clang and Cargo style diagnostics from build output.
- pub fn parse_diagnostics(text: &str, root: &Path) -> Vec<Diagnostic> {
+
+/// Parse GCC/Clang and Cargo style diagnostics from build output.
+pub fn parse_diagnostics(text: &str, root: &Path) -> Vec<Diagnostic> {
     let mut result: Vec<Diagnostic> = Vec::new();
 
     for raw_line in text.lines() {
@@ -2350,8 +2514,14 @@ mod tests {
         assert_eq!(diagnostics[0].line, Some(12));
         assert_eq!(diagnostics[0].column, Some(5));
         assert_eq!(diagnostics[1].severity, Severity::Warning);
-         assert!(diagnostics[0].path.as_ref().unwrap().ends_with("src/main.c"));
-     }
+        assert!(
+            diagnostics[0]
+                .path
+                .as_ref()
+                .unwrap()
+                .ends_with("src/main.c")
+        );
+    }
 
     /// `file_from_build_line` extracts the source file from CMake progress
     /// lines and compiler `-c` invocations, and ignores unrelated lines.
@@ -2367,8 +2537,8 @@ mod tests {
         );
         assert_eq!(file_from_build_line("Linking C executable app.elf"), None);
         assert_eq!(file_from_build_line("make: *** [all] Error 1"), None);
-         assert_eq!(file_from_build_line(""), None);
-     }
+        assert_eq!(file_from_build_line(""), None);
+    }
 
     /// `suggest_quick_fix` maps common compiler errors to actionable fixes:
     /// missing include -> AddInclude, undefined reference -> hint, undeclared
@@ -2406,7 +2576,9 @@ mod tests {
         };
         assert_eq!(
             suggest_quick_fix(&undefined_sqrt, None),
-            Some(QuickFix::AddLinkFlag { flag: "-lm".to_string() })
+            Some(QuickFix::AddLinkFlag {
+                flag: "-lm".to_string()
+            })
         );
         // Unknown symbol -> informative hint, not a blind `-l`.
         let undefined_unknown = Diagnostic {
@@ -2432,9 +2604,10 @@ mod tests {
         };
         assert_eq!(
             suggest_quick_fix(&undefined_pthread, None),
-            Some(QuickFix::AddLinkFlag { flag: "-lpthread".to_string() })
+            Some(QuickFix::AddLinkFlag {
+                flag: "-lpthread".to_string()
+            })
         );
-
 
         // `foo` is not a standard-library symbol -> hint.
         let undeclared_custom = Diagnostic {
@@ -2460,14 +2633,15 @@ mod tests {
         };
         assert_eq!(
             suggest_quick_fix(&undeclared_printf, None),
-            Some(QuickFix::AddInclude { header: "stdio.h".to_string() })
+            Some(QuickFix::AddInclude {
+                header: "stdio.h".to_string()
+            })
         );
         // Already included -> hint, not a duplicate insert.
         assert!(matches!(
             suggest_quick_fix(&undeclared_printf, Some("#include <stdio.h>\n")),
             Some(QuickFix::Hint(msg)) if msg.contains("printf")
         ));
-
 
         let unrelated = Diagnostic {
             path: None,
@@ -2479,23 +2653,27 @@ mod tests {
         };
         assert_eq!(suggest_quick_fix(&unrelated, None), None);
     }
- 
-     #[test]
-     fn parses_rust_errors_with_location_hint() {
+
+    #[test]
+    fn parses_rust_errors_with_location_hint() {
         let text = "error[E0308]: mismatched types\n  --> src/main.rs:7:18\n   |\n";
         let diagnostics = parse_diagnostics(text, Path::new("/project"));
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].line, Some(7));
         assert_eq!(diagnostics[0].column, Some(18));
-        assert!(diagnostics[0].path.as_ref().unwrap().ends_with("src/main.rs"));
+        assert!(
+            diagnostics[0]
+                .path
+                .as_ref()
+                .unwrap()
+                .ends_with("src/main.rs")
+        );
     }
 
     #[test]
     fn debug_native_build_includes_debug_info() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-debug-build-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-debug-build-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -2507,17 +2685,19 @@ mod tests {
 
         let project = Project::open(&root).unwrap();
         let plan = plan_build(&project).unwrap();
-        assert!(plan.args.iter().any(|arg| arg == "-g"), "debug 构建必须带 -g: {:?}", plan.args);
+        assert!(
+            plan.args.iter().any(|arg| arg == "-g"),
+            "debug 构建必须带 -g: {:?}",
+            plan.args
+        );
 
-         let _ = fs::remove_dir_all(root);
-     }
- 
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn preprocess_plan_uses_compiler_flags_and_e() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-preprocess-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-preprocess-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -2531,11 +2711,25 @@ mod tests {
 
         let project = Project::open(&root).unwrap();
         let plan = plan_preprocess(&project).expect("C project has a preprocess plan");
-        assert!(plan.args.contains(&"-E".to_string()), "must run preprocessor only: {:?}", plan.args);
-        assert!(plan.args.contains(&"-P".to_string()), "must strip line markers: {:?}", plan.args);
-        assert!(plan.args.contains(&"-DLED=1".to_string()), "defines forwarded: {:?}", plan.args);
         assert!(
-            plan.args.iter().any(|a| a.starts_with("-I") && a.contains("include")),
+            plan.args.contains(&"-E".to_string()),
+            "must run preprocessor only: {:?}",
+            plan.args
+        );
+        assert!(
+            plan.args.contains(&"-P".to_string()),
+            "must strip line markers: {:?}",
+            plan.args
+        );
+        assert!(
+            plan.args.contains(&"-DLED=1".to_string()),
+            "defines forwarded: {:?}",
+            plan.args
+        );
+        assert!(
+            plan.args
+                .iter()
+                .any(|a| a.starts_with("-I") && a.contains("include")),
             "include dirs forwarded: {:?}",
             plan.args
         );
@@ -2562,11 +2756,14 @@ mod tests {
         .unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         let project = Project::open(&root).unwrap();
-        assert!(plan_preprocess(&project).is_none(), "Rust has no C preprocess");
+        assert!(
+            plan_preprocess(&project).is_none(),
+            "Rust has no C preprocess"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
-     /// `generate_compile_commands` writes a clangd `compile_commands.json` with
+    /// `generate_compile_commands` writes a clangd `compile_commands.json` with
     /// one entry per C source and the `-D`/`-I`/`-std` flags from `project.toml`.
     #[test]
     fn generate_compile_commands_emits_cflags_and_units() {
@@ -2600,10 +2797,8 @@ mod tests {
     /// exact `-mcpu` so the toolchain emits ARM-state code, not Thumb.
     #[test]
     fn arm_a32_build_plan_forces_arm_state_and_cpu() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-arm-a32-build-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-arm-a32-build-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -2616,8 +2811,14 @@ mod tests {
         let project = Project::open(&root).unwrap();
         let plan = plan_build(&project).unwrap();
         let arg_text = plan.args.join(" ");
-        assert!(arg_text.contains("-marm"), "A32 build must force ARM state; got: {arg_text}");
-        assert!(arg_text.contains("-mcpu=arm7tdmi"), "ARM7 must use arm7tdmi; got: {arg_text}");
+        assert!(
+            arg_text.contains("-marm"),
+            "A32 build must force ARM state; got: {arg_text}"
+        );
+        assert!(
+            arg_text.contains("-mcpu=arm7tdmi"),
+            "ARM7 must use arm7tdmi; got: {arg_text}"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -2639,10 +2840,8 @@ mod tests {
         // `find_program` scans PATH; hold the lock so the PATH-mutating
         // clang-tidy/zig tests cannot race this assertion.
         let _guard = PATH_LOCK.lock().unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-static-plan-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-static-plan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -2717,10 +2916,7 @@ mod tests {
     /// removed; a missing directory reports `None` instead of an error.
     #[test]
     fn clean_build_removes_output_dir() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-clean-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("ns-embed-ide-clean-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -2777,25 +2973,51 @@ printf '%s\n' "$@"
         #[cfg(windows)]
         fs::write(bin_dir.join("clang-tidy.exe"), script).unwrap();
         #[cfg(unix)]
-        std::fs::set_permissions(bin_dir.join("clang-tidy"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            bin_dir.join("clang-tidy"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
 
         let mut path = std::env::split_paths(&saved_path).collect::<Vec<_>>();
         path.insert(0, bin_dir);
-            unsafe { std::env::set_var("PATH", std::env::join_paths(path).unwrap()); }
+        unsafe {
+            std::env::set_var("PATH", std::env::join_paths(path).unwrap());
+        }
 
         let project = Project::open(&root).unwrap();
         let plan = plan_static_analysis(&project);
-        assert!(plan.is_some(), "must produce a plan when clang-tidy is on PATH");
+        assert!(
+            plan.is_some(),
+            "must produce a plan when clang-tidy is on PATH"
+        );
         let plan = plan.unwrap();
 
         let arg_text = plan.args.join(" ");
-        assert!(arg_text.contains("--std=c11"), "args should contain --std=c11; got: {arg_text}");
-        assert!(arg_text.contains("-DFOO=bar"), "args should contain -DFOO=bar; got: {arg_text}");
-        assert!(arg_text.contains("-DBAZ"), "args should contain -DBAZ; got: {arg_text}");
-        assert!(arg_text.contains("/foo/include"), "args should contain the include dir; got: {arg_text}");
-        assert!(arg_text.contains("main.c"), "args should reference the source file; got: {arg_text}");
+        assert!(
+            arg_text.contains("--std=c11"),
+            "args should contain --std=c11; got: {arg_text}"
+        );
+        assert!(
+            arg_text.contains("-DFOO=bar"),
+            "args should contain -DFOO=bar; got: {arg_text}"
+        );
+        assert!(
+            arg_text.contains("-DBAZ"),
+            "args should contain -DBAZ; got: {arg_text}"
+        );
+        assert!(
+            arg_text.contains("/foo/include"),
+            "args should contain the include dir; got: {arg_text}"
+        );
+        assert!(
+            arg_text.contains("main.c"),
+            "args should reference the source file; got: {arg_text}"
+        );
 
-            unsafe { std::env::set_var("PATH", saved_path); }
+        unsafe {
+            std::env::set_var("PATH", saved_path);
+        }
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2822,15 +3044,29 @@ printf '%s\n' "$@"
         let saved_path = std::env::var_os("PATH").unwrap_or_default();
         let bin_dir = root.join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
-        fs::write(bin_dir.join("zig"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        fs::write(
+            bin_dir.join("zig"),
+            "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\"\n",
+        )
+        .unwrap();
         #[cfg(windows)]
-        fs::write(bin_dir.join("zig.exe"), "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        fs::write(
+            bin_dir.join("zig.exe"),
+            "#!/usr/bin/env sh\nprintf '%s\\n' \"$@\"\n",
+        )
+        .unwrap();
         #[cfg(unix)]
-        std::fs::set_permissions(bin_dir.join("zig"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            bin_dir.join("zig"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
 
         let mut path = std::env::split_paths(&saved_path).collect::<Vec<_>>();
         path.insert(0, bin_dir);
-        unsafe { std::env::set_var("PATH", std::env::join_paths(path).unwrap()); }
+        unsafe {
+            std::env::set_var("PATH", std::env::join_paths(path).unwrap());
+        }
 
         let project = Project::open(&root).unwrap();
         let plan = plan_static_analysis(&project);
@@ -2851,7 +3087,9 @@ printf '%s\n' "$@"
             "args should include -fno-emit-bin; got: {arg_text}"
         );
 
-        unsafe { std::env::set_var("PATH", saved_path); }
+        unsafe {
+            std::env::set_var("PATH", saved_path);
+        }
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2860,10 +3098,8 @@ printf '%s\n' "$@"
     /// `CMAKE_BUILD_TYPE` set from the effective config.
     #[test]
     fn cmake_build_plan_resolves_auto_and_forwards_flags() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-cmake-plan-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-cmake-plan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -2872,22 +3108,49 @@ printf '%s\n' "$@"
         )
         .unwrap();
         fs::write(root.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
-        fs::write(root.join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.16)\nproject(x C)\n").unwrap();
+        fs::write(
+            root.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.16)\nproject(x C)\n",
+        )
+        .unwrap();
         fs::create_dir_all(root.join("include")).unwrap();
 
         let project = Project::open(&root).unwrap();
         let plan = plan_build(&project).unwrap();
         // The plan wraps `cmake -S ... -B ... && cmake --build ...` in `sh -c`.
-        assert_eq!(plan.program, "sh", "auto must prefer CMake when CMakeLists.txt exists");
-        let shell = plan.args.iter().find(|a| a.contains("cmake")).cloned().unwrap_or_default();
+        assert_eq!(
+            plan.program, "sh",
+            "auto must prefer CMake when CMakeLists.txt exists"
+        );
+        let shell = plan
+            .args
+            .iter()
+            .find(|a| a.contains("cmake"))
+            .cloned()
+            .unwrap_or_default();
         assert!(shell.contains("-S"), "configure: {shell}");
         assert!(shell.contains("-B"), "build tree: {shell}");
         assert!(shell.contains("--build"), "build step: {shell}");
-        assert!(shell.contains("CMAKE_BUILD_TYPE=Debug"), "debug config: {shell}");
-        assert!(shell.contains("-DNS_IDE_DEFINES=STM32F103xB"), "defines forwarded: {shell}");
-        assert!(shell.contains("-DNS_IDE_INCLUDES="), "includes forwarded: {shell}");
-        assert!(shell.contains("CMAKE_RUNTIME_OUTPUT_DIRECTORY"), "artifact dir forced: {shell}");
-        assert!(shell.contains("-j "), "parallel jobs passed to cmake --build: {shell}");
+        assert!(
+            shell.contains("CMAKE_BUILD_TYPE=Debug"),
+            "debug config: {shell}"
+        );
+        assert!(
+            shell.contains("-DNS_IDE_DEFINES=STM32F103xB"),
+            "defines forwarded: {shell}"
+        );
+        assert!(
+            shell.contains("-DNS_IDE_INCLUDES="),
+            "includes forwarded: {shell}"
+        );
+        assert!(
+            shell.contains("CMAKE_RUNTIME_OUTPUT_DIRECTORY"),
+            "artifact dir forced: {shell}"
+        );
+        assert!(
+            shell.contains("-j "),
+            "parallel jobs passed to cmake --build: {shell}"
+        );
         assert!(
             shell.contains(&format!("-j {}", project.build_jobs())),
             "job count: {shell}"
@@ -2900,10 +3163,8 @@ printf '%s\n' "$@"
     /// to a make plan passing the build/config/output variables.
     #[test]
     fn make_build_plan_resolves_and_passes_variables() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-make-plan-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-make-plan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -2917,7 +3178,11 @@ printf '%s\n' "$@"
         let project = Project::open(&root).unwrap();
         let plan = plan_build(&project).unwrap();
         assert_eq!(plan.program, "make");
-        assert!(plan.args.iter().any(|a| a == "-f"), "makefile flag: {:?}", plan.args);
+        assert!(
+            plan.args.iter().any(|a| a == "-f"),
+            "makefile flag: {:?}",
+            plan.args
+        );
         assert!(
             plan.args.iter().any(|a| a.starts_with("-j")),
             "parallel jobs passed to make: {:?}",
@@ -2946,10 +3211,8 @@ printf '%s\n' "$@"
     /// parallel compilation is honored (F5 并行构建).
     #[test]
     fn cargo_build_plan_passes_parallel_jobs() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-cargo-plan-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-cargo-plan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -2967,7 +3230,11 @@ printf '%s\n' "$@"
         let project = Project::open(&root).unwrap();
         let plan = plan_build(&project).unwrap();
         assert_eq!(plan.program, "cargo");
-        assert!(plan.args.iter().any(|a| a == "build"), "cargo build: {:?}", plan.args);
+        assert!(
+            plan.args.iter().any(|a| a == "build"),
+            "cargo build: {:?}",
+            plan.args
+        );
         let jobs_index = plan
             .args
             .iter()
@@ -2982,10 +3249,8 @@ printf '%s\n' "$@"
     /// compile all sources in one command (the pre-existing behavior).
     #[test]
     fn direct_build_plan_ignores_existing_cmake() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-direct-plan-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-direct-plan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -2994,7 +3259,11 @@ printf '%s\n' "$@"
         )
         .unwrap();
         fs::write(root.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
-        fs::write(root.join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.16)\nproject(x C)\n").unwrap();
+        fs::write(
+            root.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.16)\nproject(x C)\n",
+        )
+        .unwrap();
 
         let project = Project::open(&root).unwrap();
         let plan = plan_build(&project).unwrap();
@@ -3004,7 +3273,6 @@ printf '%s\n' "$@"
             "source passed: {:?}",
             plan.args
         );
-
 
         let _ = fs::remove_dir_all(root);
     }
@@ -3045,7 +3313,6 @@ printf '%s\n' "$@"
         let _ = fs::remove_dir_all(root);
     }
 
-
     /// End-to-end: a C project with a CMakeLists.txt and a host compiler builds
     /// through the `sh -c` plan, and the artifact appears where
     /// `artifact_path()` predicts. Skipped when `cmake` is not on PATH.
@@ -3055,10 +3322,8 @@ printf '%s\n' "$@"
             eprintln!("skipping: cmake not on PATH");
             return;
         }
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-cmake-e2e-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-cmake-e2e-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -3106,10 +3371,8 @@ printf '%s\n' "$@"
     /// runner exists (ZR / assembly / plain direct-compile C with no harness).
     #[test]
     fn plans_test_runner_by_language_and_build_system() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-plan-tests-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-plan-tests-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
 
@@ -3135,8 +3398,11 @@ printf '%s\n' "$@"
             "[project]\nname = \"t\"\nversion = \"0.1.0\"\nlanguage = \"C\"\ntarget = \"x86_64\"\ncompiler = \"cc\"\nsimulator = \"\"\ndebugger = \"lldb\"\nflasher = \"\"\n\n[compiler]\nstd = \"c11\"\nopt = \"-O0\"\ndefines = []\nincludes = []\n\n[debugger]\ninterface = \"swd\"\n\n[flasher]\ninterface = \"swd\"\n\n[build]\nconfig = \"debug\"\nout_dir = \"build\"\n\n[sim]\ncpu = \"\"\nperiod = 0\n",
         )
         .unwrap();
-        fs::write(root.join("CMakeLists.txt"), "cmake_minimum_required(VERSION 3.16)\nproject(t)\nadd_executable(t src/main.c)\n")
-            .unwrap();
+        fs::write(
+            root.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.16)\nproject(t)\nadd_executable(t src/main.c)\n",
+        )
+        .unwrap();
         fs::write(root.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
         let project = Project::open(&root).unwrap();
         let plan = plan_tests(&project).expect("cmake project has ctest");
@@ -3188,10 +3454,8 @@ printf '%s\n' "$@"
         assert_eq!(entries[1].bytes, 48);
         assert!(entries[1].dynamic);
 
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-stack-usage-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-stack-usage-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -3207,7 +3471,9 @@ printf '%s\n' "$@"
         assert!(plan.args.contains(&"-c".to_string()));
         assert!(plan.args.iter().any(|a| a == "-DSTM32F103xB"));
         assert!(
-            plan.args.iter().any(|a| a.starts_with("-I") && a.ends_with("/src")),
+            plan.args
+                .iter()
+                .any(|a| a.starts_with("-I") && a.ends_with("/src")),
             "include flag must point at project src: {:?}",
             plan.args
         );
@@ -3223,11 +3489,14 @@ printf '%s\n' "$@"
         .unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         let project = Project::open(&root).unwrap();
-        assert!(plan_stack_usage(&project).is_none(), "Rust has no stack plan");
+        assert!(
+            plan_stack_usage(&project).is_none(),
+            "Rust has no stack plan"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// `parse_gcov_report` reads gcov's aggregate `File '<path>'` + 
+    /// `parse_gcov_report` reads gcov's aggregate `File '<path>'` +
     /// `Lines executed:<pct>% of <n>` summary; `plan_coverage` only plans C/C++
     /// projects and always passes `--coverage`.
     #[test]
@@ -3246,10 +3515,8 @@ printf '%s\n' "$@"
         assert_eq!(files[1].percent(), 50);
 
         // Non-C project → no coverage plan.
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-coverage-plan-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-coverage-plan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
@@ -3259,9 +3526,12 @@ printf '%s\n' "$@"
         .unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         let project = Project::open(&root).unwrap();
-        assert!(plan_coverage(&project).is_none(), "Rust has no coverage plan");
+        assert!(
+            plan_coverage(&project).is_none(),
+            "Rust has no coverage plan"
+        );
         let _ = fs::remove_dir_all(&root);
-     }
+    }
 
     /// `parse_gcov_lines` reads gcov's `-t` per-line output: executable rows
     /// carry a hit count (or `#####` for never-executed), non-executable `-`
@@ -3300,10 +3570,8 @@ printf '%s\n' "$@"
     /// gcov or a host compiler is unavailable (CI without gcc).
     #[test]
     fn coverage_runs_end_to_end_with_gcov() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-embed-ide-coverage-e2e-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ns-embed-ide-coverage-e2e-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(

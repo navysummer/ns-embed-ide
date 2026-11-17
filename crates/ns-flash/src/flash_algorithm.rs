@@ -88,8 +88,8 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32> {
 
 /// Load and parse a FLM file from disk.
 pub fn load_flm(path: &std::path::Path) -> Result<FlashAlgorithm> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("读取 FLM 文件 {} 失败", path.display()))?;
+    let bytes =
+        std::fs::read(path).with_context(|| format!("读取 FLM 文件 {} 失败", path.display()))?;
     parse_flm(&bytes)
 }
 

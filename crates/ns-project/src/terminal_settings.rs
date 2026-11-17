@@ -39,8 +39,7 @@ impl TerminalSettings {
         let Some(dir) = config_dir() else {
             anyhow::bail!("无法定位用户配置目录");
         };
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("创建配置目录 {} 失败", dir.display()))?;
+        fs::create_dir_all(&dir).with_context(|| format!("创建配置目录 {} 失败", dir.display()))?;
         let text = serde_json::to_string_pretty(self).context("序列化终端设置失败")?;
         fs::write(dir.join(TERMINAL_FILE), text)
             .with_context(|| format!("写入 {} 失败", dir.join(TERMINAL_FILE).display()))

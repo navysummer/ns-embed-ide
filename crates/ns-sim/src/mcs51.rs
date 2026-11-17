@@ -120,19 +120,19 @@ impl Mc51Core {
         match addr {
             0x80 => self.idram[0x80], // P0
             0x81 => self.sp,
-            0x82 => (self.dptr & 0xFF) as u8,  // DPL
-            0x83 => (self.dptr >> 8) as u8,    // DPH
-            0x88 => self.idram[0x88],          // TCON
-            0x89 => self.idram[0x89],          // TMOD
-            0x8A => self.idram[0x8A],          // TL0
-            0x8B => self.idram[0x8B],          // TL1
-            0x8C => self.idram[0x8C],          // TH0
-            0x8D => self.idram[0x8D],          // TH1
-            0x90 => self.idram[0x90],          // P1
-            0xA0 => self.idram[0xA0],          // P2
-            0xA8 => self.idram[0xA8],          // IE
-            0xB0 => self.idram[0xB0],          // P3
-            0xB8 => self.idram[0xB8],          // IP
+            0x82 => (self.dptr & 0xFF) as u8, // DPL
+            0x83 => (self.dptr >> 8) as u8,   // DPH
+            0x88 => self.idram[0x88],         // TCON
+            0x89 => self.idram[0x89],         // TMOD
+            0x8A => self.idram[0x8A],         // TL0
+            0x8B => self.idram[0x8B],         // TL1
+            0x8C => self.idram[0x8C],         // TH0
+            0x8D => self.idram[0x8D],         // TH1
+            0x90 => self.idram[0x90],         // P1
+            0xA0 => self.idram[0xA0],         // P2
+            0xA8 => self.idram[0xA8],         // IE
+            0xB0 => self.idram[0xB0],         // P3
+            0xB8 => self.idram[0xB8],         // IP
             0xD0 => self.psw,
             0xE0 => self.acc,
             0xF0 => self.b,
@@ -148,17 +148,17 @@ impl Mc51Core {
             0x81 => self.sp = value,
             0x82 => self.dptr = (self.dptr & 0xFF00) | value as u16, // DPL
             0x83 => self.dptr = (self.dptr & 0x00FF) | ((value as u16) << 8), // DPH
-            0x88 => self.idram[0x88] = value, // TCON
-            0x89 => self.idram[0x89] = value, // TMOD
-            0x8A => self.idram[0x8A] = value, // TL0
-            0x8B => self.idram[0x8B] = value, // TL1
-            0x8C => self.idram[0x8C] = value, // TH0
-            0x8D => self.idram[0x8D] = value, // TH1
-            0x90 => self.idram[0x90] = value, // P1
-            0xA0 => self.idram[0xA0] = value, // P2
-            0xA8 => self.idram[0xA8] = value, // IE
-            0xB0 => self.idram[0xB0] = value, // P3
-            0xB8 => self.idram[0xB8] = value, // IP
+            0x88 => self.idram[0x88] = value,                        // TCON
+            0x89 => self.idram[0x89] = value,                        // TMOD
+            0x8A => self.idram[0x8A] = value,                        // TL0
+            0x8B => self.idram[0x8B] = value,                        // TL1
+            0x8C => self.idram[0x8C] = value,                        // TH0
+            0x8D => self.idram[0x8D] = value,                        // TH1
+            0x90 => self.idram[0x90] = value,                        // P1
+            0xA0 => self.idram[0xA0] = value,                        // P2
+            0xA8 => self.idram[0xA8] = value,                        // IE
+            0xB0 => self.idram[0xB0] = value,                        // P3
+            0xB8 => self.idram[0xB8] = value,                        // IP
             0xD0 => self.psw = value,
             0xE0 => self.acc = value,
             0xF0 => self.b = value,
@@ -221,7 +221,14 @@ impl Mc51Core {
             let sfr = (0x80 + ((bit - 128) / 8) as u8) & 0xF8;
             let mask = 1u8 << (bit % 8);
             let current = self.read_sfr(sfr);
-            self.write_sfr(sfr, if value { current | mask } else { current & !mask });
+            self.write_sfr(
+                sfr,
+                if value {
+                    current | mask
+                } else {
+                    current & !mask
+                },
+            );
         }
     }
 
@@ -345,7 +352,9 @@ impl Mc51Core {
         self.set_carry(result > 0xFF);
         self.set_aux((self.acc & 0x0F) + (value & 0x0F) + carry as u8 > 0x0F);
         // Overflow: signed carry-out differs from carry into the MSB.
-        self.set_overflow(((self.acc ^ value) & 0x80 == 0) && ((self.acc ^ result as u8) & 0x80 != 0));
+        self.set_overflow(
+            ((self.acc ^ value) & 0x80 == 0) && ((self.acc ^ result as u8) & 0x80 != 0),
+        );
         self.acc = result as u8;
     }
 
@@ -361,9 +370,7 @@ impl Mc51Core {
         self.set_carry(result < 0);
         self.set_aux((self.acc & 0x0F) < ((value & 0x0F) + borrow as u8));
         // Overflow: operands have different sign and result differs from acc.
-        self.set_overflow(
-            ((self.acc as i8) - (value as i8) - borrow as i8) as i16 != result,
-        );
+        self.set_overflow(((self.acc as i8) - (value as i8) - borrow as i8) as i16 != result);
         self.acc = result as u8;
     }
 
@@ -998,7 +1005,10 @@ mod tests {
         assert_eq!(core.read_register(0), 2);
         core.step(&[]);
         assert_eq!(core.read_register(0), 1);
-        assert_eq!(core.pc, 0x0002, "DJNZ decremented and jumped back to itself");
+        assert_eq!(
+            core.pc, 0x0002,
+            "DJNZ decremented and jumped back to itself"
+        );
         core.step(&[]);
         assert_eq!(core.read_register(0), 0);
         assert_eq!(core.pc, 0x0004, "DJNZ fell through to NOP when zero");

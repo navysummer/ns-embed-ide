@@ -702,20 +702,20 @@ impl Stm8Core {
     /// Conditional/unconditional short branch for opcodes 0x20-0x2F.
     fn branch(&mut self, opcode: u8, offset: i32) {
         let taken = match opcode & 0x0F {
-            0x0 => true,                                                  // JRA
-            0x1 => false,                                                 // JRF
-            0x2 => self.flag_c() && !self.flag_z(),                       // JRUGT
-            0x3 => self.flag_c() || self.flag_z(),                        // JRULE
-            0x4 => self.flag_n() == self.flag_v(),                        // JRUGE
-            0x5 => self.flag_n() != self.flag_v(),                        // JRULT
-            0x6 => !self.flag_z(),                                        // JRNE
-            0x7 => self.flag_z(),                                         // JREQ
-            0x8 => !self.flag_n(),                                        // JRPL
-            0x9 => self.flag_n(),                                         // JRMI
-            0xA => !self.flag_z() && (self.flag_n() == self.flag_v()),    // JRSGT
-            0xB => self.flag_z() || (self.flag_n() != self.flag_v()),     // JRSLE
-            0xC => self.flag_n() == self.flag_v(),                        // JRSGE
-            _ => self.flag_n() != self.flag_v(),                          // JRSLT
+            0x0 => true,                                               // JRA
+            0x1 => false,                                              // JRF
+            0x2 => self.flag_c() && !self.flag_z(),                    // JRUGT
+            0x3 => self.flag_c() || self.flag_z(),                     // JRULE
+            0x4 => self.flag_n() == self.flag_v(),                     // JRUGE
+            0x5 => self.flag_n() != self.flag_v(),                     // JRULT
+            0x6 => !self.flag_z(),                                     // JRNE
+            0x7 => self.flag_z(),                                      // JREQ
+            0x8 => !self.flag_n(),                                     // JRPL
+            0x9 => self.flag_n(),                                      // JRMI
+            0xA => !self.flag_z() && (self.flag_n() == self.flag_v()), // JRSGT
+            0xB => self.flag_z() || (self.flag_n() != self.flag_v()),  // JRSLE
+            0xC => self.flag_n() == self.flag_v(),                     // JRSGE
+            _ => self.flag_n() != self.flag_v(),                       // JRSLT
         };
         if taken {
             self.pc = self.pc.wrapping_add(offset as u32) & 0xFF_FFFF;
@@ -781,7 +781,7 @@ impl Stm8Core {
                 self.set_nz(r);
                 self.set_c(false);
             } // BCP
-            0x6 => self.a = operand, // LD A, op
+            0x6 => self.a = operand,                           // LD A, op
             0x7 => self.a = operand, // (unused here; LD op,A handled separately)
             0x8 => {
                 let r = self.a ^ operand;
@@ -973,8 +973,8 @@ impl Stm8Core {
                 self.push16(self.y);
             } // PUSHW X/Y
             0x8A => self.push8(self.cc), // PUSH CC
-            0x8B => self.halted = true,  // BREAK
-            0x8C => self.cc ^= CC_C,     // CCF
+            0x8B => self.halted = true, // BREAK
+            0x8C => self.cc ^= CC_C,    // CCF
             0x8D => {
                 let target = self.fetch24();
                 self.call(target);
@@ -1011,17 +1011,25 @@ impl Stm8Core {
                     self.x = (self.x & 0xFF00) | self.a as u16;
                 }
             } // LD XL/YL, A
-            0x98 => self.cc &= !CC_C, // RCF
-            0x99 => self.cc |= CC_C,  // SCF
+            0x98 => self.cc &= !CC_C,   // RCF
+            0x99 => self.cc |= CC_C,    // SCF
             0x9A => self.cc &= !(CC_I0 | CC_I1), // RIM
-            0x9B => self.cc |= CC_I0 | CC_I1,    // SIM
-            0x9C => self.cc &= !CC_H,  // RVF
-            0x9D => {}                 // NOP
+            0x9B => self.cc |= CC_I0 | CC_I1, // SIM
+            0x9C => self.cc &= !CC_H,   // RVF
+            0x9D => {}                  // NOP
             0x9E => {
-                self.a = if has_90 { (self.y >> 8) as u8 } else { (self.x >> 8) as u8 };
+                self.a = if has_90 {
+                    (self.y >> 8) as u8
+                } else {
+                    (self.x >> 8) as u8
+                };
             } // LD A, XH/YH
             0x9F => {
-                self.a = if has_90 { (self.y & 0xFF) as u8 } else { (self.x & 0xFF) as u8 };
+                self.a = if has_90 {
+                    (self.y & 0xFF) as u8
+                } else {
+                    (self.x & 0xFF) as u8
+                };
             } // LD A, XL/YL
             _ => self.halted = true,
         }

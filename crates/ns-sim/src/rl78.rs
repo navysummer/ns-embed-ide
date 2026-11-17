@@ -47,7 +47,13 @@ pub struct Psw {
 
 impl Default for Psw {
     fn default() -> Self {
-        Psw { z: false, ac: false, cy: false, rbs: 0, ie: true }
+        Psw {
+            z: false,
+            ac: false,
+            cy: false,
+            rbs: 0,
+            ie: true,
+        }
     }
 }
 
@@ -199,11 +205,19 @@ impl Rl78Core {
             8 => self.sp as u32,
             9 => {
                 let mut v = 0u32;
-                if self.psw.z { v |= 1 << 0; }
-                if self.psw.ac { v |= 1 << 1; }
-                if self.psw.cy { v |= 1 << 2; }
+                if self.psw.z {
+                    v |= 1 << 0;
+                }
+                if self.psw.ac {
+                    v |= 1 << 1;
+                }
+                if self.psw.cy {
+                    v |= 1 << 2;
+                }
                 v |= (self.psw.rbs as u32 & 0x3) << 3;
-                if self.psw.ie { v |= 1 << 5; }
+                if self.psw.ie {
+                    v |= 1 << 5;
+                }
                 v
             }
             10 => self.pc & 0xFFFFF,
@@ -243,11 +257,7 @@ impl Rl78Core {
     /// Read one byte from the flat data space (out-of-range returns 0).
     pub fn read_u8(&self, address: u32) -> u8 {
         let a = address as usize;
-        if a < self.mem.len() {
-            self.mem[a]
-        } else {
-            0
-        }
+        if a < self.mem.len() { self.mem[a] } else { 0 }
     }
 
     /// Read a little-endian 16-bit word from the flat data space.
@@ -317,7 +327,6 @@ impl Rl78Core {
         (hi << 8) | lo
     }
 
-
     // -------- flags --------
 
     fn set_nz(&mut self, value: u8) {
@@ -373,8 +382,6 @@ impl Rl78Core {
         }
     }
 
-
-
     // -------- stack --------
 
     fn push16(&mut self, value: u16) {
@@ -393,15 +400,14 @@ impl Rl78Core {
         ((self.es as u32) << 16) | (offset & 0xFFFF)
     }
 
-
     // -------- conditional --------
 
     fn cond_true(&self, cond: u8) -> bool {
         match cond {
-            0 => self.psw.cy,          // C
-            1 => !self.psw.cy,         // NC
-            2 => self.psw.z,           // Z
-            3 => !self.psw.z,          // NZ
+            0 => self.psw.cy,                // C
+            1 => !self.psw.cy,               // NC
+            2 => self.psw.z,                 // Z
+            3 => !self.psw.z,                // NZ
             4 => self.psw.cy && !self.psw.z, // H
             5 => !self.psw.cy || self.psw.z, // NH
             _ => true,
@@ -886,7 +892,11 @@ impl Rl78Core {
             0x90 | 0x92 => {
                 let idx = if op & 1 == 0 { R_B } else { R_C };
                 let addr = self.rw(3).wrapping_add(self.rb(idx) as u16);
-                let v = self.add8(self.rb(R_A), self.read_u8(self.es_addr(addr as u32)), self.psw.cy);
+                let v = self.add8(
+                    self.rb(R_A),
+                    self.read_u8(self.es_addr(addr as u32)),
+                    self.psw.cy,
+                );
                 self.set_rb(R_A, v);
             }
             // sub A, ES:[HL+B]/[HL+C] (1010 000/1010 0010)
@@ -900,7 +910,11 @@ impl Rl78Core {
             0xB0 | 0xB2 => {
                 let idx = if op & 1 == 0 { R_B } else { R_C };
                 let addr = self.rw(3).wrapping_add(self.rb(idx) as u16);
-                let v = self.sub8(self.rb(R_A), self.read_u8(self.es_addr(addr as u32)), self.psw.cy);
+                let v = self.sub8(
+                    self.rb(R_A),
+                    self.read_u8(self.es_addr(addr as u32)),
+                    self.psw.cy,
+                );
                 self.set_rb(R_A, v);
             }
             // cmp A, ES:[HL+B]/[HL+C] (1100 000/1100 0010)
@@ -1101,11 +1115,19 @@ impl Rl78Core {
                 // push psw (1101 1101)
                 0xDD => {
                     let mut psw = 0u16;
-                    if self.psw.z { psw |= 1; }
-                    if self.psw.ac { psw |= 2; }
-                    if self.psw.cy { psw |= 4; }
+                    if self.psw.z {
+                        psw |= 1;
+                    }
+                    if self.psw.ac {
+                        psw |= 2;
+                    }
+                    if self.psw.cy {
+                        psw |= 4;
+                    }
                     psw |= (self.psw.rbs as u16 & 0x3) << 3;
-                    if self.psw.ie { psw |= 0x20; }
+                    if self.psw.ie {
+                        psw |= 0x20;
+                    }
                     self.push16(psw);
                 }
                 // call ax (1110 1010) / call bc (1110 1100 overlapped)
@@ -1179,8 +1201,14 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     match b0 {
         0x00 => "nop".to_string(),
         0x0C => format!("add a, #0x{:02x}", read(pc + 1)),
-        0x0F => format!("add a, es:[0x{:04x}]", (read(pc + 1) as u16) | ((read(pc + 2) as u16) << 8)),
-        0x04 => format!("addw ax, #0x{:04x}", (read(pc + 1) as u16) | ((read(pc + 2) as u16) << 8)),
+        0x0F => format!(
+            "add a, es:[0x{:04x}]",
+            (read(pc + 1) as u16) | ((read(pc + 2) as u16) << 8)
+        ),
+        0x04 => format!(
+            "addw ax, #0x{:04x}",
+            (read(pc + 1) as u16) | ((read(pc + 2) as u16) << 8)
+        ),
         0xFF => "brk1".to_string(),
         0xD7 => "ret".to_string(),
         0xF6 => "clrw ax".to_string(),

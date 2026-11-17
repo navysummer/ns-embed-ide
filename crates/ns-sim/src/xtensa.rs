@@ -85,11 +85,7 @@ impl Lx6Core {
     /// low addresses (test images) map to themselves.
     fn map_addr(&self, address: u32) -> Option<usize> {
         let a = address as usize;
-        if a < self.memory.len() {
-            Some(a)
-        } else {
-            None
-        }
+        if a < self.memory.len() { Some(a) } else { None }
     }
 
     pub fn read_u32(&self, address: u32) -> u32 {
@@ -282,40 +278,28 @@ impl Lx6Core {
             (0x7, 0x0) => {
                 let imm = ((insn >> 16) & 0xFF) as u32;
                 if self.reg(r) == self.reg(s) {
-                    self.pc = self
-                        .pc
-                        .wrapping_add(4)
-                        .wrapping_add(imm.wrapping_mul(4));
+                    self.pc = self.pc.wrapping_add(4).wrapping_add(imm.wrapping_mul(4));
                 }
             }
             // BNE (op0=7, op1=4): if s != t then branch
             (0x7, 0x4) => {
                 let imm = ((insn >> 16) & 0xFF) as u32;
                 if self.reg(r) != self.reg(s) {
-                    self.pc = self
-                        .pc
-                        .wrapping_add(4)
-                        .wrapping_add(imm.wrapping_mul(4));
+                    self.pc = self.pc.wrapping_add(4).wrapping_add(imm.wrapping_mul(4));
                 }
             }
             // BLT (op0=7, op1=8): if s < t (signed) then branch
             (0x7, 0x8) => {
                 let imm = ((insn >> 16) & 0xFF) as u32;
                 if (self.reg(r) as i32) < (self.reg(s) as i32) {
-                    self.pc = self
-                        .pc
-                        .wrapping_add(4)
-                        .wrapping_add(imm.wrapping_mul(4));
+                    self.pc = self.pc.wrapping_add(4).wrapping_add(imm.wrapping_mul(4));
                 }
             }
             // BGE (op0=7, op1=C): if s >= t (signed) then branch
             (0x7, 0xC) => {
                 let imm = ((insn >> 16) & 0xFF) as u32;
                 if (self.reg(r) as i32) >= (self.reg(s) as i32) {
-                    self.pc = self
-                        .pc
-                        .wrapping_add(4)
-                        .wrapping_add(imm.wrapping_mul(4));
+                    self.pc = self.pc.wrapping_add(4).wrapping_add(imm.wrapping_mul(4));
                 }
             }
             // CALL0 (op0=5, op1=0): a0 = pc; pc = (pc & ~3) + imm20*4
@@ -399,7 +383,9 @@ mod tests {
     /// Encode an RRR arithmetic instruction.
     /// op2: 8=ADD, 9=SUB, A=AND, B=OR, C=XOR.
     fn rrr(op2: u8, r: usize, s: usize, t: usize) -> [u8; 3] {
-        let word = (0x8u32 << 4) | ((r as u32) << 8) | ((s as u32) << 12)
+        let word = (0x8u32 << 4)
+            | ((r as u32) << 8)
+            | ((s as u32) << 12)
             | ((t as u32) << 16)
             | ((op2 as u32) << 20);
         enc24(word)
@@ -407,7 +393,9 @@ mod tests {
 
     /// Encode an RRI load/store. `op1`: 0=L8UI, 2=L32I, 4=S8I, 6=S32I.
     fn rri(op1: u8, imm4: u8, s: usize, t: usize) -> [u8; 3] {
-        let word = (2u32) | ((op1 as u32) << 4) | ((s as u32) << 12)
+        let word = (2u32)
+            | ((op1 as u32) << 4)
+            | ((s as u32) << 12)
             | ((t as u32) << 16)
             | ((imm4 as u32) << 20);
         enc24(word)

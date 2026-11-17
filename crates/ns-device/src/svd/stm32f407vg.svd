@@ -10,9 +10,25 @@
       <description>Reset and clock control</description>
       <registers>
         <register><name>CR</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Clock control</description></register>
+        <register><name>PLLCFGR</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x24003010</resetValue><description>PLL configuration</description><fields>
+          <field><name>PLLM</name><bitOffset>0</bitOffset><bitWidth>6</bitWidth></field>
+          <field><name>PLLN</name><bitOffset>6</bitOffset><bitWidth>9</bitWidth></field>
+          <field><name>PLLP</name><bitOffset>16</bitOffset><bitWidth>2</bitWidth></field>
+          <field><name>PLLSRC</name><bitOffset>22</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>PLLQ</name><bitOffset>24</bitOffset><bitWidth>4</bitWidth></field>
+        </fields></register>
+        <register><name>CFGR</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Clock configuration</description><fields>
+          <field><name>SW</name><bitOffset>0</bitOffset><bitWidth>2</bitWidth></field>
+          <field><name>HPRE</name><bitOffset>4</bitOffset><bitWidth>4</bitWidth></field>
+          <field><name>PPRE1</name><bitOffset>8</bitOffset><bitWidth>3</bitWidth></field>
+          <field><name>PPRE2</name><bitOffset>11</bitOffset><bitWidth>3</bitWidth></field>
+        </fields></register>
         <register><name>AHB1ENR</name><addressOffset>0x30</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>AHB1 peripheral clock enable</description><fields>
           <field><name>GPIOAEN</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field>
           <field><name>GPIOBEN</name><bitOffset>1</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>GPIOCEN</name><bitOffset>2</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>GPIODEN</name><bitOffset>3</bitOffset><bitWidth>1</bitWidth></field>
+          <field><name>GPIOEEN</name><bitOffset>4</bitOffset><bitWidth>1</bitWidth></field>
         </fields></register>
         <register><name>APB1ENR</name><addressOffset>0x40</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>APB1 peripheral clock enable</description></register>
         <register><name>APB2ENR</name><addressOffset>0x44</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>APB2 peripheral clock enable</description></register>
@@ -24,9 +40,78 @@
       <description>General purpose I/O A</description>
       <registers>
         <register><name>MODER</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0xA8000000</resetValue><description>Mode</description></register>
+        <register><name>OTYPER</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output type</description></register>
+        <register><name>OSPEEDR</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output speed</description></register>
+        <register><name>PUPDR</name><addressOffset>0xC</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Pull-up/pull-down</description></register>
         <register><name>IDR</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Input data</description></register>
         <register><name>ODR</name><addressOffset>0x14</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output data</description></register>
         <register><name>BSRR</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Bit set/reset</description></register>
+        <register><name>AFRL</name><addressOffset>0x20</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function low (pins 0-7)</description></register>
+        <register><name>AFRH</name><addressOffset>0x24</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function high (pins 8-15)</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>GPIOB</name>
+      <baseAddress>0x40020400</baseAddress>
+      <description>General purpose I/O B</description>
+      <registers>
+        <register><name>MODER</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x00000000</resetValue><description>Mode</description></register>
+        <register><name>OTYPER</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output type</description></register>
+        <register><name>OSPEEDR</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output speed</description></register>
+        <register><name>PUPDR</name><addressOffset>0xC</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Pull-up/pull-down</description></register>
+        <register><name>IDR</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Input data</description></register>
+        <register><name>ODR</name><addressOffset>0x14</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output data</description></register>
+        <register><name>BSRR</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Bit set/reset</description></register>
+        <register><name>AFRL</name><addressOffset>0x20</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function low (pins 0-7)</description></register>
+        <register><name>AFRH</name><addressOffset>0x24</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function high (pins 8-15)</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>GPIOC</name>
+      <baseAddress>0x40020800</baseAddress>
+      <description>General purpose I/O C</description>
+      <registers>
+        <register><name>MODER</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Mode</description></register>
+        <register><name>OTYPER</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output type</description></register>
+        <register><name>OSPEEDR</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output speed</description></register>
+        <register><name>PUPDR</name><addressOffset>0xC</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Pull-up/pull-down</description></register>
+        <register><name>IDR</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Input data</description></register>
+        <register><name>ODR</name><addressOffset>0x14</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output data</description></register>
+        <register><name>BSRR</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Bit set/reset</description></register>
+        <register><name>AFRL</name><addressOffset>0x20</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function low (pins 0-7)</description></register>
+        <register><name>AFRH</name><addressOffset>0x24</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function high (pins 8-15)</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>GPIOD</name>
+      <baseAddress>0x40020C00</baseAddress>
+      <description>General purpose I/O D</description>
+      <registers>
+        <register><name>MODER</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Mode</description></register>
+        <register><name>OTYPER</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output type</description></register>
+        <register><name>OSPEEDR</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output speed</description></register>
+        <register><name>PUPDR</name><addressOffset>0xC</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Pull-up/pull-down</description></register>
+        <register><name>IDR</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Input data</description></register>
+        <register><name>ODR</name><addressOffset>0x14</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output data</description></register>
+        <register><name>BSRR</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Bit set/reset</description></register>
+        <register><name>AFRL</name><addressOffset>0x20</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function low (pins 0-7)</description></register>
+        <register><name>AFRH</name><addressOffset>0x24</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function high (pins 8-15)</description></register>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>GPIOE</name>
+      <baseAddress>0x40021000</baseAddress>
+      <description>General purpose I/O E</description>
+      <registers>
+        <register><name>MODER</name><addressOffset>0x0</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Mode</description></register>
+        <register><name>OTYPER</name><addressOffset>0x4</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output type</description></register>
+        <register><name>OSPEEDR</name><addressOffset>0x8</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output speed</description></register>
+        <register><name>PUPDR</name><addressOffset>0xC</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Pull-up/pull-down</description></register>
+        <register><name>IDR</name><addressOffset>0x10</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Input data</description></register>
+        <register><name>ODR</name><addressOffset>0x14</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Output data</description></register>
+        <register><name>BSRR</name><addressOffset>0x18</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Bit set/reset</description></register>
+        <register><name>AFRL</name><addressOffset>0x20</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function low (pins 0-7)</description></register>
+        <register><name>AFRH</name><addressOffset>0x24</addressOffset><size>0x20</size><resetValue>0x0</resetValue><description>Alternate function high (pins 8-15)</description></register>
       </registers>
     </peripheral>
     <peripheral>

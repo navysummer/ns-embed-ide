@@ -120,11 +120,7 @@ impl C166Core {
     }
     fn read_prog(&self, addr: u16) -> u8 {
         let a = addr as usize;
-        if a < self.rom.len() {
-            self.rom[a]
-        } else {
-            0
-        }
+        if a < self.rom.len() { self.rom[a] } else { 0 }
     }
 
     /// Load a program image at `base` into code space.

@@ -112,11 +112,7 @@ impl BookmarkStore {
 
     /// All bookmarks for `path`, sorted by line.
     pub fn for_path(&self, path: &str) -> Vec<&Bookmark> {
-        let mut v: Vec<&Bookmark> = self
-            .bookmarks
-            .iter()
-            .filter(|b| b.path == path)
-            .collect();
+        let mut v: Vec<&Bookmark> = self.bookmarks.iter().filter(|b| b.path == path).collect();
         v.sort_by_key(|b| b.line);
         v
     }
@@ -222,8 +218,8 @@ impl BookmarkStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
 

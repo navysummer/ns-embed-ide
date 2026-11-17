@@ -26,7 +26,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-
 use crate::{
     DebugBreakpoint, DebugCommand, DebugMessage, Frame, Instruction, Scope, ThreadInfo, Variable,
 };
@@ -88,11 +87,7 @@ impl ProbeKind {
 
     /// A short human description used in error messages.
     pub fn describe(self) -> String {
-        format!(
-            "{} (服务器 {})",
-            self.label(),
-            self.server_binary()
-        )
+        format!("{} (服务器 {})", self.label(), self.server_binary())
     }
 }
 
@@ -134,8 +129,6 @@ impl Default for EmbeddedConfig {
         }
     }
 }
-
-
 
 /// A running probe GDB server plus its attached gdb client session.
 pub struct EmbeddedSession {
@@ -339,8 +332,7 @@ pub fn start_server(config: &EmbeddedConfig) -> Result<(Child, u16)> {
 /// Pick a free TCP port on the loopback interface.
 fn free_port() -> Result<u16> {
     use std::net::TcpListener;
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .context("无法分配调试服务器端口")?;
+    let listener = TcpListener::bind(("127.0.0.1", 0)).context("无法分配调试服务器端口")?;
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
@@ -632,16 +624,14 @@ pub fn parse_elf_symbols(elf: &[u8]) -> Result<ElfSymbols> {
     }
     // Read section header string table first to find `.symtab`/`.strtab`.
     let shstr = section(elf, shoff, shentsize, shnum, shstrndx, class, little);
-    let shstr_name = shstr.map(|(off, size)| {
-        elf.get(off..off + size).unwrap_or_default().to_vec()
-    });
+    let shstr_name = shstr.map(|(off, size)| elf.get(off..off + size).unwrap_or_default().to_vec());
     let mut symtab = None;
     let mut strtab = None;
     let mut strtab_name = None;
     for index in 0..shnum {
-        let Some((_offset, _size, name_offset)) = section_header(
-            elf, shoff, shentsize, index, class, little,
-        ) else {
+        let Some((_offset, _size, name_offset)) =
+            section_header(elf, shoff, shentsize, index, class, little)
+        else {
             continue;
         };
         let name = shstr_name
@@ -650,12 +640,16 @@ pub fn parse_elf_symbols(elf: &[u8]) -> Result<ElfSymbols> {
             .unwrap_or_default();
         match name {
             ".symtab" => {
-                if let Some((off, size)) = section(elf, shoff, shentsize, shnum, index, class, little) {
+                if let Some((off, size)) =
+                    section(elf, shoff, shentsize, shnum, index, class, little)
+                {
                     symtab = Some((off, size));
                 }
             }
             ".strtab" => {
-                if let Some((off, size)) = section(elf, shoff, shentsize, shnum, index, class, little) {
+                if let Some((off, size)) =
+                    section(elf, shoff, shentsize, shnum, index, class, little)
+                {
                     strtab = Some((off, size));
                     strtab_name = Some(name.to_string());
                 }
@@ -810,7 +804,9 @@ fn rsp_packet(payload: &[u8]) -> Vec<u8> {
     let mut packet = Vec::with_capacity(payload.len() + 4);
     packet.push(b'$');
     packet.extend_from_slice(payload);
-    let checksum: u8 = payload.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+    let checksum: u8 = payload
+        .iter()
+        .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
     packet.push(b'#');
     packet.extend_from_slice(format!("{checksum:02X}").as_bytes());
     packet
@@ -867,12 +863,8 @@ impl RspClient {
     fn connect(port: u16) -> Result<Self> {
         let stream = TcpStream::connect(("127.0.0.1", port))
             .with_context(|| format!("连接调试服务器端口 {port} 失败"))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .ok();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .ok();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
         Ok(Self { stream })
     }
 
@@ -883,7 +875,6 @@ impl RspClient {
         self.stream.flush()?;
         read_rsp_response(&mut self.stream)
     }
-
 
     /// Read memory via `m<addr>,<len>`.
     fn read_memory(&mut self, address: u64, length: usize) -> Result<Vec<u8>> {
@@ -906,7 +897,10 @@ impl RspClient {
         if response == b"OK" {
             Ok(data.len())
         } else {
-            bail!("写入内存失败: 意外响应 {:?}", String::from_utf8_lossy(&response));
+            bail!(
+                "写入内存失败: 意外响应 {:?}",
+                String::from_utf8_lossy(&response)
+            );
         }
     }
 }
@@ -1128,11 +1122,7 @@ impl EmbeddedSession {
             }
             DebugCommand::ContinueTo { path, line, .. } => {
                 // GDB `until` runs until the current frame reaches the line.
-                let _ = self.mi_command(&format!(
-                    "until {}:{}",
-                    path,
-                    line
-                ));
+                let _ = self.mi_command(&format!("until {}:{}", path, line));
             }
             DebugCommand::SetVariable {
                 variables_reference: _,
@@ -1148,29 +1138,29 @@ impl EmbeddedSession {
                     type_name: None,
                 });
             }
-             DebugCommand::StepOver { .. } => {
-                 let _ = self.mi_command("next");
-             }
-             DebugCommand::StepIn { .. } => {
-                 let _ = self.mi_command("step");
-             }
-             DebugCommand::StepOut { .. } => {
-                 let _ = self.mi_command("finish");
-             }
-             DebugCommand::StepInstruction { .. } => {
-                 // One machine instruction, without entering calls (`nexti`).
-                 let _ = self.mi_command("nexti");
-             }
-             DebugCommand::Pause { .. } => {
-                 let _ = self.mi_command("interrupt");
-             }
-             DebugCommand::Stop => {
-                 let _ = self.mi_command("kill");
-                 let _ = self.mi_command("detach");
-                 let _ = self.mi_command("quit");
-                 let _ = self.server.kill();
-                 *self.stopped.lock().unwrap() = true;
-             }
+            DebugCommand::StepOver { .. } => {
+                let _ = self.mi_command("next");
+            }
+            DebugCommand::StepIn { .. } => {
+                let _ = self.mi_command("step");
+            }
+            DebugCommand::StepOut { .. } => {
+                let _ = self.mi_command("finish");
+            }
+            DebugCommand::StepInstruction { .. } => {
+                // One machine instruction, without entering calls (`nexti`).
+                let _ = self.mi_command("nexti");
+            }
+            DebugCommand::Pause { .. } => {
+                let _ = self.mi_command("interrupt");
+            }
+            DebugCommand::Stop => {
+                let _ = self.mi_command("kill");
+                let _ = self.mi_command("detach");
+                let _ = self.mi_command("quit");
+                let _ = self.server.kill();
+                *self.stopped.lock().unwrap() = true;
+            }
             DebugCommand::Restart => {
                 // Embedded target restart: reset the MCU via the probe
                 // monitor, then continue from the reset vector. The GDB
@@ -1179,13 +1169,14 @@ impl EmbeddedSession {
                 let _ = self.mi_command("continue");
                 let _ = self.messages.send(DebugMessage::Continued);
             }
-             DebugCommand::GetStackTrace { thread_id: _ } => {
+            DebugCommand::GetStackTrace { thread_id: _ } => {
                 let output = self.mi_command("stack list-frames")?;
                 let frames = parse_mi_frames(&output);
                 let _ = self.messages.send(DebugMessage::StackTrace { frames });
             }
             DebugCommand::GetScopes { frame_id } => {
-                let output = self.mi_command(&format!("stack list-variables --frame {frame_id}"))?;
+                let output =
+                    self.mi_command(&format!("stack list-variables --frame {frame_id}"))?;
                 let variables = parse_mi_variables(&output);
                 let _ = self.messages.send(DebugMessage::Variables {
                     reference: frame_id,
@@ -1200,9 +1191,12 @@ impl EmbeddedSession {
                     }],
                 });
             }
-            DebugCommand::GetVariables { variables_reference } => {
-                let output =
-                    self.mi_command(&format!("stack list-variables --frame {variables_reference}"))?;
+            DebugCommand::GetVariables {
+                variables_reference,
+            } => {
+                let output = self.mi_command(&format!(
+                    "stack list-variables --frame {variables_reference}"
+                ))?;
                 let variables = parse_mi_variables(&output);
                 let _ = self.messages.send(DebugMessage::Variables {
                     reference: variables_reference,
@@ -1210,14 +1204,12 @@ impl EmbeddedSession {
                 });
             }
             DebugCommand::ReadMemory { reference, count } => {
-                let address = u64::from_str_radix(reference.trim_start_matches("0x"), 16).unwrap_or(0);
+                let address =
+                    u64::from_str_radix(reference.trim_start_matches("0x"), 16).unwrap_or(0);
                 let mut rsp = RspClient::connect(self.server_port)?;
                 match rsp.read_memory(address, count as usize) {
                     Ok(data) => {
-                        let _ = self.messages.send(DebugMessage::Memory {
-                            address,
-                            data,
-                        });
+                        let _ = self.messages.send(DebugMessage::Memory { address, data });
                     }
                     Err(error) => {
                         let _ = self.messages.send(DebugMessage::Error(error.to_string()));
@@ -1225,14 +1217,14 @@ impl EmbeddedSession {
                 }
             }
             DebugCommand::WriteMemory { reference, data } => {
-                let address = u64::from_str_radix(reference.trim_start_matches("0x"), 16).unwrap_or(0);
+                let address =
+                    u64::from_str_radix(reference.trim_start_matches("0x"), 16).unwrap_or(0);
                 let mut rsp = RspClient::connect(self.server_port)?;
                 match rsp.write_memory(address, &data) {
                     Ok(bytes) => {
-                        let _ = self.messages.send(DebugMessage::MemoryWritten {
-                            address,
-                            bytes,
-                        });
+                        let _ = self
+                            .messages
+                            .send(DebugMessage::MemoryWritten { address, bytes });
                     }
                     Err(error) => {
                         let _ = self.messages.send(DebugMessage::Error(error.to_string()));
@@ -1240,14 +1232,15 @@ impl EmbeddedSession {
                 }
             }
             DebugCommand::Disassemble { reference, .. } => {
-                let address = u64::from_str_radix(reference.trim_start_matches("0x"), 16).unwrap_or(0);
+                let address =
+                    u64::from_str_radix(reference.trim_start_matches("0x"), 16).unwrap_or(0);
                 let mut rsp = RspClient::connect(self.server_port)?;
                 match rsp.read_memory(address, 128) {
                     Ok(data) => {
                         let instructions = disassemble_bytes(&data, address);
-                        let _ = self.messages.send(DebugMessage::Disassembly {
-                            instructions,
-                        });
+                        let _ = self
+                            .messages
+                            .send(DebugMessage::Disassembly { instructions });
                     }
                     Err(error) => {
                         let _ = self.messages.send(DebugMessage::Error(error.to_string()));
@@ -1287,19 +1280,29 @@ impl EmbeddedSession {
             }
             DebugCommand::Threads => {
                 let _ = self.messages.send(DebugMessage::Threads {
-                    threads: vec![ThreadInfo { id: 1, name: "main".to_string() }],
+                    threads: vec![ThreadInfo {
+                        id: 1,
+                        name: "main".to_string(),
+                    }],
                 });
             }
             DebugCommand::Evaluate {
                 expression,
                 scope_name: _,
             } => {
-                let output = self.mi_command(&format!("data-evaluate-expression \"{expression}\""))?;
-                let result = mi_done(output.splitn(2, '\n').next().unwrap_or("").trim_start_matches("^done"))
-                    .get("value")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&output)
-                    .to_string();
+                let output =
+                    self.mi_command(&format!("data-evaluate-expression \"{expression}\""))?;
+                let result = mi_done(
+                    output
+                        .splitn(2, '\n')
+                        .next()
+                        .unwrap_or("")
+                        .trim_start_matches("^done"),
+                )
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or(&output)
+                .to_string();
                 let _ = self.messages.send(DebugMessage::Evaluated {
                     expression,
                     result,
@@ -1312,9 +1315,9 @@ impl EmbeddedSession {
                 ));
             }
             DebugCommand::StartTraceStream { port, .. } => {
-                let _ = self.messages.send(DebugMessage::Error(
-                    format!("嵌入式目标暂不支持 SWO 数据流读取(端口 {port})。"),
-                ));
+                let _ = self.messages.send(DebugMessage::Error(format!(
+                    "嵌入式目标暂不支持 SWO 数据流读取(端口 {port})。"
+                )));
             }
             DebugCommand::StopTraceStream => {
                 let _ = self.messages.send(DebugMessage::Error(
@@ -1443,10 +1446,10 @@ fn disassemble_bytes(data: &[u8], base: u64) -> Vec<Instruction> {
             address,
             instruction: text,
             bytes: format!("{:02x} {:02x}", chunk[0], chunk[1]),
-             line: None,
-             file: None,
+            line: None,
+            file: None,
             symbol: None,
-         });
+        });
         if instructions.len() >= 64 {
             break;
         }
@@ -1530,8 +1533,6 @@ impl Drop for EmbeddedSession {
         let _ = self.stopped.lock().unwrap().clone();
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -1625,9 +1626,36 @@ mod tests {
         // Fix section headers. shstrndx=1 points to .shstrtab, which defines
         // the names: offset 1=".shstrtab", 11=".symtab", 19=".strtab".
         write_section_header(&mut full, shoff, 0, 1, 0, 0, 0, 0);
-        write_section_header(&mut full, shoff, 1, 1, 3, shstrtab_off as u32, shstrtab.len() as u32, 0);
-        write_section_header(&mut full, shoff, 2, 11, 2, symtab_off as u32, symtab.len() as u32, 0);
-        write_section_header(&mut full, shoff, 3, 19, 0, strtab_off as u32, strtab.len() as u32, 0);
+        write_section_header(
+            &mut full,
+            shoff,
+            1,
+            1,
+            3,
+            shstrtab_off as u32,
+            shstrtab.len() as u32,
+            0,
+        );
+        write_section_header(
+            &mut full,
+            shoff,
+            2,
+            11,
+            2,
+            symtab_off as u32,
+            symtab.len() as u32,
+            0,
+        );
+        write_section_header(
+            &mut full,
+            shoff,
+            3,
+            19,
+            0,
+            strtab_off as u32,
+            strtab.len() as u32,
+            0,
+        );
         let symbols = parse_elf_symbols(&full).unwrap();
         assert!(symbols.functions.iter().any(|(_, _, name)| name == "main"));
     }
@@ -1672,7 +1700,6 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "/usr/bin/openocd"));
         assert!(args.iter().any(|arg| arg == "interface/swd.cfg"));
         assert!(args.iter().any(|arg| arg == "gdb_port 3333"));
-
     }
 
     #[test]
@@ -1699,7 +1726,11 @@ mod tests {
         // Every probe kind is reported exactly once.
         let mut seen = std::collections::HashSet::new();
         for status in &statuses {
-            assert!(seen.insert(status.probe), "duplicate probe {}", status.probe.label());
+            assert!(
+                seen.insert(status.probe),
+                "duplicate probe {}",
+                status.probe.label()
+            );
         }
     }
 }

@@ -1,4 +1,4 @@
-use ns_sim::{Simulator, StepResult, ENTRY_POINT, reg_name};
+use ns_sim::{ENTRY_POINT, Simulator, StepResult, reg_name};
 
 /// Assemble a minimal RV32I instruction.
 fn r_type(funct7: u32, rs2: u32, rs1: u32, funct3: u32, rd: u32, opcode: u32) -> u32 {
@@ -15,12 +15,7 @@ fn jal_imm(imm: u32, rd: u32) -> u32 {
     let imm10_1 = (imm >> 1) & 0x3ff;
     let imm11 = (imm >> 11) & 1;
     let imm19_12 = (imm >> 12) & 0xff;
-    (imm20 << 31)
-        | (imm10_1 << 21)
-        | (imm11 << 20)
-        | (imm19_12 << 12)
-        | (rd << 7)
-        | 0x6f
+    (imm20 << 31) | (imm10_1 << 21) | (imm11 << 20) | (imm19_12 << 12) | (rd << 7) | 0x6f
 }
 
 fn beq(rs1: u32, rs2: u32, byte_offset: i32, funct3: u32) -> u32 {
@@ -55,9 +50,9 @@ fn executes_add_and_sub() {
     let mut sim = Simulator::new();
     // x1 = 5; x2 = 3; x3 = x1 + x2; x4 = x1 - x2;
     let prog = [
-        i_type(5, 0, 0, 1, 0x13), // addi x1, x0, 5
-        i_type(3, 0, 0, 2, 0x13), // addi x2, x0, 3
-        r_type(0, 2, 1, 0, 3, 0x33), // add x3, x1, x2
+        i_type(5, 0, 0, 1, 0x13),       // addi x1, x0, 5
+        i_type(3, 0, 0, 2, 0x13),       // addi x2, x0, 3
+        r_type(0, 2, 1, 0, 3, 0x33),    // add x3, x1, x2
         r_type(0x20, 2, 1, 0, 4, 0x33), // sub x4, x1, x2
     ];
     let bytes: Vec<u8> = prog.iter().flat_map(|i| i.to_le_bytes()).collect();
@@ -87,7 +82,12 @@ fn executes_loop_summing_to_n() {
     sim.load_image(ENTRY_POINT, &bytes);
     sim.run(1000);
     // Sum 1..=10 = 55.
-    assert_eq!(sim.read_reg(3), 55, "expected sum 55, got {}", sim.read_reg(3));
+    assert_eq!(
+        sim.read_reg(3),
+        55,
+        "expected sum 55, got {}",
+        sim.read_reg(3)
+    );
 }
 
 #[test]
@@ -168,15 +168,19 @@ fn executes_jal_jumps_and_links() {
     //        (skipped: an addi that must not execute)
     // target: addi x5, x0, 42
     let prog = [
-        jal_imm(8, 1),                // jal ra, +8 -> target
-        i_type(99, 0, 0, 2, 0x13),    // addi x2, x0, 99  (skipped)
-        i_type(42, 0, 0, 5, 0x13),    // addi x5, x0, 42  (target)
+        jal_imm(8, 1),             // jal ra, +8 -> target
+        i_type(99, 0, 0, 2, 0x13), // addi x2, x0, 99  (skipped)
+        i_type(42, 0, 0, 5, 0x13), // addi x5, x0, 42  (target)
     ];
     let bytes: Vec<u8> = prog.iter().flat_map(|i| i.to_le_bytes()).collect();
     sim.load_image(ENTRY_POINT, &bytes);
     sim.run(10);
     // x1 = PC+4 of the JAL (return address), x5 = 42, x2 untouched.
-    assert_eq!(sim.read_reg(1), ENTRY_POINT + 4, "ra links to the next instruction");
+    assert_eq!(
+        sim.read_reg(1),
+        ENTRY_POINT + 4,
+        "ra links to the next instruction"
+    );
     assert_eq!(sim.read_reg(5), 42, "target executed");
     assert_eq!(sim.read_reg(2), 0, "skipped instruction did not execute");
 }
@@ -211,12 +215,12 @@ fn step_out_returns_to_caller() {
     // +20:   ret (jalr x0, 0(x1))
     let ret = i_type(0, 1, 0, 0, 0x67);
     let prog = [
-        jal_imm(16, 1),               // jal ra, +16 -> sub
-        i_type(99, 0, 0, 2, 0x13),    // addi x2, x0, 99
-        i_type(1, 0, 0, 3, 0x13),     // addi x3, x0, 1
-        i_type(2, 0, 0, 3, 0x13),     // addi x3, x0, 2
-        i_type(7, 0, 0, 3, 0x13),     // addi x3, x0, 7 (sub body)
-        ret,                          // ret
+        jal_imm(16, 1),            // jal ra, +16 -> sub
+        i_type(99, 0, 0, 2, 0x13), // addi x2, x0, 99
+        i_type(1, 0, 0, 3, 0x13),  // addi x3, x0, 1
+        i_type(2, 0, 0, 3, 0x13),  // addi x3, x0, 2
+        i_type(7, 0, 0, 3, 0x13),  // addi x3, x0, 7 (sub body)
+        ret,                       // ret
     ];
     let bytes: Vec<u8> = prog.iter().flat_map(|i| i.to_le_bytes()).collect();
     sim.load_image(ENTRY_POINT, &bytes);
@@ -228,7 +232,11 @@ fn step_out_returns_to_caller() {
     // instruction without executing it.
     let result = sim.step_out(100);
     assert_eq!(result, StepResult::Advanced);
-    assert_eq!(sim.pc, ENTRY_POINT + 4, "landed on caller's next instruction");
+    assert_eq!(
+        sim.pc,
+        ENTRY_POINT + 4,
+        "landed on caller's next instruction"
+    );
     assert_eq!(sim.read_reg(3), 7, "sub body executed");
     assert_eq!(sim.read_reg(2), 0, "caller's instruction not executed yet");
 }

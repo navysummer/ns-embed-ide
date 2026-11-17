@@ -44,8 +44,10 @@ fn clippy_diagnostics_are_parsed() {
     let outcome = ns_build::execute(&plan);
     let diagnostics = outcome.diagnostics(&project.root);
     assert!(
-        diagnostics.iter().any(|d| d.message.contains("clone_on_copy")
-            || d.message.contains("using `clone` on type `i32`")),
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("clone_on_copy")
+                || d.message.contains("using `clone` on type `i32`")),
         "expected a clone_on_copy diagnostic, got:\n{}",
         diagnostics
             .iter()

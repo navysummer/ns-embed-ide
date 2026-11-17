@@ -50,7 +50,7 @@
 - **诊断导航（本轮）**：`F8` / `Shift+F8` 在**构建输出 + LSP 诊断**间跨文件/行顺序跳转（问题面板「上一个/下一个错误/警告」），环回两端，跳转定位源码行并在状态栏报告；路径 canonicalize 归一化（`/var`↔`/private/var`）保证锚点一致。
 - **编辑器诊断悬停提示（本轮）**：悬停错误/警告波浪线显示消息浮窗（随鼠标跟随，离开清空）；波浪线按诊断字符范围绘制，构建诊断划线到行尾、LSP 诊断按列宽。
 - **调试变量悬停求值（本轮）**：调试会话停止时悬停编辑器标识符显示当前值（玉色浮窗，`Evaluate` 求值，离开词即清空）；非调试态仍走 LSP 悬停。
-- **项目模板（F1.2）**：新建向导「模板」步（仅 C 语言）——空模板 / **LED Blink**（GPIO 翻转）/ **UART 回环**；生成时写入 `src/main.c` 并填充外设初始化。
+- **项目模板（F1.2）**：新建向导「模板」步（仅 C 语言）——空模板 / **LED Blink**（GPIO 翻转）/ **UART 回环** / **FreeRTOS**（两任务协作调度）；生成时写入 `src/main.c` 并填充外设初始化。
 - **烧写扩展（M5）**：烧写面板接入**擦除/校验/读回**（读回写 `out/readback.bin`）+ 烧写进度；`ns_flash::firmware::convert`（ELF→HEX/BIN）。
 - **运行编排扩展（M6）**：运行/调试会话的**停止与重启**状态机（重启 = 停止后重新编译→运行）。
 - **调试扩展（F7）**：运行到光标（`continueTo`）、设置变量值（`setVariable`）、监视（watch）表达式面板、调试控制台表达式求值；**内存视图增强**：hex 字节编辑（DAP `writeMemory`）、多区域命名切换、暂停时实时刷新。
@@ -63,8 +63,23 @@
 - **寄存器行复制（本轮）**：调试寄存器视图每行「📋」复制 `名称 = 值` 到剪贴板。
 - **变量面板过滤（本轮）**：调试变量面板「过滤变量…」输入框按名大小写不敏感子串过滤（递归匹配展开子变量），无匹配时提示。
 - **图形化外设配置（本轮）**：命令面板「外设配置（图形化，CubeMX 式）…」打开模态，按目标 SVD 列出外设并勾选启用；GPIO 端口 16 个引脚点击循环模式（输入/输出/复用），生成时把引脚模式打包成真实 `CRL`/`CRH` 寄存器写（`PERIPH->REG = value;`）。
+- **时钟树图形化配置（本轮）**：命令面板「时钟树配置（图形化，CubeMX 式）…」打开独立模态（`clock-tree-modal`），可点击选择 HSI/HSE/PLL 源、PLL 参数、AHB/APB1/APB2 预分频，SYSCLK/APB1/APB2/PLL48 及示例外设时钟实时刷新；覆盖 **STM32F1**（`RCC->CR`/`RCC->CFGR`）与 **STM32F4**（另写 `RCC->PLLCFGR` 的 PLLM/PLLN/PLLP/PLLSRC/PLLQ，`stm32f407vg.svd` 已补齐寄存器）；「生成代码」写 `src/clock_init.c`，`rcc_clock_init()` 发出真实寄存器写。向导「仿真软件」步骤文案同步修正（内置 `ns-sim` 已实现，不再是「后续里程碑」）。
+- **引脚映射图（本轮）**：命令面板「引脚映射图（外设功能 → 物理引脚，CubeMX 式）…」打开独立模态（`pin-map-modal`），按 STM32F103C6/C8/CB（LQFP48 中密度，同封装同 AF 表）把 USART1/2/3、SPI1、I2C1、TIM2 与 GPIO 分配到 PA/PB/PC 物理引脚；点击引脚在「未分配 → 可用功能 → 未分配」循环，红点表示 AFIO 重映射；冲突（重复信号、默认/重映射混用）会阻止生成；「生成代码」写 `src/pin_mapping.c`，`pin_mapping_init()` 发出真实 `GPIOx->CRL/CRH`、`RCC->APBxENR` 与 `AFIO->MAPR` 写；`stm32f103c6`/`stm32f103cb` 已加入设备目录（32KB/10KB、128KB/20KB）与向导目标列表，CubeMX `.ioc` 对应名正确映射。
+- **引脚映射图 STM32F4 扩展（本轮）**：同一模态按目标自动切换 `PinMapFamily`；STM32F407（LQFP100）用 `F4PinSignal`（GPIO、USART1/2/3、SPI1/2、I2C1/2、TIM1-5、USB、CAN1、SWD）给出每引脚可用 AF0-15，`validate_f4_pin_mapping` 拒绝重复信号与同外设 AF 号不一致；「生成代码」写真实 `RCC->AHB1ENR`、`GPIOx->MODER`、`GPIOx->OTYPER` 与 `GPIOx->AFRL/AFRH`；`stm32f407vg.svd` 的 GPIOA/GPIOB 已补齐这些寄存器。
+- **引脚映射图 STM32F407 端口补齐（本轮）**：LQFP100 的 F407 引脚映射此前只覆盖 GPIOA/GPIOB，本次扩到 **GPIOA..GPIOE（5 端口、每端口 16 引脚）**，新增 **SPI3**（AF6）、**USART6**（AF8）、**TIM8**（AF3）、**TIM1_CH4/CHnN/BKIN/ETR**（AF1）变体，覆盖 PC（PC6-9 TIM3/TIM8/USART6、PC10-12 USART3/SPI3）、PD（PD0-1 CAN1、PD3-7 USART2、PD8-13 USART3、PD12-15 TIM4）、PE（PE7-15 TIM1）；`stm32f4_pin_clock_bit` 扩到 C/D/E（AHB1ENR 位 2/3/4）；`stm32f407vg.svd` 新增 GPIOC/GPIOD/GPIOE 与 AHB1ENR 的 GPIOCEN/GPIODEN/GPIOEEN。
+- **引脚映射图 STM32F407 外设补齐（本轮）**：再补 F407 常用外设 AF——**SDIO**（AF12：`SdioCmd`/`SdioCk`/`SdioD0-D7`，PC8-11/PC12/PD2/PD6-9）与 **TIM9/10/11**（AF3：PA2/PA3、PB8、PB9），生成真实 `GPIOC->AFRH`/`GPIOD->AFRL/AFRH` 与 AHB1ENR 位。
+- **引脚映射图 STM32F407 外设补齐（续，本轮）**：再补 F407 引脚映射的常规小缺口——**I2C3**（AF4：`I2c3Scl`=PA8/PC12、`I2c3Sda`=PC9，开漏，写入 `GPIOC->OTYPER`）与 **TIM12/13/14**（AF9：`Tim12Ch1`=PB14、`Tim12Ch2`=PB15、`Tim13Ch1`=PA6、`Tim14Ch1`=PA7）。
+- **引脚映射图 STM32F407 输入模式与速度（本轮）**：GPIO 新增**输入·上拉 / 输入·下拉**两种模式（点击引脚在 输出 → 输入 → 输入·上拉 → 输入·下拉 → 外设功能 间循环），生成代码除 `MODER`/`OTYPER`/`AFRL`/`AFRH` 外新增真实 `GPIOx->OSPEEDR`（复用/输出脚写高速档）与 `GPIOx->PUPDR`（上拉/下拉）写入；`stm32f407vg.svd` 的 GPIOA..GPIOE 已补齐这两个寄存器。
+- **引脚映射方案保存/载入（本轮）**：引脚映射图新增「保存方案」「载入方案」按钮，把当前分配写入 `.ns-ide/pin_map.json`，重新打开后可一键恢复；载入只接受该引脚合法的信号（非法项跳过并计数），跨目标/跨家族的方案、损坏文件、无分配或存在冲突都会被如实拒绝并提示。
+- **引脚映射图 STM32F407 TIM2_CH3/CH4 与外设分组一键分配（本轮）**：AF 表补上 PA6=`TIM2_CH3`、PA7=`TIM2_CH4`（AF1）；引脚网格上方新增**外设分组 chip 行**，点击分组即批量分配该外设全部引脚，再次点击整组取消——已被其他功能占用的引脚不会被动，同一信号重复的引脚只分配一次，占用/冲突情况在面板与状态栏如实提示。
+- **引脚映射图导入 CubeMX `.ioc`（本轮）**：引脚映射图新增「导入 .ioc」按钮，直接读取 CubeMX 生成的 `.ioc`——`PA9.Signal0=USART1_TX`、`PB6.Signal0=I2C1_SCL`、`PA0.Mode=GPIO_Output`、`PA13.Signal0=SYS_JTMS-SWO` 等按 CubeMX 命名导入（`SYS_JTMS-SWO`/`SYS_JTCK-SWCLK` 自动对应 `SWDIO`/`SWCLK`，`USB_OTG_FS_DM/DP` 对应 `USB_DM`/`USB_DP`，`GPIO_Input_Pu/Pd` 对应输入·上拉/下拉）；`Mcu.IP_*`、`ProjectManager.*`、`PA1.Lock` 等非引脚行一律忽略，越界引脚（如 `PA16`）拒绝；导入前先清空当前分配，未建模或该引脚无此功能的项计数并在面板如实说明，MCU 与当前目标不符整体拒绝，导入后仍跑冲突校验（PB6/PB8 同为 `I2C1_SCL` 会报冲突）。
+- **引脚映射图导出 CubeMX `.ioc` 与导入格式校正（本轮）**：把上一轮导入器从只认 `PA9.Signal0=…` 扩展为**同时支持 CubeMX 原生格式**（`Mode.PA9=GPIO`、`Signal.PA9=USART1_TX`、`SignalMode.PA9=AS`、`Pull.PA9=PUp`），GPIO 方向/上下拉由 `SignalMode`/`Pull` 合成，裸 `GPIO` 不算分配；新增「导出 .ioc」按钮，把当前引脚分配写成 CubeMX 风格的 `.ioc` 引脚段（`pin_map.ioc`，含 `McuName`/`Signal`/`SignalMode`/`Pull`），信号名按 CubeMX 拼写回写（`SWDIO`→`SYS_JTMS-SWO`、`GPIO 输出`→`SignalMode=RegularOutput`）；导出→再导入可无损往返。只生成引脚段，时钟/中断/外设实例配置请在 CubeMX 中补全。
+- **引脚映射图 STM32F407 生成代码外设时钟使能（本轮）**：F407 引脚映射「生成代码」此前只使能 GPIO 端口的 AHB1 时钟，复用脚对应的外设时钟没开。现按已分配信号自动汇总并写出 `RCC->APB2ENR`（USART1/6、SPI1、TIM1/8/9-11、SDIO）、`RCC->APB1ENR`（USART2/3、SPI2/3、I2C1/2/3、TIM2-5、TIM12-14、CAN1）与 `RCC->AHB1ENR`（USB_OTG_FS 位并入每端口写），使生成的 `pin_mapping_init()` 真正可用。
+- **引脚映射生成代码自包含寄存器定义（本轮）**：生成的 `pin_mapping.c` 引用 `GPIOx->…`/`RCC->…`/`AFIO->…` 但没定义寄存器视图或基址，无法独立编译。现 F1/F4 各自注入 `ns_` 前缀的自包含寄存器结构（`ns_gpio_f1_t`/`ns_afio_t`/`ns_rcc_f1_t`、`ns_gpio_t`/`ns_rcc_t`）与 `#ifndef` 保护的 `GPIOA..GPIOE`/`RCC`/`AFIO` 基址宏——项目已含厂商头时厂商宏获胜，未含时本文件独立可编译。
+- **时钟树生成代码自包含 RCC 定义（本轮）**：`clock_init.c` 引用 `RCC->CR`/`RCC->PLLCFGR`/`RCC->CFGR` 但没定义寄存器视图，无法独立编译。现 F1/F4 各自注入 `ns_` 前缀的自包含 RCC 结构（`ns_rcc_f1_t`/`ns_rcc_t`）与 `#ifndef` 保护的 `RCC` 基址宏（0x40021000/0x40023800）——项目已含厂商头时厂商宏获胜，未含时独立可编译。
 - **反汇编↔内存联动（本轮）**：调试反汇编视图每行地址可点击，切换内存页并跳到该地址重读。
 - **RTOS 任务列表（本轮）**：调试面板「RTOS」标签 + 刷新按钮，对 FreeRTOS 风格模板的 `task_count`/`current_task`/`tasks[i].name` 求值并逐任务收集，显示运行标记/名称/优先级/栈使用。
+- **RTOS 真实内核遍历启动修复 + DAP/纯函数一致性测试（本轮）**：修复真实 FreeRTOS 内核遍历**永不启动**的缺陷（启动门槛 `lists.len() >= 7`，实际只下发 6 个调度链表头 → 改为 `REAL_KERNEL_LIST_COUNT = 6`）；新增 `real_kernel_dap_walk_matches_pure_walker` 集成测试，用合成 FreeRTOS 内存镜像驱动 `Evaluate` 往返状态机，断言与 `ns_debug::rtos::walk_free_rtos` 在同一镜像输出一致（名称/运行/优先级/状态）。`cargo test --workspace` **649 项全绿**。
 - **LSP 扩展（M8）**：签名帮助（`signatureHelp`，**光标移出调用自动消失**）、inlay hints（**按 (line,start) 去重防双渲染**）、语义高亮叠加（`semanticTokens`）。
 - **静态分析增强（M12）**：`plan_static_analysis` 的 Zig 分支传 `-target <triple>`（按 MCU 核映射 `riscv32-unknown-none`/`arm-none-eabi`）与 `-Werror`；stub 单测验证参数透传。
 - **仿真精度增强（M7）**：`Timer::tick()` 返回精确溢出次数（计数器越过自动重载若干倍时按比例累计）；`gpio_events` 携带触发翻转的 store 指令 `pc`，仿真页新增「GPIO 事件」日志视图对齐源码。
@@ -119,7 +134,7 @@
 - **反汇编「复制指令」（本轮）**：调试反汇编每行新增「📋」——把 `address  instruction` 写系统剪贴板。
 - **内存视图「复制行」（本轮）**：调试内存每行新增「📋」——把 `address  hex-bytes  │ ascii` 写系统剪贴板。
 - **watch 表达式「复制」（本轮）**：调试变量页 watch 行新增「📋」——把 `expression = value` 写系统剪贴板。
-未完成（实现但未验证）：**嵌入式目标 attach**（OpenOCD / ST-Link / J-Link / pyOCD / probe-rs 探针适配器 + `target remote` GDB 会话，命令面板「嵌入式调试（目标 attach）」→ 编译→烧写→attach；需硬件，尚未在本机验证）；**ZR 真实 `zrc` 编译器集成**（`zr-std` 声明库已提供，编译器本体后续接入），见 AGENTS.md §5.1 🚧 清单。
+未完成（实现但未验证）：**嵌入式目标 attach**（OpenOCD / ST-Link / J-Link / pyOCD / probe-rs 探针适配器 + `target remote` GDB 会话，命令面板「嵌入式调试（目标 attach）」→ 编译→烧写→attach；需硬件，尚未在本机验证）；**ZR 真实 `zrc` 编译器集成**（`zr-std` 声明库已提供，编译器本体后续接入）；**真实 FreeRTOS 内核遍历硬件级终验**（DAP 往返路径与纯函数一致性已由集成测试在本机验证，仍需真实内核符号确认 TCB/链表布局与默认 `RtosLayout` 偏移一致）；**STM32 其他封装/系列引脚映射表扩展**（当前内置 STM32F103C6/C8/CB LQFP48 中密度与 STM32F407 LQFP100 已建模 GPIO+USART1/2/3/6+SPI1/2/3+I2C1/2/3+TIM1-14+SDIO+USB+CAN1+SWD；其他封装/系列目标如实提示暂不支持，且 F407 尚未建模的 DCMI/FMC 等留作后续增强），见 AGENTS.md §5.1 🚧 清单。
 - **编译修复与补齐（本轮）**：工作区此前无法编译（`cargo check` 11 错误），本次修复——实现缺失的 `ns_debug::profile::ProfileAggregator`（DWT PC 采样热点聚合，3 项单测）、`kernel_walk_expr`/`rtos_kernel_send`/`rtos_kernel_advance`（真实 FreeRTOS 内核链表遍历，2 项单测）、补齐 3 处过期测试初始化器；删除 8 处死代码。`cargo check --workspace` 退出 0、本地零警告；`cargo test --workspace` **635 项全绿**。详见 [GAP_ANALYSIS.md](GAP_ANALYSIS.md)。
 
 ## 构建与运行

@@ -81,12 +81,12 @@ pub struct TraceConfig {
     pub mode: TraceMode,
     /// Host-side SWO data port to read decoded packets from. `0` means the
     /// reader auto-derives it from the probe's GDB server port (OpenOCD
-     pub swo_port: u16,
+    pub swo_port: u16,
     /// Arm the DWT PC sampler: the cycle counter drives periodic PC samples
     /// that let the host estimate execution hot spots (function-level
     /// profiling). Requires the target to expose DWT comparator 0.
     pub pc_sample: bool,
- }
+}
 
 impl Default for TraceConfig {
     fn default() -> Self {
@@ -96,10 +96,10 @@ impl Default for TraceConfig {
             data_address: String::new(),
             itm_port: 0,
             swo_prescaler: 1,
-             mode: TraceMode::Running,
-             swo_port: 0,
+            mode: TraceMode::Running,
+            swo_port: 0,
             pc_sample: false,
-         }
+        }
     }
 }
 
@@ -203,9 +203,7 @@ impl TraceConfig {
             return Err("DWT 比较器只有 0–3".to_string());
         }
         if self.data_trace {
-            let address = self
-                .data_address
-                .trim();
+            let address = self.data_address.trim();
             if address.is_empty() {
                 return Err("数据跟踪需要填写被监视变量的地址".to_string());
             }
@@ -243,8 +241,8 @@ impl TraceConfig {
         write(ITM_TER_BASE + (self.itm_port as u32 / 4) * 4, port_bit);
         write(ITM_TCR, (1 << 0) | (1 << 16)); // ITMENA | TraceBusID=1
 
-         // DWT: cycle counter + exception trace, and the optional data watch.
-         let mut dwt_ctrl = 1;
+        // DWT: cycle counter + exception trace, and the optional data watch.
+        let mut dwt_ctrl = 1;
         // PC sampler: reset the cycle counter and arm comparator 0 in
         // PC-sample (cycle counter) mode so the target emits periodic PC
         // samples over ITM. The cycle-counter enable bit (CYCCNTENA, bit 0)
@@ -256,15 +254,18 @@ impl TraceConfig {
             write(dwt_function_address(0), dwt_function_cycles());
             dwt_ctrl |= 1 << 0; // CYCCNTENA
         }
-         if self.data_trace {
-             let comparator = self.data_comparator.min(3);
-             write(dwt_comp_address(comparator), parse_address(&self.data_address).unwrap_or(0));
-             write(dwt_mask_address(comparator), 0);
-             write(dwt_function_address(comparator), dwt_function_watchpoint());
-             dwt_ctrl |= 1 << (comparator as u32 * 4);
-         }
-         write(DWT_CTRL, dwt_ctrl);
-         requests
+        if self.data_trace {
+            let comparator = self.data_comparator.min(3);
+            write(
+                dwt_comp_address(comparator),
+                parse_address(&self.data_address).unwrap_or(0),
+            );
+            write(dwt_mask_address(comparator), 0);
+            write(dwt_function_address(comparator), dwt_function_watchpoint());
+            dwt_ctrl |= 1 << (comparator as u32 * 4);
+        }
+        write(DWT_CTRL, dwt_ctrl);
+        requests
     }
 
     /// Requests that disable tracing (used by `StopTrace` and on session exit).
@@ -303,7 +304,7 @@ pub enum Packet {
     Exception { number: u16, entered: bool },
     /// Timestamp packet value.
     Timestamp(u32),
- }
+}
 
 /// Aggregate statistics over a batch of decoded trace packets.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -338,8 +339,8 @@ pub fn trace_stats(packets: &[Packet]) -> TraceStats {
     }
     stats
 }
- 
- /// Decode a stream of SWO header + payload bytes.
+
+/// Decode a stream of SWO header + payload bytes.
 ///
 /// Supports ITM pages with `SS=0` (data source 0 = stimulus, source 1 = DWT,
 /// source 2 = extension) and source `2` exception packets whose payload holds a
@@ -467,7 +468,10 @@ impl TraceReader {
     /// Read as much as is currently available from `source`, decode it, and
     /// return the packets. Returns `Ok(None)` when the source would block or
     /// is at EOF without new data.
-    pub fn read_from<R: std::io::Read>(&mut self, source: &mut R) -> std::io::Result<Option<Vec<Packet>>> {
+    pub fn read_from<R: std::io::Read>(
+        &mut self,
+        source: &mut R,
+    ) -> std::io::Result<Option<Vec<Packet>>> {
         let mut chunk = [0u8; 4096];
         let mut packets = Vec::new();
         // Keep reading until the source would block (WouldBlock) or returns 0.
@@ -685,15 +689,21 @@ mod tests {
             .iter()
             .map(|(_, request)| request["memoryReference"].as_str().unwrap())
             .collect();
-        assert!(addresses.contains(&"0xE0001024"), "comparator 1 compare reg");
-        assert!(addresses.contains(&"0xE000102C"), "comparator 1 function reg");
+        assert!(
+            addresses.contains(&"0xE0001024"),
+            "comparator 1 compare reg"
+        );
+        assert!(
+            addresses.contains(&"0xE000102C"),
+            "comparator 1 function reg"
+        );
         assert_eq!(dwt_comp_address(0), 0xE000_1020);
-         assert_eq!(
-             addresses.last().copied(),
-             Some("0xE0001000"),
-             "DWT_CTRL is the last DWT write"
-         );
-     }
+        assert_eq!(
+            addresses.last().copied(),
+            Some("0xE0001000"),
+            "DWT_CTRL is the last DWT write"
+        );
+    }
 
     /// Arming the PC sampler adds DWT cycle-counter writes (reset CYCCNT,
     /// comparator 0 in cycle mode, CYCCNTENA in DWT_CTRL).
@@ -709,17 +719,23 @@ mod tests {
             .map(|(_, request)| request["memoryReference"].as_str().unwrap())
             .collect();
         // DWT_CYCCNT reset (0xE0001004) and comparator 0 function (0xE0001028).
-        assert!(addresses.contains(&"0xE0001004"), "CYCCNT reset: {addresses:?}");
-        assert!(addresses.contains(&"0xE0001028"), "comparator 0 function: {addresses:?}");
-         // DWT_CTRL (last) has CYCCNTENA (bit 0) set.
-         let last = requests.last().unwrap();
-         let hex = last.1["data"].as_str().unwrap();
+        assert!(
+            addresses.contains(&"0xE0001004"),
+            "CYCCNT reset: {addresses:?}"
+        );
+        assert!(
+            addresses.contains(&"0xE0001028"),
+            "comparator 0 function: {addresses:?}"
+        );
+        // DWT_CTRL (last) has CYCCNTENA (bit 0) set.
+        let last = requests.last().unwrap();
+        let hex = last.1["data"].as_str().unwrap();
         let bytes: Vec<u8> = (0..hex.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
             .collect();
         let data = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-         assert_ne!(data & 1, 0, "CYCCNTENA set: {data:#x}");
+        assert_ne!(data & 1, 0, "CYCCNTENA set: {data:#x}");
     }
 
     /// `trace_stats` counts each packet kind and estimates PC samples from
@@ -727,10 +743,19 @@ mod tests {
     #[test]
     fn trace_stats_counts_kinds_and_pc_samples() {
         let packets = vec![
-            Packet::Stimulus { port: 0, payload: vec![b'h', b'i'] },
-            Packet::Dwt { index: 0, pc: Some(0x0800_0120) },
+            Packet::Stimulus {
+                port: 0,
+                payload: vec![b'h', b'i'],
+            },
+            Packet::Dwt {
+                index: 0,
+                pc: Some(0x0800_0120),
+            },
             Packet::Dwt { index: 0, pc: None },
-            Packet::Exception { number: 3, entered: true },
+            Packet::Exception {
+                number: 3,
+                entered: true,
+            },
             Packet::Timestamp(0x1234),
         ];
         let stats = trace_stats(&packets);
@@ -740,9 +765,9 @@ mod tests {
         assert_eq!(stats.exceptions, 1);
         assert_eq!(stats.timestamps, 1);
     }
- 
-     #[test]
-     fn watchpoint_function_says_store() {
+
+    #[test]
+    fn watchpoint_function_says_store() {
         // DWT FUNCTION value 5 = watchpoint on store.
         assert_eq!(dwt_function_watchpoint(), 0x5);
         assert_eq!(dwt_function_exception(), 0x3);
@@ -807,23 +832,20 @@ mod tests {
             data_address: "0x20000010".into(),
             itm_port: 3,
             swo_prescaler: 8,
-             mode: TraceMode::Always,
-             swo_port: 4243,
-             pc_sample: false,
-         };
-         config.save(&root).unwrap();
-         let loaded = TraceConfig::load(&root);
+            mode: TraceMode::Always,
+            swo_port: 4243,
+            pc_sample: false,
+        };
+        config.save(&root).unwrap();
+        let loaded = TraceConfig::load(&root);
         assert_eq!(loaded, config);
-         assert!(root.join(".ns-ide").join(TRACE_FILE).is_file());
+        assert!(root.join(".ns-ide").join(TRACE_FILE).is_file());
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn missing_state_file_falls_back_to_defaults() {
-        let root = std::env::temp_dir().join(format!(
-            "ns-trace-missing-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("ns-trace-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(TraceConfig::load(&root), TraceConfig::default());
     }
@@ -846,7 +868,10 @@ mod tests {
         let mut reader = TraceReader::default();
         let (packets, consumed) = reader.push(&[0x00, 0x02, b'h']);
         assert!(packets.is_empty());
-        assert_eq!(consumed, 0, "incomplete packet leaves fresh bytes unconsumed");
+        assert_eq!(
+            consumed, 0,
+            "incomplete packet leaves fresh bytes unconsumed"
+        );
         let (packets, consumed) = reader.push(&[b'i']);
         assert_eq!(consumed, 1);
         assert_eq!(
@@ -936,7 +961,10 @@ mod tests {
         }
         let _ = writer.join();
         stream.stop();
-        assert!(found.is_some(), "expected stimulus packet 'hi' over the socket");
+        assert!(
+            found.is_some(),
+            "expected stimulus packet 'hi' over the socket"
+        );
     }
     #[test]
     fn trace_stream_filters_stimulus_to_armed_port() {

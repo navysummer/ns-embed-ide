@@ -55,9 +55,9 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<TaskMarker>) {
                 i = skip_string(bytes, i);
                 continue;
             }
-             if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                 // Rest of the line is a line comment; markers inside it are
-                 // still real tasks, so keep scanning without the quote skip.
+            if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                // Rest of the line is a line comment; markers inside it are
+                // still real tasks, so keep scanning without the quote skip.
                 let mut j = i + 2;
                 while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
                     j += 1;
@@ -65,16 +65,16 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<TaskMarker>) {
                 if let Some(keyword) = match_keyword(&bytes[j..]) {
                     let col = j + 1;
                     let rest = &line[j + keyword.len()..];
-                     out.push(TaskMarker {
-                         path: path.to_path_buf(),
-                         line: index + 1,
-                         column: col,
-                         keyword: keyword.to_string(),
-                         text: rest.trim().to_string(),
-                     });
-                 }
-                 break;
-             }
+                    out.push(TaskMarker {
+                        path: path.to_path_buf(),
+                        line: index + 1,
+                        column: col,
+                        keyword: keyword.to_string(),
+                        text: rest.trim().to_string(),
+                    });
+                }
+                break;
+            }
             // Match a marker keyword at a word boundary.
             if let Some(keyword) = match_keyword(&bytes[i..]) {
                 let col = i + 1;
@@ -150,7 +150,12 @@ fn collect_dir(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name == ".git" || name == "build" || name == "target" || name == "node_modules" || name == ".ns-ide" {
+        if name == ".git"
+            || name == "build"
+            || name == "target"
+            || name == "node_modules"
+            || name == ".ns-ide"
+        {
             continue;
         }
         let Ok(meta) = entry.metadata() else {
@@ -167,7 +172,20 @@ fn collect_dir(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
             let ext = ext.to_lowercase();
             if matches!(
                 ext.as_str(),
-                "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "rs" | "zig" | "zr" | "s" | "S" | "asm" | "toml" | "md" | "py"
+                "c" | "h"
+                    | "cpp"
+                    | "hpp"
+                    | "cc"
+                    | "cxx"
+                    | "rs"
+                    | "zig"
+                    | "zr"
+                    | "s"
+                    | "S"
+                    | "asm"
+                    | "toml"
+                    | "md"
+                    | "py"
             ) {
                 out.push(path);
             }
@@ -224,7 +242,11 @@ mod tests {
 
         let markers = scan_tasks(&files);
         assert_eq!(markers.len(), 2, "{markers:?}");
-        assert!(markers.iter().all(|m| m.keyword == "TODO" || m.keyword == "FIXME"));
+        assert!(
+            markers
+                .iter()
+                .all(|m| m.keyword == "TODO" || m.keyword == "FIXME")
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -235,7 +257,11 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.c");
-        fs::write(&f, "let s = \"TODO: in string\";\nlet t = 'FIXME'; // TODO: real\nconst x = TODO_REF;\n").unwrap();
+        fs::write(
+            &f,
+            "let s = \"TODO: in string\";\nlet t = 'FIXME'; // TODO: real\nconst x = TODO_REF;\n",
+        )
+        .unwrap();
 
         let mut markers = Vec::new();
         scan_text(&f, &fs::read_to_string(&f).unwrap(), &mut markers);

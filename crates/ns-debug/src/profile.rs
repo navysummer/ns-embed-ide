@@ -98,7 +98,10 @@ impl ProfileAggregator {
 
     /// Name of the bucket at `index` (`<unknown>` for the trailing slot).
     fn name_for(&self, index: usize) -> String {
-        self.names.get(index).cloned().unwrap_or_else(|| "<unknown>".to_string())
+        self.names
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| "<unknown>".to_string())
     }
 
     /// Binary-search `pc` into the sorted symbol ranges. Returns the symbol

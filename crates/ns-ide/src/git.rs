@@ -215,15 +215,14 @@ pub fn unstage(root: &Path, path: &str) -> Result<(), String> {
     git(root, &["reset", "HEAD", "--", path]).map(|_| ())
 }
 
-
 /// Commit the staged changes with `message`.
- /// Commit the staged changes with `message`.
- pub fn commit(root: &Path, message: &str) -> Result<(), String> {
-     if message.trim().is_empty() {
-         return Err("提交信息不能为空".to_string());
-     }
-     git(root, &["commit", "-m", message.trim()]).map(|_| ())
- }
+/// Commit the staged changes with `message`.
+pub fn commit(root: &Path, message: &str) -> Result<(), String> {
+    if message.trim().is_empty() {
+        return Err("提交信息不能为空".to_string());
+    }
+    git(root, &["commit", "-m", message.trim()]).map(|_| ())
+}
 
 /// Switch to an existing local branch (`git checkout <branch>`).
 pub fn checkout(root: &Path, branch: &str) -> Result<(), String> {
@@ -250,8 +249,7 @@ pub fn pull(root: &Path) -> Result<(), String> {
 pub fn push(root: &Path) -> Result<(), String> {
     git(root, &["push"]).map(|_| ())
 }
- 
- 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,7 +258,8 @@ mod tests {
     fn temp_repo() -> std::path::PathBuf {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let slot = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("ns-git-test-{}-{}", std::process::id(), slot));
+        let root =
+            std::env::temp_dir().join(format!("ns-git-test-{}-{}", std::process::id(), slot));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         // A throwaway repository, independent of the real project repo. Use an

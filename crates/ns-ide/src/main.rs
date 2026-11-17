@@ -1,17 +1,18 @@
 mod agent;
 mod app;
 mod diff;
-mod external_tools;
 mod editor;
+mod external_tools;
 mod git;
 mod highlight;
 mod palette;
+mod pin_ioc;
 mod search;
 mod serial;
+mod terminal;
 mod text_field;
 mod theme;
 mod widgets;
-mod terminal;
 mod wizard;
 
 use std::path::PathBuf;

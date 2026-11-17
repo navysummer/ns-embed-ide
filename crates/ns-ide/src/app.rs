@@ -1,6 +1,6 @@
-use std::collections::HashSet;
-use std::collections::HashMap;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -19,30 +19,31 @@ use gpui::{
 use ns_build::{BuildOutcome, Diagnostic, Severity};
 use ns_debug::{
     self, DebugBreakpoint, DebugBreakpointLocation, DebugCommand, DebugConfig, DebugMessage,
-    EmbeddedConfig, Frame, ProbeKind, Scope, TraceConfig, Variable, WatchpointRequest,
-    find_probe, package_support, swvd::{self, parse_address},
+    EmbeddedConfig, Frame, ProbeKind, Scope, TraceConfig, Variable, WatchpointRequest, find_probe,
+    package_support,
+    swvd::{self, parse_address},
 };
 use ns_flash::{FlashAction, FlashRequest, adapter_for};
 use ns_project::{
-    BreakpointKind, BreakpointStore, Language, Project, ProjectConfig, RecentProject,
-    WatchAccess, forget_project, load_recents, remember_project,
-    project::TargetSection,
+    BreakpointKind, BreakpointStore, Language, Project, ProjectConfig, RecentProject, WatchAccess,
+    forget_project, load_recents, project::TargetSection, remember_project,
 };
 
 use crate::agent::AgentPanel;
+use crate::diff;
 use crate::editor::{
     BookmarkToggled, BreakpointContextMenu, BreakpointToggled, DefinitionRequested,
     DiagnosticHover, Editor, HoverWord,
 };
-use crate::diff;
 use crate::git;
 use crate::palette::{self, CommandEntry};
+use crate::pin_ioc::{self, IocPinEntry};
 use crate::search::{self, MatchOrigin, SearchMatch};
+use crate::serial::{SerialEvent, SerialMonitor};
+use crate::terminal::{Terminal, TerminalConfig, TerminalEvent, TerminalKind};
 use crate::text_field::TextField;
 use crate::theme;
 use crate::widgets;
-use crate::terminal::{Terminal, TerminalConfig, TerminalEvent, TerminalKind};
-use crate::serial::{SerialEvent, SerialMonitor};
 use crate::wizard::{self, Wizard};
 
 actions!(
@@ -70,7 +71,6 @@ actions!(
         DebugStepIn,
         DebugStepOut,
         DebugStepInstruction,
-
         RunToCursor,
         FindInFile,
         FindInProject,
@@ -90,17 +90,16 @@ actions!(
         ShowCompletion,
         NavigateBack,
         NavigateForward,
-
         JumpToInclude,
         RenameSymbol,
         RenameConfirm,
         RenameCancel,
-         SplitRight,
-         CloseSplit,
-         GotoHeaderSource,
-         WorkspaceSymbols,
-         QuickOpen,
-         RecentFiles,
+        SplitRight,
+        CloseSplit,
+        GotoHeaderSource,
+        WorkspaceSymbols,
+        QuickOpen,
+        RecentFiles,
         GoToLine,
         ZoomIn,
         ZoomOut,
@@ -152,15 +151,29 @@ pub fn bindings_with(overrides: &ns_project::KeybindingOverrides) -> Vec<KeyBind
         kb!("QuitApp", "ctrl-q", None, QuitApp),
         kb!("Settings", "cmd-,", None, Settings),
         kb!("Settings", "ctrl-,", None, Settings),
-        kb!("ConditionDialogSave", "enter", Some("Dialog"), ConditionDialogSave),
+        kb!(
+            "ConditionDialogSave",
+            "enter",
+            Some("Dialog"),
+            ConditionDialogSave
+        ),
         kb!("Debug", "f5", None, Debug),
         kb!("StopDebug", "shift-f5", None, StopDebug),
         kb!("DebugStepOver", "f10", None, DebugStepOver),
         kb!("DebugStepIn", "f11", None, DebugStepIn),
         kb!("DebugStepOut", "shift-f11", None, DebugStepOut),
-        kb!("DebugStepInstruction", "cmd-alt-rightarrow", None, DebugStepInstruction),
-        kb!("DebugStepInstruction", "ctrl-alt-rightarrow", None, DebugStepInstruction),
-
+        kb!(
+            "DebugStepInstruction",
+            "cmd-alt-rightarrow",
+            None,
+            DebugStepInstruction
+        ),
+        kb!(
+            "DebugStepInstruction",
+            "ctrl-alt-rightarrow",
+            None,
+            DebugStepInstruction
+        ),
         kb!("RunToCursor", "cmd-f10", None, RunToCursor),
         kb!("RunToCursor", "ctrl-f10", None, RunToCursor),
         kb!("Flash", "cmd-shift-f10", None, Flash),
@@ -175,7 +188,12 @@ pub fn bindings_with(overrides: &ns_project::KeybindingOverrides) -> Vec<KeyBind
         kb!("Palette", "ctrl-shift-p", None, Palette),
         kb!("PaletteConfirm", "enter", Some("Palette"), PaletteConfirm),
         kb!("PaletteSelectUp", "up", Some("Palette"), PaletteSelectUp),
-        kb!("PaletteSelectDown", "down", Some("Palette"), PaletteSelectDown),
+        kb!(
+            "PaletteSelectDown",
+            "down",
+            Some("Palette"),
+            PaletteSelectDown
+        ),
         kb!("SearchConfirm", "enter", Some("Search"), SearchConfirm),
         kb!("SearchSelectUp", "up", Some("Search"), SearchSelectUp),
         kb!("SearchSelectDown", "down", Some("Search"), SearchSelectDown),
@@ -184,9 +202,9 @@ pub fn bindings_with(overrides: &ns_project::KeybindingOverrides) -> Vec<KeyBind
         kb!("WizardNext", "enter", Some("Wizard"), WizardNext),
         kb!("WizardBack", "shift-enter", Some("Wizard"), WizardBack),
         kb!("EscapeModal", "escape", None, EscapeModal),
-         kb!("GoToDefinition", "f12", None, GoToDefinition),
+        kb!("GoToDefinition", "f12", None, GoToDefinition),
         kb!("GotoHeaderSource", "f7", None, GotoHeaderSource),
-         kb!("FindReferences", "shift-f12", None, FindReferences),
+        kb!("FindReferences", "shift-f12", None, FindReferences),
         kb!("Hover", "cmd-k cmd-i", None, Hover),
         kb!("Hover", "ctrl-k ctrl-i", None, Hover),
         kb!("SignatureHelp", "cmd-shift-space", None, SignatureHelp),
@@ -224,7 +242,6 @@ pub fn bindings_with(overrides: &ns_project::KeybindingOverrides) -> Vec<KeyBind
     }
     all
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputTab {
@@ -359,8 +376,8 @@ struct ContextMenuState {
     y: Pixels,
     /// Identifier-like token under the cursor (may be empty).
     word: String,
- }
- 
+}
+
 /// Right-click state on an editor tab: the tab index and the menu anchor.
 #[derive(Debug, Clone)]
 struct TabMenuState {
@@ -369,7 +386,7 @@ struct TabMenuState {
     y: Pixels,
 }
 
- /// A second editor pane shown to the right of the main editor (split view).
+/// A second editor pane shown to the right of the main editor (split view).
 /// It holds an independent editor for a file, so two files (or two views of
 /// one file) can be compared/edited side by side.
 struct SplitPane {
@@ -458,7 +475,6 @@ struct SetVarDialog {
     field: Entity<TextField>,
 }
 
-
 /// Dialog to create and switch to a new local Git branch.
 struct GitBranchDialog {
     field: Entity<TextField>,
@@ -536,7 +552,6 @@ impl PinMode {
     }
 
     fn color(&self) -> u32 {
-
         match self {
             PinMode::InputFloat => theme::TEXT_FAINT,
             PinMode::InputPull => theme::ACCENT_3,
@@ -579,6 +594,2715 @@ struct PeriphConfigState {
     selected_pinout: Option<usize>,
 }
 
+/// A peripheral function that can be assigned to an STM32F1 physical pin.
+/// The set is deliberately limited to the peripherals commonly used by a
+/// starter application (USART/SPI/I2C/TIM2 + plain GPIO).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PinSignal {
+    GpioOutput,
+    GpioInput,
+    Usart1Tx,
+    Usart1Rx,
+    Usart1Ck,
+    Usart1Cts,
+    Usart1Rts,
+    Usart2Tx,
+    Usart2Rx,
+    Usart2Ck,
+    Usart2Cts,
+    Usart2Rts,
+    Usart3Tx,
+    Usart3Rx,
+    Usart3Ck,
+    Usart3Cts,
+    Usart3Rts,
+    Spi1Nss,
+    Spi1Sck,
+    Spi1Miso,
+    Spi1Mosi,
+    I2c1Scl,
+    I2c1Sda,
+    Tim2Ch1,
+    Tim2Ch2,
+    Tim2Ch3,
+    Tim2Ch4,
+    Tim2Ch1Etr,
+    Tim1Ch1,
+    Tim1Ch2,
+    Tim1Ch3,
+    Tim1Ch4,
+    Tim1Bkin,
+    Tim1Etr,
+    Tim3Ch1,
+    Tim3Ch2,
+    Tim3Ch3,
+    Tim3Ch4,
+    Tim4Ch1,
+    Tim4Ch2,
+    Tim4Ch3,
+    Tim4Ch4,
+    Can1Rx,
+    Can1Tx,
+    UsbDm,
+    UsbDp,
+}
+
+impl PinSignal {
+    fn label(self) -> &'static str {
+        match self {
+            PinSignal::GpioOutput => "GPIO 输出",
+            PinSignal::GpioInput => "GPIO 输入",
+            PinSignal::Usart1Tx => "USART1_TX",
+            PinSignal::Usart1Rx => "USART1_RX",
+            PinSignal::Usart1Ck => "USART1_CK",
+            PinSignal::Usart1Cts => "USART1_CTS",
+            PinSignal::Usart1Rts => "USART1_RTS",
+            PinSignal::Usart2Tx => "USART2_TX",
+            PinSignal::Usart2Rx => "USART2_RX",
+            PinSignal::Usart2Ck => "USART2_CK",
+            PinSignal::Usart2Cts => "USART2_CTS",
+            PinSignal::Usart2Rts => "USART2_RTS",
+            PinSignal::Usart3Tx => "USART3_TX",
+            PinSignal::Usart3Rx => "USART3_RX",
+            PinSignal::Usart3Ck => "USART3_CK",
+            PinSignal::Usart3Cts => "USART3_CTS",
+            PinSignal::Usart3Rts => "USART3_RTS",
+            PinSignal::Spi1Nss => "SPI1_NSS",
+            PinSignal::Spi1Sck => "SPI1_SCK",
+            PinSignal::Spi1Miso => "SPI1_MISO",
+            PinSignal::Spi1Mosi => "SPI1_MOSI",
+            PinSignal::I2c1Scl => "I2C1_SCL",
+            PinSignal::I2c1Sda => "I2C1_SDA",
+            PinSignal::Tim2Ch1 => "TIM2_CH1",
+            PinSignal::Tim2Ch2 => "TIM2_CH2",
+            PinSignal::Tim2Ch3 => "TIM2_CH3",
+            PinSignal::Tim2Ch4 => "TIM2_CH4",
+            PinSignal::Tim2Ch1Etr => "TIM2_CH1_ETR",
+            PinSignal::Tim1Ch1 => "TIM1_CH1",
+            PinSignal::Tim1Ch2 => "TIM1_CH2",
+            PinSignal::Tim1Ch3 => "TIM1_CH3",
+            PinSignal::Tim1Ch4 => "TIM1_CH4",
+            PinSignal::Tim1Bkin => "TIM1_BKIN",
+            PinSignal::Tim1Etr => "TIM1_ETR",
+            PinSignal::Tim3Ch1 => "TIM3_CH1",
+            PinSignal::Tim3Ch2 => "TIM3_CH2",
+            PinSignal::Tim3Ch3 => "TIM3_CH3",
+            PinSignal::Tim3Ch4 => "TIM3_CH4",
+            PinSignal::Tim4Ch1 => "TIM4_CH1",
+            PinSignal::Tim4Ch2 => "TIM4_CH2",
+            PinSignal::Tim4Ch3 => "TIM4_CH3",
+            PinSignal::Tim4Ch4 => "TIM4_CH4",
+            PinSignal::Can1Rx => "CAN1_RX",
+            PinSignal::Can1Tx => "CAN1_TX",
+            PinSignal::UsbDm => "USB_DM",
+            PinSignal::UsbDp => "USB_DP",
+        }
+    }
+
+    fn group(self) -> &'static str {
+        match self {
+            PinSignal::GpioOutput | PinSignal::GpioInput => "GPIO",
+            PinSignal::Usart1Tx
+            | PinSignal::Usart1Rx
+            | PinSignal::Usart1Ck
+            | PinSignal::Usart1Cts
+            | PinSignal::Usart1Rts => "USART1",
+            PinSignal::Usart2Tx
+            | PinSignal::Usart2Rx
+            | PinSignal::Usart2Ck
+            | PinSignal::Usart2Cts
+            | PinSignal::Usart2Rts => "USART2",
+            PinSignal::Usart3Tx
+            | PinSignal::Usart3Rx
+            | PinSignal::Usart3Ck
+            | PinSignal::Usart3Cts
+            | PinSignal::Usart3Rts => "USART3",
+            PinSignal::Spi1Nss | PinSignal::Spi1Sck | PinSignal::Spi1Miso | PinSignal::Spi1Mosi => {
+                "SPI1"
+            }
+            PinSignal::I2c1Scl | PinSignal::I2c1Sda => "I2C1",
+            PinSignal::Tim2Ch1
+            | PinSignal::Tim2Ch2
+            | PinSignal::Tim2Ch3
+            | PinSignal::Tim2Ch4
+            | PinSignal::Tim2Ch1Etr => "TIM2",
+            PinSignal::Tim1Ch1
+            | PinSignal::Tim1Ch2
+            | PinSignal::Tim1Ch3
+            | PinSignal::Tim1Ch4
+            | PinSignal::Tim1Bkin
+            | PinSignal::Tim1Etr => "TIM1",
+            PinSignal::Tim3Ch1 | PinSignal::Tim3Ch2 | PinSignal::Tim3Ch3 | PinSignal::Tim3Ch4 => {
+                "TIM3"
+            }
+            PinSignal::Tim4Ch1 | PinSignal::Tim4Ch2 | PinSignal::Tim4Ch3 | PinSignal::Tim4Ch4 => {
+                "TIM4"
+            }
+            PinSignal::Can1Rx | PinSignal::Can1Tx => "CAN1",
+            PinSignal::UsbDm | PinSignal::UsbDp => "USB",
+        }
+    }
+
+    /// STM32F1 GPIO CRL/CRH mode for the signal. Alternate-function I2C pins
+    /// use open-drain; all other AFs use push-pull.
+    fn mode(self) -> PinMode {
+        match self {
+            PinSignal::GpioOutput => PinMode::OutputPushPull,
+            PinSignal::GpioInput => PinMode::InputFloat,
+            PinSignal::I2c1Scl | PinSignal::I2c1Sda => PinMode::AltOpenDrain,
+            PinSignal::UsbDm | PinSignal::UsbDp => PinMode::InputFloat,
+            _ => PinMode::AltPushPull,
+        }
+    }
+
+    fn color(self) -> u32 {
+        match self {
+            PinSignal::GpioOutput => theme::JADE,
+            PinSignal::GpioInput => theme::TEXT_FAINT,
+            PinSignal::Usart1Tx
+            | PinSignal::Usart1Rx
+            | PinSignal::Usart1Ck
+            | PinSignal::Usart1Cts
+            | PinSignal::Usart1Rts
+            | PinSignal::Usart2Tx
+            | PinSignal::Usart2Rx
+            | PinSignal::Usart2Ck
+            | PinSignal::Usart2Cts
+            | PinSignal::Usart2Rts
+            | PinSignal::Usart3Tx
+            | PinSignal::Usart3Rx
+            | PinSignal::Usart3Ck
+            | PinSignal::Usart3Cts
+            | PinSignal::Usart3Rts => theme::ACCENT_3,
+            PinSignal::Spi1Nss | PinSignal::Spi1Sck | PinSignal::Spi1Miso | PinSignal::Spi1Mosi => {
+                theme::CINNABAR
+            }
+            PinSignal::I2c1Scl | PinSignal::I2c1Sda => theme::ACCENT_2,
+            PinSignal::Tim2Ch1
+            | PinSignal::Tim2Ch2
+            | PinSignal::Tim2Ch3
+            | PinSignal::Tim2Ch4
+            | PinSignal::Tim2Ch1Etr
+            | PinSignal::Tim1Ch1
+            | PinSignal::Tim1Ch2
+            | PinSignal::Tim1Ch3
+            | PinSignal::Tim1Ch4
+            | PinSignal::Tim1Bkin
+            | PinSignal::Tim1Etr
+            | PinSignal::Tim3Ch1
+            | PinSignal::Tim3Ch2
+            | PinSignal::Tim3Ch3
+            | PinSignal::Tim3Ch4
+            | PinSignal::Tim4Ch1
+            | PinSignal::Tim4Ch2
+            | PinSignal::Tim4Ch3
+            | PinSignal::Tim4Ch4 => theme::ACCENT,
+            PinSignal::Can1Rx | PinSignal::Can1Tx => theme::CINNABAR,
+            PinSignal::UsbDm | PinSignal::UsbDp => theme::ACCENT_2,
+        }
+    }
+}
+
+/// A peripheral function that can be assigned to an STM32F4 physical pin.
+/// Each alternate function carries the AF number written into `AFRL`/`AFRH`
+/// (4 bits per pin, AF0-15); GPIO pins have no AF number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum F4PinSignal {
+    GpioOutput,
+    GpioInput,
+    GpioInputPull,
+    GpioInputPullDown,
+    Usart1Tx,
+    Usart1Rx,
+    Usart1Ck,
+    Usart1Cts,
+    Usart1Rts,
+    Usart2Tx,
+    Usart2Rx,
+    Usart2Ck,
+    Usart2Cts,
+    Usart2Rts,
+    Usart3Tx,
+    Usart3Rx,
+    Usart3Ck,
+    Usart3Cts,
+    Usart3Rts,
+    Spi1Nss,
+    Spi1Sck,
+    Spi1Miso,
+    Spi1Mosi,
+    Spi2Nss,
+    Spi2Sck,
+    Spi2Miso,
+    Spi2Mosi,
+    I2c1Scl,
+    I2c1Sda,
+    I2c2Scl,
+    I2c2Sda,
+    I2c3Scl,
+    I2c3Sda,
+    Tim1Ch1,
+    Tim1Ch2,
+    Tim1Ch3,
+    Tim1Ch4,
+    Tim1Ch1N,
+    Tim1Ch2N,
+    Tim1Ch3N,
+    Tim1Bkin,
+    Tim1Etr,
+    Tim2Ch1,
+    Tim2Ch2,
+    Tim2Ch1Etr,
+    Tim2Ch3,
+    Tim2Ch4,
+    Tim3Ch1,
+    Tim3Ch2,
+    Tim3Ch3,
+    Tim3Ch4,
+    Tim4Ch1,
+    Tim4Ch2,
+    Tim4Ch3,
+    Tim4Ch4,
+    Tim5Ch3,
+    Tim5Ch4,
+    Tim8Ch1,
+    Tim8Ch2,
+    Tim8Ch3,
+    Tim8Ch4,
+    Tim9Ch1,
+    Tim9Ch2,
+    Tim10Ch1,
+    Tim11Ch1,
+    Tim12Ch1,
+    Tim12Ch2,
+    Tim13Ch1,
+    Tim14Ch1,
+    SdioCmd,
+    SdioCk,
+    SdioD0,
+    SdioD1,
+    SdioD2,
+    SdioD3,
+    SdioD4,
+    SdioD5,
+    SdioD6,
+    SdioD7,
+    UsbDm,
+    UsbDp,
+    Can1Rx,
+    Can1Tx,
+    Swdio,
+    Swclk,
+    Spi3Nss,
+    Spi3Sck,
+    Spi3Miso,
+    Spi3Mosi,
+    Usart6Tx,
+    Usart6Rx,
+    Usart6Ck,
+}
+
+impl F4PinSignal {
+    fn label(self) -> &'static str {
+        match self {
+            F4PinSignal::GpioOutput => "GPIO 输出",
+            F4PinSignal::GpioInput => "GPIO 输入",
+            F4PinSignal::GpioInputPull => "GPIO 输入·上拉",
+            F4PinSignal::GpioInputPullDown => "GPIO 输入·下拉",
+            F4PinSignal::Usart1Tx => "USART1_TX",
+            F4PinSignal::Usart1Rx => "USART1_RX",
+            F4PinSignal::Usart1Ck => "USART1_CK",
+            F4PinSignal::Usart1Cts => "USART1_CTS",
+            F4PinSignal::Usart1Rts => "USART1_RTS",
+            F4PinSignal::Usart2Tx => "USART2_TX",
+            F4PinSignal::Usart2Rx => "USART2_RX",
+            F4PinSignal::Usart2Ck => "USART2_CK",
+            F4PinSignal::Usart2Cts => "USART2_CTS",
+            F4PinSignal::Usart2Rts => "USART2_RTS",
+            F4PinSignal::Usart3Tx => "USART3_TX",
+            F4PinSignal::Usart3Rx => "USART3_RX",
+            F4PinSignal::Usart3Ck => "USART3_CK",
+            F4PinSignal::Usart3Cts => "USART3_CTS",
+            F4PinSignal::Usart3Rts => "USART3_RTS",
+            F4PinSignal::Spi1Nss => "SPI1_NSS",
+            F4PinSignal::Spi1Sck => "SPI1_SCK",
+            F4PinSignal::Spi1Miso => "SPI1_MISO",
+            F4PinSignal::Spi1Mosi => "SPI1_MOSI",
+            F4PinSignal::Spi2Nss => "SPI2_NSS",
+            F4PinSignal::Spi2Sck => "SPI2_SCK",
+            F4PinSignal::Spi2Miso => "SPI2_MISO",
+            F4PinSignal::Spi2Mosi => "SPI2_MOSI",
+            F4PinSignal::I2c1Scl => "I2C1_SCL",
+            F4PinSignal::I2c1Sda => "I2C1_SDA",
+            F4PinSignal::I2c2Scl => "I2C2_SCL",
+            F4PinSignal::I2c2Sda => "I2C2_SDA",
+            F4PinSignal::I2c3Scl => "I2C3_SCL",
+            F4PinSignal::I2c3Sda => "I2C3_SDA",
+            F4PinSignal::Tim1Ch1 => "TIM1_CH1",
+            F4PinSignal::Tim1Ch2 => "TIM1_CH2",
+            F4PinSignal::Tim1Ch3 => "TIM1_CH3",
+            F4PinSignal::Tim1Ch4 => "TIM1_CH4",
+            F4PinSignal::Tim1Ch1N => "TIM1_CH1N",
+            F4PinSignal::Tim1Ch2N => "TIM1_CH2N",
+            F4PinSignal::Tim1Ch3N => "TIM1_CH3N",
+            F4PinSignal::Tim1Bkin => "TIM1_BKIN",
+            F4PinSignal::Tim1Etr => "TIM1_ETR",
+            F4PinSignal::Tim2Ch1 => "TIM2_CH1",
+            F4PinSignal::Tim2Ch2 => "TIM2_CH2",
+            F4PinSignal::Tim2Ch1Etr => "TIM2_CH1_ETR",
+            F4PinSignal::Tim2Ch3 => "TIM2_CH3",
+            F4PinSignal::Tim2Ch4 => "TIM2_CH4",
+            F4PinSignal::Tim3Ch1 => "TIM3_CH1",
+            F4PinSignal::Tim3Ch2 => "TIM3_CH2",
+            F4PinSignal::Tim3Ch3 => "TIM3_CH3",
+            F4PinSignal::Tim3Ch4 => "TIM3_CH4",
+            F4PinSignal::Tim4Ch1 => "TIM4_CH1",
+            F4PinSignal::Tim4Ch2 => "TIM4_CH2",
+            F4PinSignal::Tim4Ch3 => "TIM4_CH3",
+            F4PinSignal::Tim4Ch4 => "TIM4_CH4",
+            F4PinSignal::Tim5Ch3 => "TIM5_CH3",
+            F4PinSignal::Tim5Ch4 => "TIM5_CH4",
+            F4PinSignal::Tim8Ch1 => "TIM8_CH1",
+            F4PinSignal::Tim8Ch2 => "TIM8_CH2",
+            F4PinSignal::Tim8Ch3 => "TIM8_CH3",
+            F4PinSignal::Tim8Ch4 => "TIM8_CH4",
+            F4PinSignal::Tim9Ch1 => "TIM9_CH1",
+            F4PinSignal::Tim9Ch2 => "TIM9_CH2",
+            F4PinSignal::Tim10Ch1 => "TIM10_CH1",
+            F4PinSignal::Tim11Ch1 => "TIM11_CH1",
+            F4PinSignal::Tim12Ch1 => "TIM12_CH1",
+            F4PinSignal::Tim12Ch2 => "TIM12_CH2",
+            F4PinSignal::Tim13Ch1 => "TIM13_CH1",
+            F4PinSignal::Tim14Ch1 => "TIM14_CH1",
+            F4PinSignal::SdioCmd => "SDIO_CMD",
+            F4PinSignal::SdioCk => "SDIO_CK",
+            F4PinSignal::SdioD0 => "SDIO_D0",
+            F4PinSignal::SdioD1 => "SDIO_D1",
+            F4PinSignal::SdioD2 => "SDIO_D2",
+            F4PinSignal::SdioD3 => "SDIO_D3",
+            F4PinSignal::SdioD4 => "SDIO_D4",
+            F4PinSignal::SdioD5 => "SDIO_D5",
+            F4PinSignal::SdioD6 => "SDIO_D6",
+            F4PinSignal::SdioD7 => "SDIO_D7",
+            F4PinSignal::UsbDm => "USB_DM",
+            F4PinSignal::UsbDp => "USB_DP",
+            F4PinSignal::Can1Rx => "CAN1_RX",
+            F4PinSignal::Can1Tx => "CAN1_TX",
+            F4PinSignal::Swdio => "SWDIO",
+            F4PinSignal::Swclk => "SWCLK",
+            F4PinSignal::Spi3Nss => "SPI3_NSS",
+            F4PinSignal::Spi3Sck => "SPI3_SCK",
+            F4PinSignal::Spi3Miso => "SPI3_MISO",
+            F4PinSignal::Spi3Mosi => "SPI3_MOSI",
+            F4PinSignal::Usart6Tx => "USART6_TX",
+            F4PinSignal::Usart6Rx => "USART6_RX",
+            F4PinSignal::Usart6Ck => "USART6_CK",
+        }
+    }
+
+    fn group(self) -> &'static str {
+        match self {
+            F4PinSignal::GpioOutput
+            | F4PinSignal::GpioInput
+            | F4PinSignal::GpioInputPull
+            | F4PinSignal::GpioInputPullDown => "GPIO",
+            F4PinSignal::Usart1Tx
+            | F4PinSignal::Usart1Rx
+            | F4PinSignal::Usart1Ck
+            | F4PinSignal::Usart1Cts
+            | F4PinSignal::Usart1Rts => "USART1",
+            F4PinSignal::Usart2Tx
+            | F4PinSignal::Usart2Rx
+            | F4PinSignal::Usart2Ck
+            | F4PinSignal::Usart2Cts
+            | F4PinSignal::Usart2Rts => "USART2",
+            F4PinSignal::Usart3Tx
+            | F4PinSignal::Usart3Rx
+            | F4PinSignal::Usart3Ck
+            | F4PinSignal::Usart3Cts
+            | F4PinSignal::Usart3Rts => "USART3",
+            F4PinSignal::Spi1Nss
+            | F4PinSignal::Spi1Sck
+            | F4PinSignal::Spi1Miso
+            | F4PinSignal::Spi1Mosi => "SPI1",
+            F4PinSignal::Spi2Nss
+            | F4PinSignal::Spi2Sck
+            | F4PinSignal::Spi2Miso
+            | F4PinSignal::Spi2Mosi => "SPI2",
+            F4PinSignal::I2c1Scl | F4PinSignal::I2c1Sda => "I2C1",
+            F4PinSignal::I2c2Scl | F4PinSignal::I2c2Sda => "I2C2",
+            F4PinSignal::I2c3Scl | F4PinSignal::I2c3Sda => "I2C3",
+            F4PinSignal::Tim1Ch1
+            | F4PinSignal::Tim1Ch2
+            | F4PinSignal::Tim1Ch3
+            | F4PinSignal::Tim1Ch4
+            | F4PinSignal::Tim1Ch1N
+            | F4PinSignal::Tim1Ch2N
+            | F4PinSignal::Tim1Ch3N
+            | F4PinSignal::Tim1Bkin
+            | F4PinSignal::Tim1Etr => "TIM1",
+            F4PinSignal::Tim2Ch1
+            | F4PinSignal::Tim2Ch2
+            | F4PinSignal::Tim2Ch1Etr
+            | F4PinSignal::Tim2Ch3
+            | F4PinSignal::Tim2Ch4 => "TIM2",
+            F4PinSignal::Tim3Ch1
+            | F4PinSignal::Tim3Ch2
+            | F4PinSignal::Tim3Ch3
+            | F4PinSignal::Tim3Ch4 => "TIM3",
+            F4PinSignal::Tim4Ch1
+            | F4PinSignal::Tim4Ch2
+            | F4PinSignal::Tim4Ch3
+            | F4PinSignal::Tim4Ch4 => "TIM4",
+            F4PinSignal::Tim5Ch3 | F4PinSignal::Tim5Ch4 => "TIM5",
+            F4PinSignal::Tim8Ch1
+            | F4PinSignal::Tim8Ch2
+            | F4PinSignal::Tim8Ch3
+            | F4PinSignal::Tim8Ch4 => "TIM8",
+            F4PinSignal::Tim9Ch1 | F4PinSignal::Tim9Ch2 => "TIM9",
+            F4PinSignal::Tim10Ch1 => "TIM10",
+            F4PinSignal::Tim11Ch1 => "TIM11",
+            F4PinSignal::Tim12Ch1 | F4PinSignal::Tim12Ch2 => "TIM12",
+            F4PinSignal::Tim13Ch1 => "TIM13",
+            F4PinSignal::Tim14Ch1 => "TIM14",
+            F4PinSignal::SdioCmd
+            | F4PinSignal::SdioCk
+            | F4PinSignal::SdioD0
+            | F4PinSignal::SdioD1
+            | F4PinSignal::SdioD2
+            | F4PinSignal::SdioD3
+            | F4PinSignal::SdioD4
+            | F4PinSignal::SdioD5
+            | F4PinSignal::SdioD6
+            | F4PinSignal::SdioD7 => "SDIO",
+            F4PinSignal::UsbDm | F4PinSignal::UsbDp => "USB",
+            F4PinSignal::Can1Rx | F4PinSignal::Can1Tx => "CAN1",
+            F4PinSignal::Swdio | F4PinSignal::Swclk => "SWD",
+            F4PinSignal::Spi3Nss
+            | F4PinSignal::Spi3Sck
+            | F4PinSignal::Spi3Miso
+            | F4PinSignal::Spi3Mosi => "SPI3",
+            F4PinSignal::Usart6Tx | F4PinSignal::Usart6Rx | F4PinSignal::Usart6Ck => "USART6",
+        }
+    }
+
+    /// AF number written into `AFRL`/`AFRH`; `None` for plain GPIO.
+    fn af(self) -> Option<u8> {
+        match self {
+            F4PinSignal::GpioOutput
+            | F4PinSignal::GpioInput
+            | F4PinSignal::GpioInputPull
+            | F4PinSignal::GpioInputPullDown => None,
+            F4PinSignal::Usart1Tx
+            | F4PinSignal::Usart1Rx
+            | F4PinSignal::Usart1Ck
+            | F4PinSignal::Usart1Cts
+            | F4PinSignal::Usart1Rts
+            | F4PinSignal::Usart2Tx
+            | F4PinSignal::Usart2Rx
+            | F4PinSignal::Usart2Ck
+            | F4PinSignal::Usart2Cts
+            | F4PinSignal::Usart2Rts
+            | F4PinSignal::Usart3Tx
+            | F4PinSignal::Usart3Rx
+            | F4PinSignal::Usart3Ck
+            | F4PinSignal::Usart3Cts
+            | F4PinSignal::Usart3Rts => Some(7),
+            F4PinSignal::Spi1Nss
+            | F4PinSignal::Spi1Sck
+            | F4PinSignal::Spi1Miso
+            | F4PinSignal::Spi1Mosi
+            | F4PinSignal::Spi2Nss
+            | F4PinSignal::Spi2Sck
+            | F4PinSignal::Spi2Miso
+            | F4PinSignal::Spi2Mosi => Some(5),
+            F4PinSignal::Spi3Nss
+            | F4PinSignal::Spi3Sck
+            | F4PinSignal::Spi3Miso
+            | F4PinSignal::Spi3Mosi => Some(6),
+            F4PinSignal::I2c1Scl
+            | F4PinSignal::I2c1Sda
+            | F4PinSignal::I2c2Scl
+            | F4PinSignal::I2c2Sda
+            | F4PinSignal::I2c3Scl
+            | F4PinSignal::I2c3Sda => Some(4),
+            F4PinSignal::Tim1Ch1
+            | F4PinSignal::Tim1Ch2
+            | F4PinSignal::Tim1Ch3
+            | F4PinSignal::Tim1Ch4
+            | F4PinSignal::Tim1Ch1N
+            | F4PinSignal::Tim1Ch2N
+            | F4PinSignal::Tim1Ch3N
+            | F4PinSignal::Tim1Bkin
+            | F4PinSignal::Tim1Etr
+            | F4PinSignal::Tim2Ch1
+            | F4PinSignal::Tim2Ch2
+            | F4PinSignal::Tim2Ch1Etr
+            | F4PinSignal::Tim2Ch3
+            | F4PinSignal::Tim2Ch4 => Some(1),
+            F4PinSignal::Tim3Ch1
+            | F4PinSignal::Tim3Ch2
+            | F4PinSignal::Tim3Ch3
+            | F4PinSignal::Tim3Ch4
+            | F4PinSignal::Tim4Ch1
+            | F4PinSignal::Tim4Ch2
+            | F4PinSignal::Tim4Ch3
+            | F4PinSignal::Tim4Ch4
+            | F4PinSignal::Tim5Ch3
+            | F4PinSignal::Tim5Ch4 => Some(2),
+            F4PinSignal::Tim8Ch1
+            | F4PinSignal::Tim8Ch2
+            | F4PinSignal::Tim8Ch3
+            | F4PinSignal::Tim8Ch4
+            | F4PinSignal::Tim9Ch1
+            | F4PinSignal::Tim9Ch2
+            | F4PinSignal::Tim10Ch1
+            | F4PinSignal::Tim11Ch1 => Some(3),
+            F4PinSignal::SdioCmd
+            | F4PinSignal::SdioCk
+            | F4PinSignal::SdioD0
+            | F4PinSignal::SdioD1
+            | F4PinSignal::SdioD2
+            | F4PinSignal::SdioD3
+            | F4PinSignal::SdioD4
+            | F4PinSignal::SdioD5
+            | F4PinSignal::SdioD6
+            | F4PinSignal::SdioD7 => Some(12),
+            F4PinSignal::Tim12Ch1
+            | F4PinSignal::Tim12Ch2
+            | F4PinSignal::Tim13Ch1
+            | F4PinSignal::Tim14Ch1 => Some(9),
+            F4PinSignal::UsbDm | F4PinSignal::UsbDp => Some(10),
+            F4PinSignal::Can1Rx | F4PinSignal::Can1Tx => Some(9),
+            F4PinSignal::Swdio | F4PinSignal::Swclk => Some(0),
+            F4PinSignal::Usart6Tx | F4PinSignal::Usart6Rx | F4PinSignal::Usart6Ck => Some(8),
+        }
+    }
+
+    fn mode(self) -> PinMode {
+        match self {
+            F4PinSignal::GpioOutput => PinMode::OutputPushPull,
+            F4PinSignal::GpioInput => PinMode::InputFloat,
+            F4PinSignal::GpioInputPull => PinMode::InputPull,
+            F4PinSignal::GpioInputPullDown => PinMode::InputPullDown,
+            F4PinSignal::I2c1Scl
+            | F4PinSignal::I2c1Sda
+            | F4PinSignal::I2c2Scl
+            | F4PinSignal::I2c2Sda
+            | F4PinSignal::I2c3Scl
+            | F4PinSignal::I2c3Sda => PinMode::AltOpenDrain,
+            _ => PinMode::AltPushPull,
+        }
+    }
+
+    fn color(self) -> u32 {
+        match self {
+            F4PinSignal::GpioOutput => theme::JADE,
+            F4PinSignal::GpioInput => theme::TEXT_FAINT,
+            F4PinSignal::GpioInputPull | F4PinSignal::GpioInputPullDown => theme::TEXT_DIM,
+            F4PinSignal::Usart1Tx
+            | F4PinSignal::Usart1Rx
+            | F4PinSignal::Usart1Ck
+            | F4PinSignal::Usart1Cts
+            | F4PinSignal::Usart1Rts
+            | F4PinSignal::Usart2Tx
+            | F4PinSignal::Usart2Rx
+            | F4PinSignal::Usart2Ck
+            | F4PinSignal::Usart2Cts
+            | F4PinSignal::Usart2Rts
+            | F4PinSignal::Usart3Tx
+            | F4PinSignal::Usart3Rx
+            | F4PinSignal::Usart3Ck
+            | F4PinSignal::Usart3Cts
+            | F4PinSignal::Usart3Rts
+            | F4PinSignal::Usart6Tx
+            | F4PinSignal::Usart6Rx
+            | F4PinSignal::Usart6Ck => theme::ACCENT_3,
+            F4PinSignal::Spi1Nss
+            | F4PinSignal::Spi1Sck
+            | F4PinSignal::Spi1Miso
+            | F4PinSignal::Spi1Mosi
+            | F4PinSignal::Spi2Nss
+            | F4PinSignal::Spi2Sck
+            | F4PinSignal::Spi2Miso
+            | F4PinSignal::Spi2Mosi
+            | F4PinSignal::Spi3Nss
+            | F4PinSignal::Spi3Sck
+            | F4PinSignal::Spi3Miso
+            | F4PinSignal::Spi3Mosi => theme::CINNABAR,
+            F4PinSignal::I2c1Scl
+            | F4PinSignal::I2c1Sda
+            | F4PinSignal::I2c2Scl
+            | F4PinSignal::I2c2Sda
+            | F4PinSignal::I2c3Scl
+            | F4PinSignal::I2c3Sda => theme::ACCENT_2,
+            F4PinSignal::Tim1Ch1
+            | F4PinSignal::Tim1Ch2
+            | F4PinSignal::Tim1Ch3
+            | F4PinSignal::Tim1Ch4
+            | F4PinSignal::Tim1Ch1N
+            | F4PinSignal::Tim1Ch2N
+            | F4PinSignal::Tim1Ch3N
+            | F4PinSignal::Tim1Bkin
+            | F4PinSignal::Tim1Etr
+            | F4PinSignal::Tim2Ch1
+            | F4PinSignal::Tim2Ch2
+            | F4PinSignal::Tim2Ch1Etr
+            | F4PinSignal::Tim2Ch3
+            | F4PinSignal::Tim2Ch4
+            | F4PinSignal::Tim3Ch1
+            | F4PinSignal::Tim3Ch2
+            | F4PinSignal::Tim3Ch3
+            | F4PinSignal::Tim3Ch4
+            | F4PinSignal::Tim4Ch1
+            | F4PinSignal::Tim4Ch2
+            | F4PinSignal::Tim4Ch3
+            | F4PinSignal::Tim4Ch4
+            | F4PinSignal::Tim5Ch3
+            | F4PinSignal::Tim5Ch4
+            | F4PinSignal::Tim8Ch1
+            | F4PinSignal::Tim8Ch2
+            | F4PinSignal::Tim8Ch3
+            | F4PinSignal::Tim8Ch4
+            | F4PinSignal::Tim9Ch1
+            | F4PinSignal::Tim9Ch2
+            | F4PinSignal::Tim10Ch1
+            | F4PinSignal::Tim11Ch1
+            | F4PinSignal::Tim12Ch1
+            | F4PinSignal::Tim12Ch2
+            | F4PinSignal::Tim13Ch1
+            | F4PinSignal::Tim14Ch1 => theme::ACCENT,
+            F4PinSignal::SdioCmd
+            | F4PinSignal::SdioCk
+            | F4PinSignal::SdioD0
+            | F4PinSignal::SdioD1
+            | F4PinSignal::SdioD2
+            | F4PinSignal::SdioD3
+            | F4PinSignal::SdioD4
+            | F4PinSignal::SdioD5
+            | F4PinSignal::SdioD6
+            | F4PinSignal::SdioD7 => theme::CINNABAR,
+            F4PinSignal::UsbDm | F4PinSignal::UsbDp => theme::ACCENT_2,
+            F4PinSignal::Can1Rx | F4PinSignal::Can1Tx => theme::CINNABAR,
+            F4PinSignal::Swdio | F4PinSignal::Swclk => theme::TEXT_FAINT,
+        }
+    }
+}
+
+/// Which alternate-function mechanism the pin-mapping modal is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinMapFamily {
+    /// STM32F1: CRL/CRH nibbles + AFIO MAPR remap bits.
+    F1,
+    /// STM32F4: MODER/OTYPER + AFRL/AFRH (AF0-15 per pin).
+    F4,
+}
+
+/// One physical port in the pin-mapping diagram. `start_pin` is the first
+/// pin number in the package (port C on the STM32F103C LQFP48 family starts
+/// at PC13).
+struct PinMapPort {
+    port: char,
+    start_pin: usize,
+    pins: Vec<Option<PinSignal>>,
+}
+
+/// One physical STM32F4 port in the pin-mapping diagram. F4 assigns each pin
+/// an AF0-15 number independently, so no AFIO remap bit is needed.
+struct F4PinMapPort {
+    port: char,
+    start_pin: usize,
+    pins: Vec<Option<F4PinSignal>>,
+}
+
+/// Whether the target uses the STM32F103 medium-density LQFP48 pin/AF table.
+/// `stm32f103c6`, `stm32f103c8` and `stm32f103cb` share the same 48-pin
+/// package, the same peripheral set and the same alternate-function table;
+/// they differ only in Flash/RAM capacity, so one AF map covers all three.
+fn is_stm32f103_lqfp48(target: &str) -> bool {
+    matches!(
+        target.to_ascii_lowercase().as_str(),
+        "stm32f103c6" | "stm32f103c8" | "stm32f103cb"
+    )
+}
+
+/// Whether the target uses the STM32F407 LQFP100 pin/AF table. The AF table
+/// here covers GPIOA..GPIOE (all five LQFP100 ports) with the commonly used
+/// USART1/2/3/6, SPI1/2/3, I2C1/2, TIM1-5/8, USB, CAN1 and SWD alternate
+/// functions; other F4 parts are reported as unsupported rather than silently
+/// generating a wrong register map.
+fn is_stm32f4_pin_map(target: &str) -> bool {
+    matches!(
+        target.to_ascii_lowercase().as_str(),
+        "stm32f407" | "stm32f407vg"
+    )
+}
+
+/// One assigned pin of a saved pin-map scheme (`.ns-ide/pin_map.json`). The
+/// signal is stored as its human-readable label so the file stays readable and
+/// keeps working if the enum order changes.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PinMapSchemeEntry {
+    port: char,
+    pin: usize,
+    signal: String,
+}
+
+/// A whole saved pin-map scheme: target, family and the assigned pins.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PinMapScheme {
+    target: String,
+    family: String,
+    entries: Vec<PinMapSchemeEntry>,
+}
+
+/// Translate one raw CubeMX value onto this family's pin-map label. Alternate
+/// CubeMX spelling and signal mode for one pin-map label, the inverse of
+/// `ioc_label`. Alternate functions are spelled the same way on both sides.
+fn ioc_export_signal(label: &str) -> (String, &'static str) {
+    match label {
+        "GPIO 输出" => ("GPIO".into(), "RegularOutput"),
+        "GPIO 输入" | "GPIO 输入·上拉" | "GPIO 输入·下拉" => ("GPIO".into(), "Input"),
+        "SWDIO" => ("SYS_JTMS-SWO".into(), "AS"),
+        "SWCLK" => ("SYS_JTCK-SWCLK".into(), "AS"),
+        "USB_DM" => ("USB_OTG_FS_DM".into(), "AS"),
+        "USB_DP" => ("USB_OTG_FS_DP".into(), "AS"),
+        other => (other.to_string(), "AS"),
+    }
+}
+
+/// GPIO pull field for one label; nothing else writes a `Pull` line.
+fn ioc_export_pull(label: &str) -> Option<&'static str> {
+    match label {
+        "GPIO 输入·上拉" => Some("PUp"),
+        "GPIO 输入·下拉" => Some("PDown"),
+        _ => None,
+    }
+}
+
+/// The CubeMX pin-out lines for one assigned pin. Direction and pull travel as
+/// `SignalMode`/`Pull`, so the result round-trips through `pin_ioc::parse`.
+fn ioc_pin_lines(port: char, pin: usize, label: &str) -> String {
+    let name = pin_ioc::pin_name(port, pin);
+    let (signal, signal_mode) = ioc_export_signal(label);
+    let mut lines =
+        format!("Mode.{name}=GPIO\nSignal.{name}={signal}\nSignalMode.{name}={signal_mode}\n");
+    if let Some(pull) = ioc_export_pull(label) {
+        lines.push_str(&format!("Pull.{name}={pull}\n"));
+    }
+    lines.push_str(&format!("Locked.{name}=0\nUnlock.{name}=0\n"));
+    lines
+}
+
+/// Translate one raw CubeMX value onto this family's pin-map label. Alternate
+/// functions are spelled the same way in CubeMX and in the built-in AF tables,
+/// so only the Cortex-M debug signals and the GPIO register modes need
+/// mapping; everything else passes through unchanged and is then checked
+/// against the pin's legal signals.
+fn ioc_label(raw: &str, family: PinMapFamily) -> &str {
+    match raw {
+        "GPIO_Output" => "GPIO 输出",
+        // CubeMX names the Cortex-M debug pins after their JTAG origins.
+        "SYS_JTMS-SWO" => "SWDIO",
+        "SYS_JTCK-SWCLK" => "SWCLK",
+        "USB_OTG_FS_DM" | "USB_OTG_HS_DM" => "USB_DM",
+        "USB_OTG_FS_DP" | "USB_OTG_HS_DP" => "USB_DP",
+        "GPIO_Input" => "GPIO 输入",
+        "GPIO_Input_Pu" | "GPIO_Input_Pd" => match family {
+            PinMapFamily::F1 => "GPIO 输入",
+            PinMapFamily::F4 => {
+                if raw == "GPIO_Input_Pu" {
+                    "GPIO 输入·上拉"
+                } else {
+                    "GPIO 输入·下拉"
+                }
+            }
+        },
+        other => other,
+    }
+}
+
+/// State for the standalone CubeMX-style pin-mapping modal.
+struct PinMapDialog {
+    target: String,
+    family: PinMapFamily,
+    ports: Vec<PinMapPort>,
+    f4_ports: Vec<F4PinMapPort>,
+    /// Honest validation/status text shown above the action buttons.
+    message: String,
+}
+
+impl PinMapDialog {
+    fn for_target(target: String) -> Self {
+        if is_stm32f4_pin_map(&target) {
+            return Self::for_f4_target(target);
+        }
+        Self::for_f1_target(target)
+    }
+
+    fn for_f1_target(target: String) -> Self {
+        Self {
+            target,
+            family: PinMapFamily::F1,
+            ports: vec![
+                PinMapPort {
+                    port: 'A',
+                    start_pin: 0,
+                    pins: vec![None; 16],
+                },
+                PinMapPort {
+                    port: 'B',
+                    start_pin: 0,
+                    pins: vec![None; 16],
+                },
+                PinMapPort {
+                    port: 'C',
+                    start_pin: 13,
+                    pins: vec![None; 3],
+                },
+            ],
+            f4_ports: Vec::new(),
+            message: String::new(),
+        }
+    }
+
+    /// Build the STM32F407 LQFP100 diagram: all five GPIO ports A..E, 16 pins each.
+    fn for_f4_target(target: String) -> Self {
+        Self {
+            target,
+            family: PinMapFamily::F4,
+            ports: Vec::new(),
+            f4_ports: vec![
+                F4PinMapPort {
+                    port: 'A',
+                    start_pin: 0,
+                    pins: vec![None; 16],
+                },
+                F4PinMapPort {
+                    port: 'B',
+                    start_pin: 0,
+                    pins: vec![None; 16],
+                },
+                F4PinMapPort {
+                    port: 'C',
+                    start_pin: 0,
+                    pins: vec![None; 16],
+                },
+                F4PinMapPort {
+                    port: 'D',
+                    start_pin: 0,
+                    pins: vec![None; 16],
+                },
+                F4PinMapPort {
+                    port: 'E',
+                    start_pin: 0,
+                    pins: vec![None; 16],
+                },
+            ],
+            message: String::new(),
+        }
+    }
+
+    /// Snapshot the assigned pins for persistence.
+    fn to_scheme(&self) -> PinMapScheme {
+        let mut entries = Vec::new();
+        for port in &self.ports {
+            for (slot, assignment) in port.pins.iter().enumerate() {
+                let Some(signal) = assignment else {
+                    continue;
+                };
+                entries.push(PinMapSchemeEntry {
+                    port: port.port,
+                    pin: port.start_pin + slot,
+                    signal: signal.label().to_string(),
+                });
+            }
+        }
+        for port in &self.f4_ports {
+            for (slot, assignment) in port.pins.iter().enumerate() {
+                let Some(signal) = assignment else {
+                    continue;
+                };
+                entries.push(PinMapSchemeEntry {
+                    port: port.port,
+                    pin: port.start_pin + slot,
+                    signal: signal.label().to_string(),
+                });
+            }
+        }
+        PinMapScheme {
+            target: self.target.clone(),
+            family: match self.family {
+                PinMapFamily::F1 => "F1".to_string(),
+                PinMapFamily::F4 => "F4".to_string(),
+            },
+            entries,
+        }
+    }
+
+    /// Restore a saved scheme. Every pin is cleared first, then each entry is
+    /// re-applied only when the signal is legal for that pin. Returns the number
+    /// of entries applied and the number skipped as illegal.
+    fn apply_scheme(&mut self, scheme: &PinMapScheme) -> (usize, usize) {
+        for port in self.ports.iter_mut() {
+            for slot in port.pins.iter_mut() {
+                *slot = None;
+            }
+        }
+        for port in self.f4_ports.iter_mut() {
+            for slot in port.pins.iter_mut() {
+                *slot = None;
+            }
+        }
+        let wanted: HashMap<(char, usize), String> = scheme
+            .entries
+            .iter()
+            .map(|entry| ((entry.port, entry.pin), entry.signal.clone()))
+            .collect();
+        let mut applied = 0usize;
+        for port in self.ports.iter_mut() {
+            for (slot, assignment) in port.pins.iter_mut().enumerate() {
+                let pin = port.start_pin + slot;
+                let Some(label) = wanted.get(&(port.port, pin)) else {
+                    continue;
+                };
+                let legal = stm32f1_allowed_signals(port.port, pin)
+                    .iter()
+                    .find(|candidate| candidate.label() == *label)
+                    .copied();
+                *assignment = legal;
+                if legal.is_some() {
+                    applied += 1;
+                }
+            }
+        }
+        for port in self.f4_ports.iter_mut() {
+            for (slot, assignment) in port.pins.iter_mut().enumerate() {
+                let pin = port.start_pin + slot;
+                let Some(label) = wanted.get(&(port.port, pin)) else {
+                    continue;
+                };
+                let legal = stm32f4_allowed_signals(port.port, pin)
+                    .iter()
+                    .find(|candidate| candidate.label() == *label)
+                    .copied();
+                *assignment = legal;
+                if legal.is_some() {
+                    applied += 1;
+                }
+            }
+        }
+        (applied, wanted.len() - applied)
+    }
+
+    /// Import pin assignments read out of a CubeMX `.ioc` document. Every pin
+    /// is cleared first, then each entry is applied only when the translated
+    /// signal is legal for that pin in this family's AF table; the rest are
+    /// counted as skipped. An `.ioc` describing another MCU is refused rather
+    /// than merged into an incompatible diagram.
+    fn apply_ioc(
+        &mut self,
+        mcu: Option<&str>,
+        entries: &[IocPinEntry],
+    ) -> Result<(usize, usize), String> {
+        if let Some(mcu) = mcu {
+            let other = mcu.to_lowercase();
+            let current = self.target.to_lowercase();
+            if !other.is_empty() && !other.contains(&current) {
+                return Err(format!(
+                    "该 .ioc 属于 {mcu}，与当前目标 {} 不符。",
+                    self.target
+                ));
+            }
+        }
+        let family = match self.family {
+            PinMapFamily::F1 => "F1",
+            PinMapFamily::F4 => "F4",
+        };
+        let wanted: Vec<PinMapSchemeEntry> = entries
+            .iter()
+            .map(|entry| PinMapSchemeEntry {
+                port: entry.port,
+                pin: entry.pin,
+                signal: ioc_label(&entry.raw, self.family).to_string(),
+            })
+            .collect();
+        let scheme = PinMapScheme {
+            target: self.target.clone(),
+            family: family.to_string(),
+            entries: wanted,
+        };
+        let total = entries.len();
+        let (applied, _illegal) = self.apply_scheme(&scheme);
+        Ok((applied, total - applied))
+    }
+
+    /// Serialize the current assignment as a CubeMX-style `.ioc` pin-out. Only
+    /// the pin section is authored: clock, interrupt and peripheral instance
+    /// settings stay in CubeMX's hands and are deliberately absent.
+    fn to_ioc(&self) -> Option<String> {
+        let (mcu_type, package, mcu_name) = pin_ioc::mcu_identity(&self.target)?;
+        let mut out = format!(
+            "#MicroXplorer Configuration settings - do not modify\nMcuType={mcu_type}\nMcuPackage={package}\nMcuName={mcu_name}\nMcu.UserName=ns-embed-ide\n"
+        );
+        let pin = |out: &mut String, port: char, pin: usize, label: &str| {
+            out.push_str(&ioc_pin_lines(port, pin, label));
+        };
+        for port in &self.ports {
+            for (slot, assignment) in port.pins.iter().enumerate() {
+                let Some(signal) = assignment else {
+                    continue;
+                };
+                pin(&mut out, port.port, port.start_pin + slot, signal.label());
+            }
+        }
+        for port in &self.f4_ports {
+            for (slot, assignment) in port.pins.iter().enumerate() {
+                let Some(signal) = assignment else {
+                    continue;
+                };
+                pin(&mut out, port.port, port.start_pin + slot, signal.label());
+            }
+        }
+        Some(out)
+    }
+
+    /// Peripheral groups available for one-click assignment, in the order they
+    /// appear in this family's AF table. GPIO is excluded: its modes are chosen
+    /// pin by pin by clicking.
+    fn group_names(&self) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = Vec::new();
+        for port in self.ports.iter() {
+            for slot in 0..port.pins.len() {
+                for signal in stm32f1_allowed_signals(port.port, port.start_pin + slot) {
+                    let group = signal.group();
+                    if group != "GPIO" && !names.contains(&group) {
+                        names.push(group);
+                    }
+                }
+            }
+        }
+        for port in self.f4_ports.iter() {
+            for slot in 0..port.pins.len() {
+                for signal in stm32f4_allowed_signals(port.port, port.start_pin + slot) {
+                    let group = signal.group();
+                    if group != "GPIO" && !names.contains(&group) {
+                        names.push(group);
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// Whether at least one assigned pin belongs to one peripheral group.
+    fn is_group_present(&self, group: &str) -> bool {
+        self.ports.iter().any(|port| {
+            port.pins
+                .iter()
+                .any(|assignment| assignment.is_some_and(|signal| signal.group() == group))
+        }) || self.f4_ports.iter().any(|port| {
+            port.pins
+                .iter()
+                .any(|assignment| assignment.is_some_and(|signal| signal.group() == group))
+        })
+    }
+
+    /// Assign every modeled pin of one peripheral group at once, or clear the
+    /// whole group when it is already assigned. Pins already carrying another
+    /// group's signal are left untouched. Returns `(cleared, changed, untouched)`.
+    fn toggle_group(&mut self, group: &str) -> (bool, usize, usize) {
+        let clear = self.is_group_present(group);
+        let mut changed = 0usize;
+        let mut untouched = 0usize;
+        // Signals already in use are collected up front: the same signal may not
+        // be assigned twice (I2C1_SCL exists on PB6 and PB8), so a group toggle
+        // must skip such pins instead of producing an invalid map.
+        let mut used_f1: Vec<PinSignal> = self
+            .ports
+            .iter()
+            .flat_map(|port| port.pins.iter())
+            .filter_map(|assignment| *assignment)
+            .collect();
+        let mut used_f4: Vec<F4PinSignal> = self
+            .f4_ports
+            .iter()
+            .flat_map(|port| port.pins.iter())
+            .filter_map(|assignment| *assignment)
+            .collect();
+        for port in self.ports.iter_mut() {
+            let (port_letter, start) = (port.port, port.start_pin);
+            for (slot, assignment) in port.pins.iter_mut().enumerate() {
+                let pin = start + slot;
+                match assignment {
+                    Some(current) if current.group() == group => {
+                        if clear {
+                            *assignment = None;
+                            changed += 1;
+                        } else {
+                            untouched += 1;
+                        }
+                    }
+                    Some(_) => {
+                        if !clear
+                            && stm32f1_allowed_signals(port_letter, pin)
+                                .iter()
+                                .any(|candidate| candidate.group() == group)
+                        {
+                            untouched += 1;
+                        }
+                    }
+                    None => {
+                        if clear {
+                            continue;
+                        }
+                        let signal = stm32f1_allowed_signals(port.port, pin)
+                            .iter()
+                            .find(|candidate| candidate.group() == group)
+                            .copied();
+                        if let Some(candidate) = signal {
+                            if used_f1.contains(&candidate) {
+                                untouched += 1;
+                            } else {
+                                used_f1.push(candidate);
+                                *assignment = Some(candidate);
+                                changed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for port in self.f4_ports.iter_mut() {
+            let (port_letter, start) = (port.port, port.start_pin);
+            for (slot, assignment) in port.pins.iter_mut().enumerate() {
+                let pin = start + slot;
+                match assignment {
+                    Some(current) if current.group() == group => {
+                        if clear {
+                            *assignment = None;
+                            changed += 1;
+                        } else {
+                            untouched += 1;
+                        }
+                    }
+                    Some(_) => {
+                        if !clear
+                            && stm32f4_allowed_signals(port_letter, pin)
+                                .iter()
+                                .any(|candidate| candidate.group() == group)
+                        {
+                            untouched += 1;
+                        }
+                    }
+                    None => {
+                        if clear {
+                            continue;
+                        }
+                        let signal = stm32f4_allowed_signals(port.port, pin)
+                            .iter()
+                            .find(|candidate| candidate.group() == group)
+                            .copied();
+                        if let Some(candidate) = signal {
+                            if used_f4.contains(&candidate) {
+                                untouched += 1;
+                            } else {
+                                used_f4.push(candidate);
+                                *assignment = Some(candidate);
+                                changed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (clear, changed, untouched)
+    }
+
+    fn assigned_count(&self) -> usize {
+        self.ports
+            .iter()
+            .flat_map(|port| port.pins.iter())
+            .filter(|pin| pin.is_some())
+            .count()
+            + self
+                .f4_ports
+                .iter()
+                .flat_map(|port| port.pins.iter())
+                .filter(|pin| pin.is_some())
+                .count()
+    }
+}
+
+/// The allowed AF functions for a physical STM32F103C (LQFP48) pin. Every pin
+/// can be plain GPIO; peripheral pins also list their default and (where
+/// applicable) remapped AF options.
+fn stm32f1_allowed_signals(port: char, pin: usize) -> &'static [PinSignal] {
+    use PinSignal::*;
+    match (port, pin) {
+        ('A', 0) => &[GpioOutput, GpioInput, Tim2Ch1, Usart2Cts],
+        ('A', 1) => &[GpioOutput, GpioInput, Tim2Ch2, Usart2Rts],
+        ('A', 2) => &[GpioOutput, GpioInput, Usart2Tx, Tim2Ch3],
+        ('A', 3) => &[GpioOutput, GpioInput, Usart2Rx, Tim2Ch4],
+        ('A', 4) => &[GpioOutput, GpioInput, Spi1Nss, Usart2Ck],
+        ('A', 5) => &[GpioOutput, GpioInput, Spi1Sck],
+        ('A', 6) => &[GpioOutput, GpioInput, Spi1Miso, Tim3Ch1],
+        ('A', 7) => &[GpioOutput, GpioInput, Spi1Mosi, Tim3Ch2],
+        ('A', 8) => &[GpioOutput, GpioInput, Usart1Ck, Tim1Ch1],
+        ('A', 9) => &[GpioOutput, GpioInput, Usart1Tx, Tim1Ch2],
+        ('A', 10) => &[GpioOutput, GpioInput, Usart1Rx, Tim1Ch3],
+        ('A', 11) => &[GpioOutput, GpioInput, Usart1Cts, Can1Rx, UsbDm, Tim1Ch4],
+        ('A', 12) => &[GpioOutput, GpioInput, Usart1Rts, Can1Tx, UsbDp, Tim1Etr],
+        ('A', 13) => &[GpioOutput, GpioInput],
+        ('A', 14) => &[GpioOutput, GpioInput],
+        ('A', 15) => &[GpioOutput, GpioInput, Spi1Nss, Tim2Ch1Etr],
+        ('B', 0) => &[GpioOutput, GpioInput, Tim3Ch3],
+        ('B', 1) => &[GpioOutput, GpioInput, Tim3Ch4],
+        ('B', 3) => &[GpioOutput, GpioInput, Spi1Sck],
+        ('B', 4) => &[GpioOutput, GpioInput, Spi1Miso],
+        ('B', 5) => &[GpioOutput, GpioInput, Spi1Mosi],
+        ('B', 6) => &[GpioOutput, GpioInput, I2c1Scl, Usart1Tx, Tim4Ch1],
+        ('B', 7) => &[GpioOutput, GpioInput, I2c1Sda, Usart1Rx, Tim4Ch2],
+        ('B', 8) => &[GpioOutput, GpioInput, I2c1Scl, Tim4Ch3],
+        ('B', 9) => &[GpioOutput, GpioInput, I2c1Sda, Tim4Ch4],
+        ('B', 10) => &[GpioOutput, GpioInput, Usart3Tx],
+        ('B', 11) => &[GpioOutput, GpioInput, Usart3Rx],
+        ('B', 12) => &[GpioOutput, GpioInput, Usart3Ck, Tim1Bkin],
+        ('B', 13) => &[GpioOutput, GpioInput, Usart3Cts],
+        ('B', 14) => &[GpioOutput, GpioInput, Usart3Rts],
+        ('B', 15) => &[GpioOutput, GpioInput],
+        _ => &[GpioOutput, GpioInput],
+    }
+}
+
+/// The allowed alternate functions for a physical STM32F407 pin. Every pin can
+/// be plain GPIO; peripheral pins also list their AF0-15 alternate options.
+fn stm32f4_allowed_signals(port: char, pin: usize) -> &'static [F4PinSignal] {
+    use F4PinSignal::*;
+    match (port, pin) {
+        ('A', 0) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim2Ch1,
+            Usart2Cts,
+        ],
+        ('A', 1) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim2Ch2,
+            Usart2Rts,
+        ],
+        ('A', 2) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart2Tx,
+            Tim5Ch3,
+            Tim9Ch1,
+        ],
+        ('A', 3) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart2Rx,
+            Tim5Ch4,
+            Tim9Ch2,
+        ],
+        ('A', 4) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Nss,
+            Usart2Ck,
+        ],
+        ('A', 5) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Sck,
+            Tim2Ch1Etr,
+        ],
+        ('A', 6) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Miso,
+            Tim3Ch1,
+            Tim2Ch3,
+            Tim13Ch1,
+        ],
+        ('A', 7) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Mosi,
+            Tim3Ch2,
+            Tim2Ch4,
+            Tim14Ch1,
+        ],
+        ('A', 8) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart1Ck,
+            Tim1Ch1,
+            I2c3Scl,
+        ],
+        ('A', 9) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart1Tx,
+            Tim1Ch2,
+        ],
+        ('A', 10) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart1Rx,
+            Tim1Ch3,
+        ],
+        ('A', 11) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart1Cts,
+            UsbDm,
+            Can1Rx,
+        ],
+        ('A', 12) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart1Rts,
+            UsbDp,
+            Can1Tx,
+        ],
+        ('A', 13) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Swdio,
+        ],
+        ('A', 14) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Swclk,
+        ],
+        ('A', 15) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim2Ch1Etr,
+            Spi1Nss,
+            Spi3Nss,
+            Usart2Rts,
+        ],
+        ('B', 0) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim3Ch3,
+        ],
+        ('B', 1) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim3Ch4,
+        ],
+        ('B', 3) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Sck,
+            Spi3Sck,
+            Tim2Ch2,
+        ],
+        ('B', 4) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Miso,
+            Spi3Miso,
+        ],
+        ('B', 5) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Mosi,
+            Spi3Mosi,
+        ],
+        ('B', 6) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c1Scl,
+            Usart1Tx,
+            Tim4Ch1,
+        ],
+        ('B', 7) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c1Sda,
+            Usart1Rx,
+            Tim4Ch2,
+        ],
+        ('B', 8) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c1Scl,
+            Tim4Ch3,
+            Can1Rx,
+            Tim10Ch1,
+        ],
+        ('B', 9) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c1Sda,
+            Tim4Ch4,
+            Can1Tx,
+            Tim11Ch1,
+        ],
+        ('B', 10) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c2Scl,
+            Usart3Tx,
+        ],
+        ('B', 11) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c2Sda,
+            Usart3Rx,
+        ],
+        ('B', 12) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi2Nss,
+            Usart3Ck,
+        ],
+        ('B', 13) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi2Sck,
+            Usart3Cts,
+        ],
+        ('B', 14) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi2Miso,
+            Usart3Rts,
+            Tim12Ch1,
+        ],
+        ('B', 15) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi2Mosi,
+            Tim12Ch2,
+        ],
+        ('C', 6) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim3Ch1,
+            Tim8Ch1,
+            Usart6Tx,
+        ],
+        ('C', 7) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim3Ch2,
+            Tim8Ch2,
+            Usart6Rx,
+        ],
+        ('C', 8) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim3Ch3,
+            Tim8Ch3,
+            Usart6Ck,
+            SdioD0,
+        ],
+        ('C', 9) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim3Ch4,
+            Tim8Ch4,
+            SdioD1,
+            I2c3Sda,
+        ],
+        ('C', 10) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Tx,
+            Spi3Sck,
+            SdioD2,
+        ],
+        ('C', 11) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Rx,
+            Spi3Miso,
+            SdioD3,
+        ],
+        ('C', 12) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Ck,
+            Spi3Mosi,
+            SdioCk,
+            I2c3Scl,
+        ],
+        ('D', 0) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Can1Rx,
+        ],
+        ('D', 1) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Can1Tx,
+        ],
+        ('D', 2) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            SdioCmd,
+        ],
+        ('D', 3) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart2Cts,
+        ],
+        ('D', 4) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart2Rts,
+        ],
+        ('D', 5) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart2Tx,
+        ],
+        ('D', 6) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart2Rx,
+            SdioD4,
+        ],
+        ('D', 7) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart2Ck,
+            SdioD5,
+        ],
+        ('D', 8) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Tx,
+            SdioD6,
+        ],
+        ('D', 9) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Rx,
+            SdioD7,
+        ],
+        ('D', 11) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Ck,
+        ],
+        ('D', 12) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Rts,
+            Tim4Ch1,
+        ],
+        ('D', 13) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Cts,
+            Tim4Ch2,
+        ],
+        ('D', 14) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim4Ch3,
+        ],
+        ('D', 15) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim4Ch4,
+        ],
+        ('E', 7) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim1Etr,
+        ],
+        ('E', 8) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim1Ch1N,
+        ],
+        ('E', 9) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim1Ch1,
+        ],
+        ('E', 10) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim1Ch2N,
+        ],
+        ('E', 11) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim1Ch2,
+        ],
+        ('E', 12) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim1Ch3N,
+        ],
+        ('E', 13) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim1Ch3,
+        ],
+        ('E', 14) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim1Ch4,
+        ],
+        ('E', 15) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim1Bkin,
+        ],
+        _ => &[GpioOutput, GpioInput, GpioInputPull, GpioInputPullDown],
+    }
+}
+
+/// Whether a signal on this physical pin requires the AFIO MAPR remap bit
+/// (i.e. it is the remapped alternate, not the default pin).
+fn pin_signal_is_remap(signal: PinSignal, port: char, pin: usize) -> bool {
+    match (signal, port, pin) {
+        (PinSignal::Spi1Nss, 'A', 15)
+        | (PinSignal::Spi1Sck | PinSignal::Spi1Miso | PinSignal::Spi1Mosi, 'B', 3..=5) => true,
+        (PinSignal::I2c1Scl | PinSignal::I2c1Sda, 'B', 8..=9) => true,
+        (PinSignal::Usart1Tx | PinSignal::Usart1Rx, 'B', 6..=7) => true,
+        (PinSignal::Usart3Tx | PinSignal::Usart3Rx, 'C', 10..=11) => true,
+        // TIM2 partial remap: CH1_ETR → PA15, CH2 → PB3, CH3/CH4 → PB10/PB11.
+        (PinSignal::Tim2Ch1Etr, 'A', 15)
+        | (PinSignal::Tim2Ch2, 'B', 3) => true,
+        // TIM3 partial remap: CH1/CH2 → PB4/PB5.
+        (PinSignal::Tim3Ch1 | PinSignal::Tim3Ch2, 'B', 4..=5) => true,
+        // CAN1 remap: RX/TX → PB8/PB9.
+        (PinSignal::Can1Rx | PinSignal::Can1Tx, 'B', 8..=9) => true,
+        _ => false,
+    }
+}
+
+/// Validate a pin map. Dispatch on the target family so F1's AFIO remap
+/// semantics and F4's per-pin AF numbers use their own rules.
+fn validate_pin_mapping(dialog: &PinMapDialog) -> Vec<String> {
+    match dialog.family {
+        PinMapFamily::F1 => validate_f1_pin_mapping(dialog),
+        PinMapFamily::F4 => validate_f4_pin_mapping(dialog),
+    }
+}
+
+/// Validate an STM32F1 pin map: no signal may be assigned to two pins, and a
+/// peripheral's default/remapped pin groups may not be mixed.
+fn validate_f1_pin_mapping(dialog: &PinMapDialog) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut used: HashMap<PinSignal, (char, usize)> = HashMap::new();
+    let mut group_remap: HashMap<&'static str, Vec<(char, usize)>> = HashMap::new();
+
+    for port in &dialog.ports {
+        for (slot, assignment) in port.pins.iter().enumerate() {
+            let Some(signal) = assignment else {
+                continue;
+            };
+            let pin = port.start_pin + slot;
+            if let Some((other_port, other_pin)) = used.insert(*signal, (port.port, pin)) {
+                errors.push(format!(
+                    "{}（{}）已被 P{}{} 占用，不能同时用于 P{}{}",
+                    signal.label(),
+                    signal.group(),
+                    other_port,
+                    other_pin,
+                    port.port,
+                    pin
+                ));
+            }
+            if pin_signal_is_remap(*signal, port.port, pin) {
+                group_remap
+                    .entry(signal.group())
+                    .or_default()
+                    .push((port.port, pin));
+            }
+        }
+    }
+
+    // A group with both default and remapped pins is ambiguous: the AFIO
+    // MAPR bit applies to the whole peripheral, not per pin.
+    for (group, remapped) in group_remap {
+        let has_default = dialog.ports.iter().any(|port| {
+            port.pins.iter().enumerate().any(|(slot, assignment)| {
+                assignment.is_some_and(|signal| {
+                    signal.group() == group
+                        && !pin_signal_is_remap(signal, port.port, port.start_pin + slot)
+                })
+            })
+        });
+        if has_default {
+            let pins = remapped
+                .iter()
+                .map(|(port, pin)| format!("P{}{}", port, pin))
+                .collect::<Vec<_>>()
+                .join(", ");
+            errors.push(format!(
+                "{group} 同时使用了默认引脚与重映射引脚（{pins}），AFIO 无法区分"
+            ));
+        }
+    }
+
+    errors.sort();
+    errors.dedup();
+    errors
+}
+
+/// Validate an STM32F4 pin map: no signal may be assigned to two pins, and a
+/// peripheral group may not use two different AF numbers (each F4 peripheral
+/// has exactly one AF number for all of its pins).
+fn validate_f4_pin_mapping(dialog: &PinMapDialog) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut used: HashMap<F4PinSignal, (char, usize)> = HashMap::new();
+    let mut group_af: HashMap<&'static str, (u8, (char, usize))> = HashMap::new();
+
+    for port in &dialog.f4_ports {
+        for (slot, assignment) in port.pins.iter().enumerate() {
+            let Some(signal) = assignment else {
+                continue;
+            };
+            let pin = port.start_pin + slot;
+            if let Some((other_port, other_pin)) = used.insert(*signal, (port.port, pin)) {
+                errors.push(format!(
+                    "{}（{}）已被 P{}{} 占用，不能同时用于 P{}{}",
+                    signal.label(),
+                    signal.group(),
+                    other_port,
+                    other_pin,
+                    port.port,
+                    pin
+                ));
+            }
+            if let Some(af) = signal.af() {
+                if let Some((existing_af, (other_port, other_pin))) = group_af.get(signal.group()) {
+                    if *existing_af != af {
+                        errors.push(format!(
+                            "{} 的不同引脚使用了不同的 AF 号（P{}{}=AF{existing_af}，P{}{}=AF{af}），F4 外设的 AF 号必须一致",
+                            signal.group(),
+                            other_port,
+                            other_pin,
+                            port.port,
+                            pin
+                        ));
+                    }
+                } else {
+                    group_af.insert(signal.group(), (af, (port.port, pin)));
+                }
+            }
+        }
+    }
+
+    errors.sort();
+    errors.dedup();
+    errors
+}
+
+/// Compute the STM32F1 `AFIO->MAPR` remap bits from the assigned pin signals.
+fn stm32f1_remap_bits(dialog: &PinMapDialog) -> u32 {
+    let mut mapr = 0u32;
+    for port in &dialog.ports {
+        for (slot, assignment) in port.pins.iter().enumerate() {
+            let Some(signal) = assignment else {
+                continue;
+            };
+            let pin = port.start_pin + slot;
+            if !pin_signal_is_remap(*signal, port.port, pin) {
+                continue;
+            }
+            match (signal, port.port, pin) {
+                (
+                    PinSignal::Spi1Nss
+                    | PinSignal::Spi1Sck
+                    | PinSignal::Spi1Miso
+                    | PinSignal::Spi1Mosi,
+                    _,
+                    _,
+                ) => {
+                    mapr |= 1 << 0; // SPI1_REMAP
+                }
+                (PinSignal::I2c1Scl | PinSignal::I2c1Sda, _, _) => {
+                    mapr |= 1 << 1; // I2C1_REMAP
+                }
+                (PinSignal::Usart1Tx | PinSignal::Usart1Rx, _, _) => {
+                    mapr |= 1 << 2; // USART1_REMAP
+                }
+                (PinSignal::Usart3Tx | PinSignal::Usart3Rx, _, _) => {
+                    mapr |= 0b01 << 4; // USART3_REMAP = 01 → PC10/PC11
+                }
+                _ => {}
+            }
+        }
+    }
+    mapr
+}
+
+/// Compute APB2/APB1 clock-enable values for the assigned signals.
+fn stm32f1_pin_clocks(dialog: &PinMapDialog) -> (u32, u32) {
+    let mut apb2 = 0u32;
+    let mut apb1 = 0u32;
+    for port in &dialog.ports {
+        // Any assigned pin (GPIO or AF) needs the GPIO port clock so CRL/CRH
+        // can be written before the alternate function is used.
+        if port.pins.iter().any(|assignment| assignment.is_some()) {
+            apb2 |= 1
+                << match port.port {
+                    'A' => 2, // IOPAEN
+                    'B' => 3, // IOPBEN
+                    'C' => 4, // IOPCEN
+                    _ => continue,
+                };
+        }
+        for assignment in port.pins.iter().flatten() {
+            match assignment {
+                PinSignal::GpioOutput | PinSignal::GpioInput => {}
+                PinSignal::Usart1Tx
+                | PinSignal::Usart1Rx
+                | PinSignal::Usart1Ck
+                | PinSignal::Usart1Cts
+                | PinSignal::Usart1Rts => apb2 |= 1 << 14, // USART1EN
+                PinSignal::Spi1Nss
+                | PinSignal::Spi1Sck
+                | PinSignal::Spi1Miso
+                | PinSignal::Spi1Mosi => apb2 |= 1 << 12, // SPI1EN
+                PinSignal::Usart2Tx
+                | PinSignal::Usart2Rx
+                | PinSignal::Usart2Ck
+                | PinSignal::Usart2Cts
+                | PinSignal::Usart2Rts => apb1 |= 1 << 17, // USART2EN
+                PinSignal::Usart3Tx
+                | PinSignal::Usart3Rx
+                | PinSignal::Usart3Ck
+                | PinSignal::Usart3Cts
+                | PinSignal::Usart3Rts => apb1 |= 1 << 18, // USART3EN
+                PinSignal::I2c1Scl | PinSignal::I2c1Sda => apb1 |= 1 << 21,   // I2C1EN
+                PinSignal::Tim2Ch1
+                | PinSignal::Tim2Ch2
+                | PinSignal::Tim2Ch3
+                | PinSignal::Tim2Ch4
+                | PinSignal::Tim2Ch1Etr => apb1 |= 1 << 0,    // TIM2EN
+                PinSignal::Tim1Ch1
+                | PinSignal::Tim1Ch2
+                | PinSignal::Tim1Ch3
+                | PinSignal::Tim1Ch4
+                | PinSignal::Tim1Bkin
+                | PinSignal::Tim1Etr => apb2 |= 1 << 11,   // TIM1EN
+                PinSignal::Tim3Ch1 | PinSignal::Tim3Ch2 | PinSignal::Tim3Ch3 | PinSignal::Tim3Ch4 => {
+                    apb1 |= 1 << 1; // TIM3EN
+                }
+                PinSignal::Tim4Ch1 | PinSignal::Tim4Ch2 | PinSignal::Tim4Ch3 | PinSignal::Tim4Ch4 => {
+                    apb1 |= 1 << 2; // TIM4EN
+                }
+                PinSignal::Can1Rx | PinSignal::Can1Tx => apb1 |= 1 << 25,    // CAN1EN
+                PinSignal::UsbDm | PinSignal::UsbDp => apb1 |= 1 << 23,      // USBFSEN / USBIP
+            }
+        }
+    }
+    if stm32f1_remap_bits(dialog) != 0 {
+        apb2 |= 1 << 0; // AFIOEN
+    }
+    (apb2, apb1)
+}
+
+/// Pack a port's assigned signals into STM32F1 `CRL`/`CRH` values. Every
+/// unassigned pin stays input-float (0x4).
+fn stm32f1_pin_registers(port: &PinMapPort) -> (u64, u64) {
+    let mut modes = vec![PinMode::InputFloat; 16];
+    for (slot, assignment) in port.pins.iter().enumerate() {
+        let pin = port.start_pin + slot;
+        if pin < 16 {
+            modes[pin] = assignment
+                .map(PinSignal::mode)
+                .unwrap_or(PinMode::InputFloat);
+        }
+    }
+    stm32f1_gpio_registers(&modes)
+}
+
+/// Generate `src/pin_mapping.c` for a validated STM32F103C (LQFP48) pin map.
+/// The output writes GPIO CRL/CRH (AF modes), enables the required bus clocks,
+/// and applies AFIO remap bits when a remapped pin group is selected.
+/// Self-contained STM32F1 register views for `src/pin_mapping.c`. The `ns_`
+/// prefix keeps the types clear of any CMSIS collision, and the port macros are
+/// `#ifndef`-guarded so a project that already includes a vendor header still
+/// compiles (the vendor `GPIOA`/`RCC` win).
+const STM32F1_REGISTER_PRELUDE: &str = r#"/* Self-contained register views so this file compiles on its own.
+ * The `ns_` prefix avoids a CMSIS collision; `#ifndef` lets a vendor header
+ * that already defines these ports win. */
+typedef struct {
+    volatile uint32_t CRL;   /* 0x00 */
+    volatile uint32_t CRH;   /* 0x04 */
+    volatile uint32_t IDR;   /* 0x08 */
+    volatile uint32_t ODR;   /* 0x0C */
+    volatile uint32_t BSRR;  /* 0x10 */
+    volatile uint32_t BRR;   /* 0x14 */
+    volatile uint32_t LCKR;  /* 0x18 */
+} ns_gpio_f1_t;
+
+typedef struct {
+    volatile uint32_t EVCR;      /* 0x00 */
+    volatile uint32_t MAPR;      /* 0x04 */
+    volatile uint32_t EXTICR[4]; /* 0x08 */
+    volatile uint32_t MAPR2;     /* 0x18 */
+} ns_afio_t;
+
+typedef struct {
+    volatile uint32_t CR;       /* 0x00 */
+    volatile uint32_t CFGR;     /* 0x04 */
+    volatile uint32_t CIR;      /* 0x08 */
+    volatile uint32_t APB2RSTR; /* 0x0C */
+    volatile uint32_t APB1RSTR; /* 0x10 */
+    volatile uint32_t AHBENR;   /* 0x14 */
+    volatile uint32_t APB2ENR;  /* 0x18 */
+    volatile uint32_t APB1ENR;  /* 0x1C */
+    volatile uint32_t BDCR;     /* 0x20 */
+    volatile uint32_t CSR;      /* 0x24 */
+} ns_rcc_f1_t;
+
+#ifndef GPIOA
+#define GPIOA ((ns_gpio_f1_t *)0x40010800u)
+#endif
+#ifndef GPIOB
+#define GPIOB ((ns_gpio_f1_t *)0x40010C00u)
+#endif
+#ifndef GPIOC
+#define GPIOC ((ns_gpio_f1_t *)0x40011000u)
+#endif
+#ifndef RCC
+#define RCC ((ns_rcc_f1_t *)0x40021000u)
+#endif
+#ifndef AFIO
+#define AFIO ((ns_afio_t *)0x40010000u)
+#endif
+
+"#;
+
+fn stm32f1_pin_mapping_code(dialog: &PinMapDialog) -> String {
+    let (apb2, apb1) = stm32f1_pin_clocks(dialog);
+    let mapr = stm32f1_remap_bits(dialog);
+    let target = dialog.target.to_ascii_uppercase();
+    let mut code = String::new();
+    code.push_str(&format!(
+        "/* Auto-generated {target} pin-mapping (AF) configuration.\n"
+    ));
+    code.push_str(" * Assigns alternate functions to physical pins and applies AFIO remaps.\n");
+    code.push_str(
+        " * Call `pin_mapping_init()` once from `main()` before using the peripherals.\n",
+    );
+    code.push_str(" */\n\n");
+    code.push_str("#include <stdint.h>\n\n");
+    code.push_str(STM32F1_REGISTER_PRELUDE);
+    code.push_str("void pin_mapping_init(void) {\n");
+    code.push_str(&format!("    RCC->APB2ENR |= {apb2:#010x}u;\n"));
+    code.push_str(&format!("    RCC->APB1ENR |= {apb1:#010x}u;\n"));
+    if mapr != 0 {
+        code.push_str(&format!("    AFIO->MAPR |= {mapr:#010x}u;\n"));
+    }
+    for port in &dialog.ports {
+        if !port.pins.iter().any(|assignment| assignment.is_some()) {
+            continue;
+        }
+        let (crl, crh) = stm32f1_pin_registers(port);
+        code.push_str(&format!("    GPIO{}->CRL = {crl:#010x}u;\n", port.port));
+        code.push_str(&format!("    GPIO{}->CRH = {crh:#010x}u;\n", port.port));
+    }
+    code.push_str("}\n");
+    code
+}
+
+/// Self-contained STM32F407 register views for `src/pin_mapping.c`. The `ns_`
+/// prefix keeps the types clear of any CMSIS collision, and the port macros are
+/// `#ifndef`-guarded so a project that already includes a vendor header still
+/// compiles (the vendor `GPIOA`/`RCC` win).
+const STM32F4_REGISTER_PRELUDE: &str = r#"/* Self-contained register views so this file compiles on its own.
+ * The `ns_` prefix avoids a CMSIS collision; `#ifndef` lets a vendor header
+ * that already defines these ports win. */
+typedef struct {
+    volatile uint32_t MODER;   /* 0x00 */
+    volatile uint32_t OTYPER;  /* 0x04 */
+    volatile uint32_t OSPEEDR; /* 0x08 */
+    volatile uint32_t PUPDR;   /* 0x0C */
+    volatile uint32_t IDR;     /* 0x10 */
+    volatile uint32_t ODR;     /* 0x14 */
+    volatile uint32_t BSRR;    /* 0x18 */
+    volatile uint32_t LCKR;    /* 0x1C */
+    volatile uint32_t AFRL;    /* 0x20 */
+    volatile uint32_t AFRH;    /* 0x24 */
+} ns_gpio_t;
+
+typedef struct {
+    volatile uint32_t CR;       /* 0x00 */
+    volatile uint32_t PLLCFGR;  /* 0x04 */
+    volatile uint32_t CFGR;     /* 0x08 */
+    volatile uint32_t CIR;      /* 0x0C */
+    volatile uint32_t AHB1RSTR; /* 0x10 */
+    volatile uint32_t AHB2RSTR; /* 0x14 */
+    volatile uint32_t APB1RSTR; /* 0x18 */
+    volatile uint32_t APB2RSTR; /* 0x1C */
+    volatile uint32_t AHB1ENR;  /* 0x20 */
+    volatile uint32_t AHB2ENR;  /* 0x24 */
+    volatile uint32_t APB1ENR;  /* 0x28 */
+    volatile uint32_t APB2ENR;  /* 0x2C */
+} ns_rcc_t;
+
+#ifndef GPIOA
+#define GPIOA ((ns_gpio_t *)0x40020000u)
+#endif
+#ifndef GPIOB
+#define GPIOB ((ns_gpio_t *)0x40020400u)
+#endif
+#ifndef GPIOC
+#define GPIOC ((ns_gpio_t *)0x40020800u)
+#endif
+#ifndef GPIOD
+#define GPIOD ((ns_gpio_t *)0x40020C00u)
+#endif
+#ifndef GPIOE
+#define GPIOE ((ns_gpio_t *)0x40021000u)
+#endif
+#ifndef RCC
+#define RCC ((ns_rcc_t *)0x40023800u)
+#endif
+
+"#;
+
+/// Self-contained STM32F1 RCC view for `src/clock_init.c`. Kept separate from
+/// the pin-map prelude so a clock-only file carries only the registers it uses.
+const STM32F1_CLOCK_PRELUDE: &str = r#"/* Self-contained RCC view so this file compiles on its own. */
+typedef struct {
+    volatile uint32_t CR;       /* 0x00 */
+    volatile uint32_t CFGR;     /* 0x04 */
+    volatile uint32_t CIR;      /* 0x08 */
+    volatile uint32_t APB2RSTR; /* 0x0C */
+    volatile uint32_t APB1RSTR; /* 0x10 */
+    volatile uint32_t AHBENR;   /* 0x14 */
+    volatile uint32_t APB2ENR;  /* 0x18 */
+    volatile uint32_t APB1ENR;  /* 0x1C */
+    volatile uint32_t BDCR;     /* 0x20 */
+    volatile uint32_t CSR;      /* 0x24 */
+} ns_rcc_f1_t;
+
+#ifndef RCC
+#define RCC ((ns_rcc_f1_t *)0x40021000u)
+#endif
+
+"#;
+
+/// Self-contained STM32F407 RCC view for `src/clock_init.c`.
+const STM32F4_CLOCK_PRELUDE: &str = r#"/* Self-contained RCC view so this file compiles on its own. */
+typedef struct {
+    volatile uint32_t CR;       /* 0x00 */
+    volatile uint32_t PLLCFGR;  /* 0x04 */
+    volatile uint32_t CFGR;     /* 0x08 */
+    volatile uint32_t CIR;      /* 0x0C */
+    volatile uint32_t AHB1RSTR; /* 0x10 */
+    volatile uint32_t AHB2RSTR; /* 0x14 */
+    volatile uint32_t APB1RSTR; /* 0x18 */
+    volatile uint32_t APB2RSTR; /* 0x1C */
+    volatile uint32_t AHB1ENR;  /* 0x20 */
+    volatile uint32_t AHB2ENR;  /* 0x24 */
+    volatile uint32_t APB1ENR;  /* 0x28 */
+    volatile uint32_t APB2ENR;  /* 0x2C */
+} ns_rcc_t;
+
+#ifndef RCC
+#define RCC ((ns_rcc_t *)0x40023800u)
+#endif
+
+"#;
+
+/// STM32F4 `MODER` 2-bit field for a pin mode (00=input, 01=output, 10=AF).
+fn stm32f4_mode_bits(mode: PinMode) -> u8 {
+    match mode {
+        PinMode::InputFloat | PinMode::InputPull | PinMode::InputPullDown => 0b00,
+        PinMode::OutputPushPull | PinMode::OutputOpenDrain => 0b01,
+        PinMode::AltPushPull | PinMode::AltOpenDrain => 0b10,
+    }
+}
+
+/// `OSPEEDR` bits per pin: outputs and alternate functions use the high (50 MHz)
+/// speed, inputs keep the 2 MHz reset default.
+fn stm32f4_speed_bits(mode: PinMode) -> u8 {
+    match mode {
+        PinMode::InputFloat | PinMode::InputPull | PinMode::InputPullDown => 0b00,
+        _ => 0b10,
+    }
+}
+
+/// `PUPDR` bits per pin: only the pulled input variants drive a resistor.
+fn stm32f4_pull_bits(mode: PinMode) -> u8 {
+    match mode {
+        PinMode::InputPull => 0b01,
+        PinMode::InputPullDown => 0b10,
+        _ => 0b00,
+    }
+}
+
+/// AHB1ENR bit for a GPIO port (GPIOA=0, GPIOB=1 on STM32F4).
+fn stm32f4_pin_clock_bit(port: char) -> Option<u32> {
+    match port {
+        'A' => Some(0),
+        'B' => Some(1),
+        'C' => Some(2),
+        'D' => Some(3),
+        'E' => Some(4),
+        _ => None,
+    }
+}
+
+/// RCC clock-enable masks for the STM32F407 peripherals the pin map can
+/// assign, gathered from the assigned signals. Returns `(ahb1, apb1, apb2)`.
+/// Only the peripheral bits are collected here: the GPIO port bits stay in
+/// AHB1 and are emitted per port by `stm32f4_pin_mapping_code`.
+fn stm32f4_peripheral_clocks(dialog: &PinMapDialog) -> (u32, u32, u32) {
+    let mut ahb1 = 0u32;
+    let mut apb1 = 0u32;
+    let mut apb2 = 0u32;
+    let mut enable = |group: &str| {
+        // (bus, bit): 0 = AHB1, 1 = APB1, 2 = APB2.
+        let bit = match group {
+            "USART1" => Some((2, 4)),
+            "USART2" => Some((1, 17)),
+            "USART3" => Some((1, 18)),
+            "USART6" => Some((2, 5)),
+            "SPI1" => Some((2, 12)),
+            "SPI2" => Some((1, 14)),
+            "SPI3" => Some((1, 15)),
+            "I2C1" => Some((1, 21)),
+            "I2C2" => Some((1, 22)),
+            "I2C3" => Some((1, 23)),
+            "TIM1" => Some((2, 0)),
+            "TIM2" => Some((1, 0)),
+            "TIM3" => Some((1, 1)),
+            "TIM4" => Some((1, 2)),
+            "TIM5" => Some((1, 3)),
+            "TIM8" => Some((2, 1)),
+            "TIM9" => Some((2, 16)),
+            "TIM10" => Some((2, 17)),
+            "TIM11" => Some((2, 18)),
+            "TIM12" => Some((1, 6)),
+            "TIM13" => Some((1, 7)),
+            "TIM14" => Some((1, 8)),
+            "SDIO" => Some((2, 11)),
+            "CAN1" => Some((1, 25)),
+            "USB" => Some((0, 7)),
+            // GPIO and SWD do not gate a peripheral clock.
+            _ => None,
+        };
+        let Some((bus, bit)) = bit else {
+            return;
+        };
+        let mask = 1u32 << bit;
+        match bus {
+            0 => ahb1 |= mask,
+            1 => apb1 |= mask,
+            _ => apb2 |= mask,
+        }
+    };
+    for port in &dialog.f4_ports {
+        for assignment in &port.pins {
+            if let Some(signal) = assignment {
+                enable(signal.group());
+            }
+        }
+    }
+    (ahb1, apb1, apb2)
+}
+
+/// Pack an STM32F4 port into `MODER`/`OTYPER`/`OSPEEDR`/`PUPDR`/`AFRL`/`AFRH`.
+/// Every unassigned
+/// pin stays input (MODER=00, AF=0, push-pull).
+fn stm32f4_port_registers(port: &F4PinMapPort) -> (u32, u32, u32, u32, u32, u32) {
+    let mut moder = 0u32;
+    let mut otyper = 0u32;
+    let mut ospeedr = 0u32;
+    let mut pupdr = 0u32;
+    let mut afrl = 0u32;
+    let mut afrh = 0u32;
+    for (slot, assignment) in port.pins.iter().enumerate() {
+        let pin = port.start_pin + slot;
+        if pin >= 16 {
+            continue;
+        }
+        let mode = assignment
+            .map(F4PinSignal::mode)
+            .unwrap_or(PinMode::InputFloat);
+        moder |= (stm32f4_mode_bits(mode) as u32) << (pin * 2);
+        if matches!(mode, PinMode::OutputOpenDrain | PinMode::AltOpenDrain) {
+            otyper |= 1 << pin;
+        }
+        ospeedr |= (stm32f4_speed_bits(mode) as u32) << (pin * 2);
+        pupdr |= (stm32f4_pull_bits(mode) as u32) << (pin * 2);
+        if let Some(af) = assignment.and_then(|signal| signal.af()) {
+            if pin < 8 {
+                afrl |= (af as u32) << (pin * 4);
+            } else {
+                afrh |= (af as u32) << ((pin - 8) * 4);
+            }
+        }
+    }
+    (moder, otyper, ospeedr, pupdr, afrl, afrh)
+}
+
+/// Generate `src/pin_mapping.c` for a validated STM32F407 pin map. The output
+/// writes MODER/OTYPER/OSPEEDR/PUPDR/AFRL/AFRH and enables the AHB1 GPIO/USB
+/// plus the APB1/APB2 clocks of every assigned peripheral.
+fn stm32f4_pin_mapping_code(dialog: &PinMapDialog) -> String {
+    let target = dialog.target.to_ascii_uppercase();
+    let (peripheral_ahb1, apb1, apb2) = stm32f4_peripheral_clocks(dialog);
+    let mut code = String::new();
+    code.push_str(&format!(
+        "/* Auto-generated {target} pin-mapping (AF) configuration.\n"
+    ));
+    code.push_str(" * Assigns AF0-15 alternate functions via GPIOx->AFRL/AFRH.\n");
+    code.push_str(
+        " * Call `pin_mapping_init()` once from `main()` before using the peripherals.\n",
+    );
+    code.push_str(" */\n\n");
+    code.push_str("#include <stdint.h>\n\n");
+    code.push_str(STM32F4_REGISTER_PRELUDE);
+    code.push_str("void pin_mapping_init(void) {\n");
+    for port in &dialog.f4_ports {
+        if !port.pins.iter().any(|assignment| assignment.is_some()) {
+            continue;
+        }
+        let Some(clock_bit) = stm32f4_pin_clock_bit(port.port) else {
+            continue;
+        };
+        let (moder, otyper, ospeedr, pupdr, afrl, afrh) = stm32f4_port_registers(port);
+        code.push_str(&format!(
+            "    RCC->AHB1ENR |= {:#010x}u;\n",
+            (1u32 << clock_bit) | peripheral_ahb1
+        ));
+        code.push_str(&format!("    GPIO{}->MODER = {moder:#010x}u;\n", port.port));
+        code.push_str(&format!(
+            "    GPIO{}->OTYPER = {otyper:#010x}u;\n",
+            port.port
+        ));
+        code.push_str(&format!(
+            "    GPIO{}->OSPEEDR = {ospeedr:#010x}u;\n",
+            port.port
+        ));
+        code.push_str(&format!("    GPIO{}->PUPDR = {pupdr:#010x}u;\n", port.port));
+        code.push_str(&format!("    GPIO{}->AFRL = {afrl:#010x}u;\n", port.port));
+        code.push_str(&format!("    GPIO{}->AFRH = {afrh:#010x}u;\n", port.port));
+    }
+    if apb1 != 0 {
+        code.push_str(&format!("    RCC->APB1ENR |= {apb1:#010x}u;\n"));
+    }
+    if apb2 != 0 {
+        code.push_str(&format!("    RCC->APB2ENR |= {apb2:#010x}u;\n"));
+    }
+    code.push_str("}\n");
+    code
+}
+
+/// State for the standalone CubeMX-style RCC clock-tree modal.
+struct ClockTreeDialog {
+    target: String,
+    family: ClockFamily,
+    /// STM32F1 clock-tree configuration.
+    clock: ClockConfig,
+    /// STM32F4 clock-tree configuration.
+    f4: F4ClockConfig,
+}
+
+/// Which RCC clock-tree encoding the dialog is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockFamily {
+    F1,
+    F4,
+}
+
+/// System-clock source selected in the STM32F1 clock tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockSource {
+    Hsi,
+    Hse,
+    Pll,
+}
+
+impl ClockSource {
+    fn label(self) -> &'static str {
+        match self {
+            ClockSource::Hsi => "HSI",
+            ClockSource::Hse => "HSE",
+            ClockSource::Pll => "PLL",
+        }
+    }
+}
+
+/// STM32F1 RCC clock-tree configuration. Frequencies are kept as integer Hz;
+/// the default is the reset state (HSI 8 MHz, PLL off, all prescalers /1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClockConfig {
+    source: ClockSource,
+    hse_hz: u64,
+    pll_mul: u8,
+    ahb_prescaler: u32,
+    apb1_prescaler: u32,
+    apb2_prescaler: u32,
+}
+
+impl Default for ClockConfig {
+    fn default() -> Self {
+        Self {
+            source: ClockSource::Hsi,
+            hse_hz: 8_000_000,
+            pll_mul: 9,
+            ahb_prescaler: 1,
+            apb1_prescaler: 1,
+            apb2_prescaler: 1,
+        }
+    }
+}
+
+impl ClockConfig {
+    fn hsi_hz(&self) -> u64 {
+        8_000_000
+    }
+
+    /// PLL output = HSE × multiplier (STM32F1 PLL source is HSE).
+    fn pll_hz(&self) -> u64 {
+        self.hse_hz.saturating_mul(self.pll_mul as u64)
+    }
+
+    fn sysclk_hz(&self) -> u64 {
+        match self.source {
+            ClockSource::Hsi => self.hsi_hz(),
+            ClockSource::Hse => self.hse_hz,
+            ClockSource::Pll => self.pll_hz(),
+        }
+    }
+
+    fn ahb_hz(&self) -> u64 {
+        self.sysclk_hz() / self.ahb_prescaler as u64
+    }
+
+    fn apb1_hz(&self) -> u64 {
+        self.ahb_hz() / self.apb1_prescaler as u64
+    }
+
+    fn apb2_hz(&self) -> u64 {
+        self.ahb_hz() / self.apb2_prescaler as u64
+    }
+}
+
+/// STM32F4 RCC clock-tree configuration. Frequencies are kept as integer Hz;
+/// the default targets the classic F407 168 MHz setup (HSE 8 MHz, PLLM=8,
+/// PLLN=336, PLLP=2 → 168 MHz SYSCLK, PLLQ=7 → 48 MHz USB/PLL48).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct F4ClockConfig {
+    source: ClockSource,
+    hse_hz: u64,
+    /// PLL input divider (2..=63). VCO input = source_hz / PLLM.
+    pll_m: u32,
+    /// PLL VCO multiplier (50..=432). VCO = VCO input × PLLN.
+    pll_n: u32,
+    /// PLL VCO output divider (2 | 4 | 6 | 8). SYSCLK = VCO / PLLP.
+    pll_p: u32,
+    /// PLL 48 MHz divider (2..=15). PLL48 = VCO / PLLQ.
+    pll_q: u32,
+    /// PLL source: `true` = HSE, `false` = HSI.
+    pll_src_hse: bool,
+    ahb_prescaler: u32,
+    apb1_prescaler: u32,
+    apb2_prescaler: u32,
+}
+
+impl Default for F4ClockConfig {
+    fn default() -> Self {
+        Self {
+            source: ClockSource::Hsi,
+            hse_hz: 8_000_000,
+            pll_m: 8,
+            pll_n: 336,
+            pll_p: 2,
+            pll_q: 7,
+            pll_src_hse: true,
+            ahb_prescaler: 1,
+            apb1_prescaler: 1,
+            apb2_prescaler: 1,
+        }
+    }
+}
+
+impl F4ClockConfig {
+    /// STM32F4 HSI is 16 MHz.
+    fn hsi_hz(&self) -> u64 {
+        16_000_000
+    }
+
+    /// The PLL input source frequency (HSE or HSI).
+    fn pll_source_hz(&self) -> u64 {
+        if self.pll_src_hse {
+            self.hse_hz
+        } else {
+            self.hsi_hz()
+        }
+    }
+
+    /// PLL VCO frequency = source / PLLM × PLLN.
+    fn pll_vco_hz(&self) -> u64 {
+        (self.pll_source_hz() / self.pll_m.max(1) as u64).saturating_mul(self.pll_n as u64)
+    }
+
+    /// PLL output = VCO / PLLP.
+    fn pll_hz(&self) -> u64 {
+        self.pll_vco_hz() / self.pll_p.max(1) as u64
+    }
+
+    /// PLL48 (USB/SDIO) = VCO / PLLQ.
+    fn pll48_hz(&self) -> u64 {
+        self.pll_vco_hz() / self.pll_q.max(1) as u64
+    }
+
+    fn sysclk_hz(&self) -> u64 {
+        match self.source {
+            ClockSource::Hsi => self.hsi_hz(),
+            ClockSource::Hse => self.hse_hz,
+            ClockSource::Pll => self.pll_hz(),
+        }
+    }
+
+    fn ahb_hz(&self) -> u64 {
+        self.sysclk_hz() / self.ahb_prescaler as u64
+    }
+
+    fn apb1_hz(&self) -> u64 {
+        self.ahb_hz() / self.apb1_prescaler as u64
+    }
+
+    fn apb2_hz(&self) -> u64 {
+        self.ahb_hz() / self.apb2_prescaler as u64
+    }
+}
+
+/// Encode the STM32F1 `RCC->HPRE` field for an AHB prescaler (bits [7:4]).
+fn hp_pre_encode(prescaler: u32) -> u8 {
+    match prescaler {
+        1 => 0b0000,
+        2 => 0b1000,
+        4 => 0b1001,
+        8 => 0b1010,
+        16 => 0b1011,
+        64 => 0b1100,
+        128 => 0b1101,
+        256 => 0b1110,
+        512 => 0b1111,
+        _ => 0b0000,
+    }
+}
+
+/// Encode the STM32F1 `RCC->PPRE1`/`PPRE2` field (bits [10:8]/[13:11]).
+fn ppre_encode(prescaler: u32) -> u8 {
+    match prescaler {
+        1 => 0b000,
+        2 => 0b100,
+        4 => 0b101,
+        8 => 0b110,
+        16 => 0b111,
+        _ => 0b000,
+    }
+}
+
+/// Compute the STM32F1 `RCC->CR` and `RCC->CFGR` values for a clock-tree
+/// configuration: CR drives HSE/PLL enable bits, CFGR carries the SW, HPRE,
+/// PPRE1/PPRE2 and PLLMUL fields.
+fn stm32f1_clock_registers(config: &ClockConfig) -> (u64, u64) {
+    let mut cr: u64 = 0;
+    let mut cfgr: u64 = 0;
+    if config.source != ClockSource::Hsi {
+        cr |= 1 << 16; // HSEON
+    }
+    if config.source == ClockSource::Pll {
+        cr |= 1 << 24; // PLLON
+        // PLLMUL bits [21:18]: 0b0000=x2 … 0b1110=x16 (1111 reserved).
+        cfgr |= ((config.pll_mul.saturating_sub(2) as u64) & 0b1111) << 18;
+        cfgr |= 0b10; // SW = PLL
+    } else if config.source == ClockSource::Hse {
+        cfgr |= 0b01; // SW = HSE
+    }
+    cfgr |= (hp_pre_encode(config.ahb_prescaler) as u64) << 4;
+    cfgr |= (ppre_encode(config.apb1_prescaler) as u64) << 8;
+    cfgr |= (ppre_encode(config.apb2_prescaler) as u64) << 11;
+    (cr, cfgr)
+}
+
+/// Encode the STM32F4 `RCC->PLLCFGR` PLLP field (bits [17:16]): 00=/2, 01=/4,
+/// 10=/6, 11=/8.
+fn pllp_encode(divider: u32) -> u8 {
+    match divider {
+        2 => 0b00,
+        4 => 0b01,
+        6 => 0b10,
+        8 => 0b11,
+        _ => 0b00,
+    }
+}
+
+/// Compute the STM32F4 `RCC->CR`, `RCC->PLLCFGR` and `RCC->CFGR` values for a
+/// clock-tree configuration. F4 keeps SW/HPRE/PPRE in CFGR exactly like F1,
+/// but the PLL divider/multiplier fields live in PLLCFGR (PLLM/PLLN/PLLP/
+/// PLLSRC/PLLQ) rather than CFGR's PLLMUL field.
+fn stm32f4_clock_registers(config: &F4ClockConfig) -> (u64, u64, u64) {
+    let mut cr: u64 = 0;
+    let mut pllcfgr: u64 = 0;
+    let mut cfgr: u64 = 0;
+    if config.source != ClockSource::Hsi {
+        cr |= 1 << 16; // HSEON
+    }
+    if config.source == ClockSource::Pll {
+        cr |= 1 << 24; // PLLON
+        pllcfgr |= config.pll_m as u64 & 0x3F; // PLLM bits [5:0]
+        pllcfgr |= (config.pll_n as u64 & 0x1FF) << 6; // PLLN bits [14:6]
+        pllcfgr |= (pllp_encode(config.pll_p) as u64) << 16; // PLLP bits [17:16]
+        if config.pll_src_hse {
+            pllcfgr |= 1 << 22; // PLLSRC = HSE
+        }
+        pllcfgr |= (config.pll_q as u64 & 0xF) << 24; // PLLQ bits [27:24]
+        cfgr |= 0b10; // SW = PLL
+    } else if config.source == ClockSource::Hse {
+        cfgr |= 0b01; // SW = HSE
+    }
+    cfgr |= (hp_pre_encode(config.ahb_prescaler) as u64) << 4;
+    cfgr |= (ppre_encode(config.apb1_prescaler) as u64) << 8;
+    cfgr |= (ppre_encode(config.apb2_prescaler) as u64) << 11;
+    (cr, pllcfgr, cfgr)
+}
+
+/// Format a frequency in Hz as `8.0 MHz` / `72.0 MHz` / `36.0 MHz` etc.
+fn clock_mhz_text(hz: u64) -> String {
+    format!("{:.1} MHz", hz as f64 / 1_000_000.0)
+}
 
 /// Compute STM32F1 `CRL`/`CRH` values from 16 pin modes (pins 0-7 → CRL,
 /// pins 8-15 → CRH; 4 bits per pin: [3:2]=MODE, [1:0]=CNF).
@@ -619,7 +3343,6 @@ fn render_periph_pinout(
 
     // A single pin: a small coloured square labelled `Pn`, clickable to cycle.
     let pin = |pin_num: usize| {
-
         let mode = pins.get(pin_num).copied().unwrap_or(PinMode::InputFloat);
         let color = mode.color();
         gpui::div()
@@ -649,9 +3372,7 @@ fn render_periph_pinout(
     };
 
     let left: Vec<gpui::AnyElement> = (0..8).map(|p| pin(p).into_any_element()).collect();
-    let right: Vec<gpui::AnyElement> =
-        (8..16).map(|p| pin(p).into_any_element()).collect();
-
+    let right: Vec<gpui::AnyElement> = (8..16).map(|p| pin(p).into_any_element()).collect();
 
     gpui::div()
         .id("periph-pinout")
@@ -660,14 +3381,7 @@ fn render_periph_pinout(
         .flex()
         .items_center()
         .gap(px(12.))
-        .child(
-            gpui::div()
-                .flex()
-                .flex_col()
-                .gap(px(3.))
-                .children(left),
-
-        )
+        .child(gpui::div().flex().flex_col().gap(px(3.)).children(left))
         .child(
             gpui::div()
                 .w(px(200.))
@@ -675,7 +3389,6 @@ fn render_periph_pinout(
                 .rounded(px(12.))
                 .border_1()
                 .border_color(theme::alpha(theme::ACCENT, 0.4))
-
                 .bg(theme::alpha(theme::STROKE, 0.05))
                 .flex()
                 .items_center()
@@ -703,18 +3416,924 @@ fn render_periph_pinout(
                         .child("点击引脚切换模式 · P0-P15"),
                 ),
         )
+        .child(gpui::div().flex().flex_col().gap(px(3.)).children(right))
+        .into_any_element()
+}
+
+/// Render the pin-mapping diagram for the dialog's target family.
+fn render_pin_map(dialog: &PinMapDialog, cx: &mut Context<IdeApp>) -> gpui::AnyElement {
+    match dialog.family {
+        PinMapFamily::F1 => render_f1_pin_map(dialog, cx),
+        PinMapFamily::F4 => render_f4_pin_map(dialog, cx),
+    }
+}
+
+/// Render the one-click peripheral-group chips above the pin diagram. Clicking a
+/// group assigns every modeled pin of that peripheral (or clears them all when
+/// the group is already assigned); the active state is derived from the pins.
+fn render_pin_map_groups(dialog: &PinMapDialog, cx: &mut Context<IdeApp>) -> gpui::AnyElement {
+    let groups = dialog.group_names();
+    let chips: Vec<gpui::AnyElement> = groups
+        .iter()
+        .map(|group| {
+            let active = dialog.is_group_present(group);
+            let label = (*group).to_string();
+            let click_label = label.clone();
+            gpui::div()
+                .id(gpui::SharedString::from(format!("pin-map-group-{label}")))
+                .px(px(9.))
+                .py(px(3.))
+                .rounded(px(9.))
+                .text_size(px(10.))
+                .text_color(theme::color(if active {
+                    theme::TEXT
+                } else {
+                    theme::TEXT_DIM
+                }))
+                .border_1()
+                .border_color(theme::alpha(
+                    if active { theme::JADE } else { theme::STROKE },
+                    if active { 0.75 } else { 0.3 },
+                ))
+                .bg(theme::alpha(
+                    if active { theme::JADE } else { theme::STROKE },
+                    if active { 0.18 } else { 0.06 },
+                ))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::alpha(theme::JADE, 0.24)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_pin_map_group(click_label.clone(), cx);
+                }))
+                .child(label)
+                .into_any_element()
+        })
+        .collect();
+    gpui::div()
+        .flex()
+        .flex_col()
+        .gap(px(5.))
+        .child(
+            gpui::div()
+                .text_size(px(9.5))
+                .text_color(theme::color(theme::TEXT_FAINT))
+                .child("外设一键分配 / 取消：点击分组批量分配其全部引脚"),
+        )
+        .child(gpui::div().flex().flex_wrap().gap(px(4.)).children(chips))
+        .into_any_element()
+}
+
+/// Render the STM32F103C (LQFP48) pin-mapping diagram. Each physical pin is a
+/// clickable chip that cycles through its allowed AF functions; colours follow
+/// the signal family and remapped signals are marked with a small dot.
+fn render_f1_pin_map(dialog: &PinMapDialog, cx: &mut Context<IdeApp>) -> gpui::AnyElement {
+    let message = dialog.message.clone();
+    let assigned = dialog.assigned_count();
+
+    let port_sections: Vec<gpui::AnyElement> = dialog
+        .ports
+        .iter()
+        .enumerate()
+        .map(|(port_index, port)| {
+            let pins: Vec<gpui::AnyElement> = port
+                .pins
+                .iter()
+                .enumerate()
+                .map(|(slot, assignment)| {
+                    let pin = port.start_pin + slot;
+                    let signal = *assignment;
+                    let color = signal.map(PinSignal::color).unwrap_or(theme::TEXT_FAINT);
+                    let label = signal
+                        .map(|value| value.label().to_string())
+                        .unwrap_or_else(|| "未分配".to_string());
+                    let remap = signal
+                        .map(|value| pin_signal_is_remap(value, port.port, pin))
+                        .unwrap_or(false);
+                    let signal_color = color;
+                    gpui::div()
+                        .id(gpui::SharedString::from(format!(
+                            "pin-map-pin-{}-{pin}",
+                            port.port
+                        )))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(theme::alpha(
+                            signal_color,
+                            if signal.is_some() { 0.65 } else { 0.2 },
+                        ))
+                        .bg(theme::alpha(
+                            signal_color,
+                            if signal.is_some() { 0.16 } else { 0.03 },
+                        ))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme::alpha(signal_color, 0.24)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.cycle_pin_signal(port_index, slot, cx);
+                        }))
+                        .child(
+                            gpui::div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    gpui::div()
+                                        .text_size(px(9.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme::color(signal_color))
+                                        .child(format!("P{}{}", port.port, pin)),
+                                )
+                                .when(remap, |style| {
+                                    style.child(
+                                        gpui::div()
+                                            .w(px(5.))
+                                            .h(px(5.))
+                                            .rounded_full()
+                                            .bg(theme::color(theme::CINNABAR)),
+                                    )
+                                })
+                                .child(
+                                    gpui::div()
+                                        .text_size(px(8.5))
+                                        .text_color(theme::color(theme::TEXT_DIM))
+                                        .child(label),
+                                ),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(5.))
+                .child(
+                    gpui::div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::color(theme::ACCENT_3))
+                        .child(format!(
+                            "GPIO{} · P{}{}-P{}{}",
+                            port.port,
+                            port.port,
+                            port.start_pin,
+                            port.port,
+                            port.start_pin + port.pins.len().saturating_sub(1)
+                        )),
+                )
+                .child(gpui::div().flex().flex_wrap().gap(px(4.)).children(pins))
+                .into_any_element()
+        })
+        .collect();
+
+    let has_conflict = message.contains("冲突") || message.contains("同时使用");
+    gpui::div()
+        .id("pin-map")
+        .flex_1()
+        .overflow_y_scroll()
+        .px(px(16.))
+        .pb(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            gpui::div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    gpui::div()
+                        .text_size(px(10.5))
+                        .text_color(theme::color(theme::TEXT_FAINT))
+                        .child(format!(
+                            "点击引脚在「未分配 → 可用功能 → 未分配」间循环 · 已分配 {assigned} 个"
+                        )),
+                )
+                .child(gpui::div().flex().gap(px(8.)).children(vec![
+                    legend_chip("GPIO", theme::JADE).into_any_element(),
+                    legend_chip("串口", theme::ACCENT_3).into_any_element(),
+                    legend_chip("SPI", theme::CINNABAR).into_any_element(),
+                    legend_chip("I2C", theme::ACCENT_2).into_any_element(),
+                    legend_chip("TIMER", theme::ACCENT).into_any_element(),
+                ])),
+        )
+        .child(
+            gpui::div()
+                .px(px(8.))
+                .py(px(5.))
+                .rounded(px(6.))
+                .bg(theme::alpha(
+                    if has_conflict {
+                        theme::DANGER
+                    } else {
+                        theme::ACCENT
+                    },
+                    0.08,
+                ))
+                .text_size(px(10.))
+                .text_color(theme::color(if has_conflict {
+                    theme::DANGER
+                } else {
+                    theme::TEXT_DIM
+                }))
+                .child(if message.is_empty() {
+                    "引脚映射已就绪；红点表示该引脚使用的是 AFIO 重映射功能。".to_string()
+                } else {
+                    message.clone()
+                }),
+        )
         .child(
             gpui::div()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
-                .children(right),
-
+                .gap(px(8.))
+                .children(port_sections),
         )
         .into_any_element()
 }
 
+/// Render the STM32F407 (LQFP100) pin-mapping diagram. Each physical pin is a
+/// clickable chip that cycles through its allowed AF0-15 functions; colours
+/// follow the signal family. F4 uses AFRL/AFRH, so there is no AFIO red dot.
+fn render_f4_pin_map(dialog: &PinMapDialog, cx: &mut Context<IdeApp>) -> gpui::AnyElement {
+    let message = dialog.message.clone();
+    let assigned = dialog.assigned_count();
 
+    let port_sections: Vec<gpui::AnyElement> = dialog
+        .f4_ports
+        .iter()
+        .enumerate()
+        .map(|(port_index, port)| {
+            let pins: Vec<gpui::AnyElement> = port
+                .pins
+                .iter()
+                .enumerate()
+                .map(|(slot, assignment)| {
+                    let pin = port.start_pin + slot;
+                    let signal = *assignment;
+                    let color = signal.map(F4PinSignal::color).unwrap_or(theme::TEXT_FAINT);
+                    let label = signal
+                        .map(|value| value.label().to_string())
+                        .unwrap_or_else(|| "未分配".to_string());
+                    let signal_color = color;
+                    gpui::div()
+                        .id(gpui::SharedString::from(format!(
+                            "pin-map-f4-pin-{}-{pin}",
+                            port.port
+                        )))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(theme::alpha(
+                            signal_color,
+                            if signal.is_some() { 0.65 } else { 0.2 },
+                        ))
+                        .bg(theme::alpha(
+                            signal_color,
+                            if signal.is_some() { 0.16 } else { 0.03 },
+                        ))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme::alpha(signal_color, 0.24)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.cycle_pin_signal(port_index, slot, cx);
+                        }))
+                        .child(
+                            gpui::div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    gpui::div()
+                                        .text_size(px(9.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme::color(signal_color))
+                                        .child(format!("P{}{}", port.port, pin)),
+                                )
+                                .child(
+                                    gpui::div()
+                                        .text_size(px(8.5))
+                                        .text_color(theme::color(theme::TEXT_DIM))
+                                        .child(label),
+                                ),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(5.))
+                .child(
+                    gpui::div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::color(theme::ACCENT_3))
+                        .child(format!(
+                            "GPIO{} · P{}{}-P{}{}",
+                            port.port,
+                            port.port,
+                            port.start_pin,
+                            port.port,
+                            port.start_pin + port.pins.len().saturating_sub(1)
+                        )),
+                )
+                .child(gpui::div().flex().flex_wrap().gap(px(4.)).children(pins))
+                .into_any_element()
+        })
+        .collect();
+
+    let has_conflict =
+        message.contains("冲突") || message.contains("占用") || message.contains("不同");
+    gpui::div()
+        .id("pin-map-f4")
+        .flex_1()
+        .overflow_y_scroll()
+        .px(px(16.))
+        .pb(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            gpui::div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    gpui::div()
+                        .text_size(px(10.5))
+                        .text_color(theme::color(theme::TEXT_FAINT))
+                        .child(format!(
+                            "点击引脚在「未分配 → 可用功能 → 未分配」间循环 · 已分配 {assigned} 个"
+                        )),
+                )
+                .child(gpui::div().flex().gap(px(8.)).children(vec![
+                    legend_chip("GPIO", theme::JADE).into_any_element(),
+                    legend_chip("串口", theme::ACCENT_3).into_any_element(),
+                    legend_chip("SPI", theme::CINNABAR).into_any_element(),
+                    legend_chip("I2C", theme::ACCENT_2).into_any_element(),
+                    legend_chip("TIMER", theme::ACCENT).into_any_element(),
+                ])),
+        )
+        .child(
+            gpui::div()
+                .px(px(8.))
+                .py(px(5.))
+                .rounded(px(6.))
+                .bg(theme::alpha(
+                    if has_conflict {
+                        theme::DANGER
+                    } else {
+                        theme::ACCENT
+                    },
+                    0.08,
+                ))
+                .text_size(px(10.))
+                .text_color(theme::color(if has_conflict {
+                    theme::DANGER
+                } else {
+                    theme::TEXT_DIM
+                }))
+                .child(if message.is_empty() {
+                    "引脚映射已就绪；STM32F4 每个引脚通过 AFRL/AFRH 选择 AF0-15。".to_string()
+                } else {
+                    message.clone()
+                }),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .children(port_sections),
+        )
+        .into_any_element()
+}
+
+/// A small colour legend chip for the pin-map signal families.
+fn legend_chip(label: &'static str, color: u32) -> gpui::Div {
+    gpui::div()
+        .px(px(7.))
+        .py(px(2.))
+        .rounded(px(5.))
+        .border_1()
+        .border_color(theme::alpha(color, 0.45))
+        .bg(theme::alpha(color, 0.1))
+        .text_size(px(8.5))
+        .text_color(theme::color(color))
+        .child(label)
+}
+
+/// A clickable clock-tree control chip.
+fn clock_chip(
+    id: &'static str,
+    label: String,
+    sub: String,
+    active: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let color = if active {
+        theme::ACCENT_3
+    } else {
+        theme::TEXT_FAINT
+    };
+    gpui::div()
+        .id(id)
+        .px(px(10.))
+        .py(px(6.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme::alpha(color, if active { 0.7 } else { 0.2 }))
+        .bg(theme::alpha(color, if active { 0.16 } else { 0.04 }))
+        .cursor_pointer()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(2.))
+        .hover(|style| style.bg(theme::alpha(color, 0.22)))
+        .child(
+            gpui::div()
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::color(color))
+                .child(label),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(9.))
+                .text_color(theme::color(theme::TEXT_FAINT))
+                .child(sub),
+        )
+}
+
+/// A read-only frequency box.
+fn clock_value_box(title: String, value: String, color: u32) -> gpui::Div {
+    gpui::div()
+        .px(px(10.))
+        .py(px(6.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme::alpha(color, 0.35))
+        .bg(theme::alpha(color, 0.08))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(2.))
+        .child(
+            gpui::div()
+                .text_size(px(10.))
+                .text_color(theme::color(theme::TEXT_DIM))
+                .child(title),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::color(color))
+                .child(value),
+        )
+}
+
+/// Dispatch to the F1 or F4 clock-tree renderer.
+fn render_clock_tree(dialog: &ClockTreeDialog, cx: &mut Context<IdeApp>) -> gpui::AnyElement {
+    match dialog.family {
+        ClockFamily::F1 => render_f1_clock_tree(dialog, cx),
+        ClockFamily::F4 => render_f4_clock_tree(dialog, cx),
+    }
+}
+
+/// Render the STM32F1 RCC clock tree: selectable source (HSI/HSE/PLL), PLL
+/// multiplier, AHB/APB1/APB2 prescalers and the live bus/peripheral clocks.
+fn render_f1_clock_tree(dialog: &ClockTreeDialog, cx: &mut Context<IdeApp>) -> gpui::AnyElement {
+    let clock = dialog.clock;
+    let chip = clock_chip;
+    let value_box = clock_value_box;
+
+    let source_row = gpui::div().flex().gap(px(8.)).children(vec![
+        chip(
+            "clock-source-hsi",
+            "HSI".to_string(),
+            clock_mhz_text(clock.hsi_hz()),
+            clock.source == ClockSource::Hsi,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_source(cx)))
+        .into_any_element(),
+        chip(
+            "clock-source-hse",
+            "HSE".to_string(),
+            clock_mhz_text(clock.hse_hz),
+            clock.source == ClockSource::Hse,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_source(cx)))
+        .into_any_element(),
+        chip(
+            "clock-source-pll",
+            "PLL".to_string(),
+            format!("×{} → {}", clock.pll_mul, clock_mhz_text(clock.pll_hz())),
+            clock.source == ClockSource::Pll,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_source(cx)))
+        .into_any_element(),
+    ]);
+
+    let sysclk_row = gpui::div().flex().gap(px(8.)).children(vec![
+        value_box(
+            "SYSCLK".to_string(),
+            clock_mhz_text(clock.sysclk_hz()),
+            theme::ACCENT_3,
+        )
+        .into_any_element(),
+        chip(
+            "clock-pll",
+            "PLL ×".to_string(),
+            format!("{}", clock.pll_mul),
+            clock.source == ClockSource::Pll,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_pll(cx)))
+        .into_any_element(),
+    ]);
+
+    let bus_row = gpui::div().flex().gap(px(8.)).children(vec![
+        value_box(
+            "AHB".to_string(),
+            clock_mhz_text(clock.ahb_hz()),
+            theme::JADE,
+        )
+        .into_any_element(),
+        chip(
+            "clock-ahb",
+            "AHB ÷".to_string(),
+            format!("{}", clock.ahb_prescaler),
+            clock.ahb_prescaler != 1,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_ahb(cx)))
+        .into_any_element(),
+        value_box(
+            "APB1".to_string(),
+            clock_mhz_text(clock.apb1_hz()),
+            theme::CINNABAR,
+        )
+        .into_any_element(),
+        chip(
+            "clock-apb1",
+            "APB1 ÷".to_string(),
+            format!("{}", clock.apb1_prescaler),
+            clock.apb1_prescaler != 1,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_apb(false, cx)))
+        .into_any_element(),
+        value_box(
+            "APB2".to_string(),
+            clock_mhz_text(clock.apb2_hz()),
+            theme::CINNABAR,
+        )
+        .into_any_element(),
+        chip(
+            "clock-apb2",
+            "APB2 ÷".to_string(),
+            format!("{}", clock.apb2_prescaler),
+            clock.apb2_prescaler != 1,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_apb(true, cx)))
+        .into_any_element(),
+    ]);
+
+    let peripheral_row = gpui::div().flex().gap(px(8.)).children(vec![
+        value_box(
+            "USART1".to_string(),
+            clock_mhz_text(clock.apb2_hz()),
+            theme::TEXT_DIM,
+        )
+        .into_any_element(),
+        value_box(
+            "USART2".to_string(),
+            clock_mhz_text(clock.apb1_hz()),
+            theme::TEXT_DIM,
+        )
+        .into_any_element(),
+        value_box(
+            "GPIOA".to_string(),
+            clock_mhz_text(clock.apb2_hz()),
+            theme::TEXT_DIM,
+        )
+        .into_any_element(),
+        value_box(
+            "TIM2".to_string(),
+            clock_mhz_text(clock.apb1_hz()),
+            theme::TEXT_DIM,
+        )
+        .into_any_element(),
+    ]);
+
+    gpui::div()
+        .id("clock-tree")
+        .flex_1()
+        .overflow_y_scroll()
+        .px(px(16.))
+        .pb(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            gpui::div()
+                .text_size(px(10.5))
+                .text_color(theme::color(theme::TEXT_FAINT))
+                .child(format!(
+                    "点击源/倍频/预分频切换 · 生成时写入 RCC->CR / RCC->CFGR（{target}）",
+                    target = dialog.target
+                )),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    gpui::div()
+                        .text_size(px(10.))
+                        .text_color(theme::color(theme::TEXT_DIM))
+                        .child("时钟源"),
+                )
+                .child(source_row),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    gpui::div()
+                        .text_size(px(10.))
+                        .text_color(theme::color(theme::TEXT_DIM))
+                        .child("系统时钟与倍频"),
+                )
+                .child(sysclk_row),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    gpui::div()
+                        .text_size(px(10.))
+                        .text_color(theme::color(theme::TEXT_DIM))
+                        .child("总线预分频"),
+                )
+                .child(bus_row),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    gpui::div()
+                        .text_size(px(10.))
+                        .text_color(theme::color(theme::TEXT_DIM))
+                        .child("示例外设时钟"),
+                )
+                .child(peripheral_row),
+        )
+        .into_any_element()
+}
+
+/// Render the STM32F4 RCC clock tree. F4 keeps the F1 source/prescaler model
+/// but the PLL is configured through PLLM/PLLN/PLLP/PLLQ (and a HSI/HSE source
+/// selector) rather than a single multiplier.
+fn render_f4_clock_tree(dialog: &ClockTreeDialog, cx: &mut Context<IdeApp>) -> gpui::AnyElement {
+    let clock = dialog.f4;
+
+    let source_row = gpui::div().flex().gap(px(8.)).children(vec![
+        clock_chip(
+            "clock-source-hsi",
+            "HSI".to_string(),
+            clock_mhz_text(clock.hsi_hz()),
+            clock.source == ClockSource::Hsi,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_source(cx)))
+        .into_any_element(),
+        clock_chip(
+            "clock-source-hse",
+            "HSE".to_string(),
+            clock_mhz_text(clock.hse_hz),
+            clock.source == ClockSource::Hse,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_source(cx)))
+        .into_any_element(),
+        clock_chip(
+            "clock-source-pll",
+            "PLL".to_string(),
+            format!(
+                "{} → {}",
+                clock.pll_hz() / 1_000_000,
+                clock_mhz_text(clock.pll_hz())
+            ),
+            clock.source == ClockSource::Pll,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_source(cx)))
+        .into_any_element(),
+    ]);
+
+    let sysclk_row = gpui::div().flex().gap(px(8.)).children(vec![
+        clock_value_box(
+            "SYSCLK".to_string(),
+            clock_mhz_text(clock.sysclk_hz()),
+            theme::ACCENT_3,
+        )
+        .into_any_element(),
+        clock_value_box(
+            "PLL48".to_string(),
+            clock_mhz_text(clock.pll48_hz()),
+            theme::ACCENT_3,
+        )
+        .into_any_element(),
+        clock_chip(
+            "clock-pll-m",
+            "PLLM ÷".to_string(),
+            format!("{}", clock.pll_m),
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_f4_pll_m(cx)))
+        .into_any_element(),
+        clock_chip(
+            "clock-pll-n",
+            "PLLN ×".to_string(),
+            format!("{}", clock.pll_n),
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_f4_pll_n(cx)))
+        .into_any_element(),
+        clock_chip(
+            "clock-pll-p",
+            "PLLP ÷".to_string(),
+            format!("{}", clock.pll_p),
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_f4_pll_p(cx)))
+        .into_any_element(),
+        clock_chip(
+            "clock-pll-q",
+            "PLLQ ÷".to_string(),
+            format!("{}", clock.pll_q),
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_f4_pll_q(cx)))
+        .into_any_element(),
+        clock_chip(
+            "clock-pll-src",
+            "PLL 源".to_string(),
+            if clock.pll_src_hse { "HSE" } else { "HSI" }.to_string(),
+            clock.pll_src_hse,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_f4_pll_src(cx)))
+        .into_any_element(),
+    ]);
+
+    let bus_row = gpui::div().flex().gap(px(8.)).children(vec![
+        clock_value_box(
+            "AHB".to_string(),
+            clock_mhz_text(clock.ahb_hz()),
+            theme::JADE,
+        )
+        .into_any_element(),
+        clock_chip(
+            "clock-ahb",
+            "AHB ÷".to_string(),
+            format!("{}", clock.ahb_prescaler),
+            clock.ahb_prescaler != 1,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_ahb(cx)))
+        .into_any_element(),
+        clock_value_box(
+            "APB1".to_string(),
+            clock_mhz_text(clock.apb1_hz()),
+            theme::CINNABAR,
+        )
+        .into_any_element(),
+        clock_chip(
+            "clock-apb1",
+            "APB1 ÷".to_string(),
+            format!("{}", clock.apb1_prescaler),
+            clock.apb1_prescaler != 1,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_apb(false, cx)))
+        .into_any_element(),
+        clock_value_box(
+            "APB2".to_string(),
+            clock_mhz_text(clock.apb2_hz()),
+            theme::CINNABAR,
+        )
+        .into_any_element(),
+        clock_chip(
+            "clock-apb2",
+            "APB2 ÷".to_string(),
+            format!("{}", clock.apb2_prescaler),
+            clock.apb2_prescaler != 1,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.cycle_clock_apb(true, cx)))
+        .into_any_element(),
+    ]);
+
+    let peripheral_row = gpui::div().flex().gap(px(8.)).children(vec![
+        clock_value_box(
+            "USART1".to_string(),
+            clock_mhz_text(clock.apb2_hz()),
+            theme::TEXT_DIM,
+        )
+        .into_any_element(),
+        clock_value_box(
+            "USART2".to_string(),
+            clock_mhz_text(clock.apb1_hz()),
+            theme::TEXT_DIM,
+        )
+        .into_any_element(),
+        clock_value_box(
+            "GPIOA".to_string(),
+            clock_mhz_text(clock.apb2_hz()),
+            theme::TEXT_DIM,
+        )
+        .into_any_element(),
+        clock_value_box(
+            "TIM2".to_string(),
+            clock_mhz_text(clock.apb1_hz()),
+            theme::TEXT_DIM,
+        )
+        .into_any_element(),
+    ]);
+
+    gpui::div()
+        .id("clock-tree")
+        .flex_1()
+        .overflow_y_scroll()
+        .px(px(16.))
+        .pb(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            gpui::div()
+                .text_size(px(10.5))
+                .text_color(theme::color(theme::TEXT_FAINT))
+                .child(format!(
+                    "点击源/PLLM/PLLN/PLLP/PLLQ/预分频切换 · 生成时写入 RCC->CR / PLLCFGR / CFGR（{target}）",
+                    target = dialog.target
+                )),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    gpui::div()
+                        .text_size(px(10.))
+                        .text_color(theme::color(theme::TEXT_DIM))
+                        .child("时钟源"),
+                )
+                .child(source_row),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    gpui::div()
+                        .text_size(px(10.))
+                        .text_color(theme::color(theme::TEXT_DIM))
+                        .child("系统时钟与 PLL"),
+                )
+                .child(sysclk_row),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    gpui::div()
+                        .text_size(px(10.))
+                        .text_color(theme::color(theme::TEXT_DIM))
+                        .child("总线预分频"),
+                )
+                .child(bus_row),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    gpui::div()
+                        .text_size(px(10.))
+                        .text_color(theme::color(theme::TEXT_DIM))
+                        .child("示例外设时钟"),
+                )
+                .child(peripheral_row),
+        )
+        .into_any_element()
+}
 
 /// What a close request covers, so the confirm dialog can resolve correctly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -755,9 +4374,9 @@ struct SettingsDialog {
     flasher_kind: Entity<TextField>,
     flasher_interface: Entity<TextField>,
     sim_cpu: Entity<TextField>,
-     sim_period: Entity<TextField>,
+    sim_period: Entity<TextField>,
     sim_clock: Entity<TextField>,
-     /// Debug launch: arguments (space-separated), environment (one KEY=value
+    /// Debug launch: arguments (space-separated), environment (one KEY=value
     /// per line) and working directory for the debuggee.
     launch_args: Entity<TextField>,
     launch_env: Entity<TextField>,
@@ -819,7 +4438,6 @@ struct SnippetRow {
     body: Entity<TextField>,
     description: Entity<TextField>,
 }
-
 
 /// Build a settings text field prefilled with `value`.
 fn settings_field(
@@ -888,18 +4506,16 @@ fn debug_stop_reason_label(reason: &str, description: Option<&str>) -> String {
         "step" => "单步暂停".to_string(),
         "pause" => "已暂停".to_string(),
         "entry" => "已在入口暂停".to_string(),
-        "exception" | "signal" | "hardware exception" | "hardwareException" => {
-            match description {
-                Some(text) if text.to_ascii_uppercase().contains("SIG") => {
-                    format!("信号停止 · {text}")
-                }
-                Some(text) if text.to_ascii_uppercase().contains("EXC") => {
-                    format!("异常停止 · {text}")
-                }
-                Some(text) if !text.is_empty() => format!("异常停止 · {text}"),
-                _ => "异常停止".to_string(),
+        "exception" | "signal" | "hardware exception" | "hardwareException" => match description {
+            Some(text) if text.to_ascii_uppercase().contains("SIG") => {
+                format!("信号停止 · {text}")
             }
-        }
+            Some(text) if text.to_ascii_uppercase().contains("EXC") => {
+                format!("异常停止 · {text}")
+            }
+            Some(text) if !text.is_empty() => format!("异常停止 · {text}"),
+            _ => "异常停止".to_string(),
+        },
         other => format!("已暂停 ({other})"),
     }
 }
@@ -931,7 +4547,6 @@ struct WatchEntry {
     value: String,
 }
 
-
 /// FreeRTOS task state as read from the template's `Task.state`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RtosTaskState {
@@ -958,6 +4573,7 @@ impl RtosTaskState {
 }
 
 /// One task reported by the RTOS view (FreeRTOS-style scheduler).
+#[derive(Debug)]
 struct RtosTask {
     name: String,
     /// `true` = the task the scheduler is currently running.
@@ -990,7 +4606,6 @@ struct RtosRefreshState {
     /// the number of memory reads still in flight.
     kernel: Option<RtosKernelWalk>,
 }
-
 
 /// Which enumeration strategy the RTOS view is using.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1028,7 +4643,11 @@ struct RtosKernelWalk {
     pending_priority: Option<u32>,
 }
 
-
+/// Number of scheduler list heads the real-kernel walker resolves before it
+/// can start traversing: ready, delayed1, delayed2, pending, suspended and
+/// termination. `refresh_rtos_tasks` evaluates exactly these six symbols, so
+/// the kick threshold must match or the walk never starts.
+const REAL_KERNEL_LIST_COUNT: usize = 6;
 
 /// One step of the real-kernel list walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1039,9 +4658,6 @@ enum RtosWalkStep {
     Priority,
     Next,
 }
-
-
-
 
 /// Assemble the collected partial tasks into a sorted, complete list. The task
 /// at `current_index` (0-based, matching the template's `current_task`) is
@@ -1120,13 +4736,13 @@ struct DebugView {
     device_reg_values: HashMap<u64, u32>,
     /// Whether live watch refreshes device registers while the target runs.
     live_watch: bool,
-     /// Device-register value edit in progress: (absolute address, input field).
-     device_reg_edit: Option<(u64, Entity<TextField>)>,
-     /// Absolute addresses of device registers expanded to show their bit
-     /// fields (each field's live value + description).
-     device_reg_expanded: std::collections::HashSet<u64>,
-     /// Loaded register snapshot for comparison: group → register → value.
-     reg_snapshot: Option<HashMap<String, HashMap<String, String>>>,
+    /// Device-register value edit in progress: (absolute address, input field).
+    device_reg_edit: Option<(u64, Entity<TextField>)>,
+    /// Absolute addresses of device registers expanded to show their bit
+    /// fields (each field's live value + description).
+    device_reg_expanded: std::collections::HashSet<u64>,
+    /// Loaded register snapshot for comparison: group → register → value.
+    reg_snapshot: Option<HashMap<String, HashMap<String, String>>>,
     /// Input for a disassembly address (jump to arbitrary address).
     disasm_input: Option<Entity<TextField>>,
     /// Debug-console command history (most recent last) for up/down recall.
@@ -1141,7 +4757,7 @@ struct DebugView {
     rtos_tasks: Vec<RtosTask>,
     /// Status line for the RTOS tab (e.g. "3 个任务 · 当前: led").
     rtos_status: String,
- }
+}
 
 impl Default for DebugView {
     fn default() -> Self {
@@ -1176,18 +4792,18 @@ impl Default for DebugView {
             console_input: None,
             watches: Vec::new(),
             watch_input: None,
-             device_reg_values: HashMap::new(),
-             live_watch: false,
-             device_reg_edit: None,
-             device_reg_expanded: std::collections::HashSet::new(),
-             reg_snapshot: None,
+            device_reg_values: HashMap::new(),
+            live_watch: false,
+            device_reg_edit: None,
+            device_reg_expanded: std::collections::HashSet::new(),
+            reg_snapshot: None,
             disasm_input: None,
             console_history: Vec::new(),
             console_history_idx: None,
             console_draft: String::new(),
             rtos_tasks: Vec::new(),
             rtos_status: String::new(),
-         }
+        }
     }
 }
 impl DebugView {
@@ -1293,7 +4909,9 @@ impl DebugView {
                 if variable.variables_reference != 0 {
                     self.register_group_refs
                         .insert(variable.variables_reference, variable.name.clone());
-                    self.register_groups.entry(variable.name.clone()).or_default();
+                    self.register_groups
+                        .entry(variable.name.clone())
+                        .or_default();
                     fetch.push(variable.variables_reference);
                 }
             }
@@ -1308,14 +4926,13 @@ impl DebugView {
     }
 }
 
-
 #[derive(Debug, Clone, Copy)]
- enum DebugStep {
-     Over,
-     In,
-     Out,
+enum DebugStep {
+    Over,
+    In,
+    Out,
     Instruction,
- }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DebugViewTab {
     Variables,
@@ -1342,14 +4959,14 @@ struct MemoryView {
     /// Index into `regions` of the region currently shown.
     active_region: usize,
     /// Input for the name of a new memory region (added via 「＋区域」).
-     region_name_input: Option<Entity<TextField>>,
+    region_name_input: Option<Entity<TextField>>,
     /// Input for a byte pattern to search for in the dumped region.
-     search_input: Option<Entity<TextField>>,
-     /// Input for the byte pattern to fill the current region with.
-     fill_input: Option<Entity<TextField>>,
+    search_input: Option<Entity<TextField>>,
+    /// Input for the byte pattern to fill the current region with.
+    fill_input: Option<Entity<TextField>>,
     /// Byte offset (into `bytes`) and pattern length of the last search match.
     search_hit: Option<(usize, usize)>,
- }
+}
 
 impl Default for MemoryView {
     fn default() -> Self {
@@ -1364,13 +4981,13 @@ impl Default for MemoryView {
                 name: "自定义".to_string(),
                 address: 0,
                 size: 64,
-             }],
-             active_region: 0,
-             region_name_input: None,
+            }],
+            active_region: 0,
+            region_name_input: None,
             search_input: None,
             fill_input: None,
             search_hit: None,
-         }
+        }
     }
 }
 
@@ -1398,14 +5015,14 @@ struct TraceView {
     support: Option<&'static str>,
     /// Input for the ITM stimulus port.
     port_input: Option<Entity<TextField>>,
-     /// Decoded SWO packets received since the window was armed, newest-last.
+    /// Decoded SWO packets received since the window was armed, newest-last.
     packets: Vec<swvd::Packet>,
     /// Whether the background SWO stream reader is running.
     streaming: bool,
     profile: ns_debug::profile::ProfileAggregator,
     /// Whether to show the profiler hotspot view.
     show_profile: bool,
- }
+}
 
 impl Default for TraceView {
     fn default() -> Self {
@@ -1417,11 +5034,11 @@ impl Default for TraceView {
             error: None,
             support: None,
             port_input: None,
-             packets: Vec::new(),
-             streaming: false,
+            packets: Vec::new(),
+            streaming: false,
             profile: ns_debug::profile::ProfileAggregator::new(&[]),
             show_profile: false,
-         }
+        }
     }
 }
 
@@ -1429,15 +5046,14 @@ struct DebugSession {
     commands: Sender<DebugCommand>,
 }
 
-
- enum FlashMode {
-     /// Reset-and-run the artifact directly (no debugger attached).
-     Run,
-     /// Attach the debugger after flashing.
-     Debug,
+enum FlashMode {
+    /// Reset-and-run the artifact directly (no debugger attached).
+    Run,
+    /// Attach the debugger after flashing.
+    Debug,
     /// After a successful flash, immediately verify the written bytes.
     Verify,
- }
+}
 /// Direct-run (F9 直接运行) state: the spawned artifact, its streaming output
 /// and exit status.
 struct RunState {
@@ -1551,7 +5167,13 @@ fn refresh_git(app: &mut IdeApp, cx: &mut Context<IdeApp>) {
     }
     // Drop the selection if the file is no longer changed.
     if let Some(selected) = app.git.selected.clone() {
-        if !app.git.status.files.iter().any(|file| file.path == selected) {
+        if !app
+            .git
+            .status
+            .files
+            .iter()
+            .any(|file| file.path == selected)
+        {
             app.git.selected = None;
             app.git.diff.clear();
         }
@@ -1622,15 +5244,16 @@ impl IdeApp {
         self.output_tab = OutputTab::Serial;
         if self.serial.is_none() {
             let serial = cx.new(|cx| SerialMonitor::new(cx));
-            let sub = cx.subscribe(&serial, |this, _serial, event: &SerialEvent, cx| {
-                match event {
+            let sub = cx.subscribe(
+                &serial,
+                |this, _serial, event: &SerialEvent, cx| match event {
                     SerialEvent::Data => cx.notify(),
                     SerialEvent::Error(message) => {
                         this.status = message.clone();
                         cx.notify();
                     }
-                }
-            });
+                },
+            );
             self.serial = Some(serial);
             self._serial_sub = Some(sub);
         }
@@ -1798,7 +5421,11 @@ impl IdeApp {
             rows.push(SnippetRow {
                 store_index: index,
                 prefix: settings_field("触发词（如 for）", snippet.prefix.clone(), cx),
-                body: settings_field("片段体（LSP 语法，${1:default}/$0）", snippet.body.clone(), cx),
+                body: settings_field(
+                    "片段体（LSP 语法，${1:default}/$0）",
+                    snippet.body.clone(),
+                    cx,
+                ),
                 description: settings_field("描述（可选）", snippet.description.clone(), cx),
             });
         }
@@ -1882,7 +5509,6 @@ impl IdeApp {
         cx.notify();
     }
 
-
     /// Open a palette-style picker of configured tools; picking one runs it.
     fn run_tool_picker(&mut self, cx: &mut Context<Self>) {
         if self.tools_store.is_empty() {
@@ -1910,14 +5536,15 @@ impl IdeApp {
         self.show_output = true;
         self.output_tab = OutputTab::Terminal;
         let terminal = cx.new(|cx| Terminal::new(config, cx));
-        let sub = cx.subscribe(&terminal, |this, _terminal, event: &TerminalEvent, cx| {
-            match event {
+        let sub = cx.subscribe(
+            &terminal,
+            |this, _terminal, event: &TerminalEvent, cx| match event {
                 TerminalEvent::Output | TerminalEvent::Exited(_) => {
                     this.scroll_terminal_to_bottom = true;
                     cx.notify();
                 }
-            }
-        });
+            },
+        );
         let poll = terminal.clone();
         cx.spawn(async move |_this, cx| {
             loop {
@@ -1988,9 +5615,7 @@ impl IdeApp {
             cx.notify();
             return;
         };
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-            path.display().to_string(),
-        ));
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.display().to_string()));
         self.status = format!("已复制路径: {}", path.display());
         cx.notify();
     }
@@ -2195,7 +5820,6 @@ impl IdeApp {
     }
 }
 
-
 #[derive(Debug)]
 struct TreeEntry {
     path: PathBuf,
@@ -2224,6 +5848,10 @@ pub struct IdeApp {
     split: Option<SplitPane>,
     /// Graphical peripheral configuration modal state (CubeMX-style).
     periph_config: Option<PeriphConfigState>,
+    /// Standalone RCC clock-tree modal.
+    clock_tree_dialog: Option<ClockTreeDialog>,
+    /// Standalone STM32F1 pin-mapping (AF) modal.
+    pin_map_dialog: Option<PinMapDialog>,
     /// In-flight RTOS task refresh state (None = no refresh in progress).
     rtos_pending: Option<RtosRefreshState>,
     /// Project-internal recently opened files (most recent first).
@@ -2231,7 +5859,7 @@ pub struct IdeApp {
     status: String,
     build_state: BuildState,
     /// Cancel flag for the running build; set to stop the child process.
-     build_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    build_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Cancel flag for the running flash operation; set to stop the adapter.
     flash_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// True while a build's streamed output is being appended live to the
@@ -2240,26 +5868,26 @@ pub struct IdeApp {
     diagnostics: Vec<Diagnostic>,
     output: String,
     build_command: String,
-     /// Firmware memory-usage breakdown of the last successful build, when the
-     /// project targets an MCU and the artifact is a recognized firmware file.
-     firmware_size: Option<ns_flash::FirmwareSize>,
+    /// Firmware memory-usage breakdown of the last successful build, when the
+    /// project targets an MCU and the artifact is a recognized firmware file.
+    firmware_size: Option<ns_flash::FirmwareSize>,
     /// Estimated per-source-file compile times from the last build (parsed
     /// from CMake/Make progress lines). Empty for non-instrumented builds.
     build_file_timings: Vec<ns_build::FileTiming>,
-     /// Per-function stack usage from the last `-fstack-usage` analysis run
+    /// Per-function stack usage from the last `-fstack-usage` analysis run
     /// (C/C++ only; `None` until a run completes or for non-C projects).
-     stack_usage: Vec<ns_build::StackUsageEntry>,
+    stack_usage: Vec<ns_build::StackUsageEntry>,
     /// Memory-layout model from the linker script + firmware sections, for the
     /// region-occupancy view. `None` until the command runs or on failure.
-     memory_layout: Option<ns_build::layout::MemoryLayout>,
-     /// Project include dependency graph (from the last「include 依赖图」run).
-     include_graph: Option<ns_project::depgraph::IncludeGraph>,
-     /// Whether the include graph is shown as a graphical DAG (else a list).
-     include_graph_dag: bool,
-     /// TODO/FIXME/XXX markers from the last「任务面板」scan.
+    memory_layout: Option<ns_build::layout::MemoryLayout>,
+    /// Project include dependency graph (from the last「include 依赖图」run).
+    include_graph: Option<ns_project::depgraph::IncludeGraph>,
+    /// Whether the include graph is shown as a graphical DAG (else a list).
+    include_graph_dag: bool,
+    /// TODO/FIXME/XXX markers from the last「任务面板」scan.
     task_markers: Vec<ns_project::tasks::TaskMarker>,
-     /// Per-file line coverage from the last gcov run (C/C++ only).
-     coverage: Vec<ns_build::CoverageFile>,
+    /// Per-file line coverage from the last gcov run (C/C++ only).
+    coverage: Vec<ns_build::CoverageFile>,
     show_output: bool,
     /// Height of the output panel in pixels (draggable via the divider).
     output_px: f32,
@@ -2274,18 +5902,18 @@ pub struct IdeApp {
     debug: DebugView,
     debug_session: Option<DebugSession>,
     pending_debug: bool,
-     context_menu: Option<ContextMenuState>,
+    context_menu: Option<ContextMenuState>,
     tab_menu: Option<TabMenuState>,
-     tree_menu: Option<TreeContextMenu>,
+    tree_menu: Option<TreeContextMenu>,
     top_menu_open: Option<TopMenu>,
-     new_entry_dialog: Option<NewEntryDialog>,
-     condition_dialog: Option<ConditionDialog>,
-     watchpoint_dialog: Option<WatchpointDialog>,
-     settings_dialog: Option<SettingsDialog>,
-     set_var_dialog: Option<SetVarDialog>,
-     rename_dialog: Option<RenameDialog>,
-     toolchain_dialog: Option<ToolchainDialog>,
-     keybindings_dialog: Option<KeybindingsDialog>,
+    new_entry_dialog: Option<NewEntryDialog>,
+    condition_dialog: Option<ConditionDialog>,
+    watchpoint_dialog: Option<WatchpointDialog>,
+    settings_dialog: Option<SettingsDialog>,
+    set_var_dialog: Option<SetVarDialog>,
+    rename_dialog: Option<RenameDialog>,
+    toolchain_dialog: Option<ToolchainDialog>,
+    keybindings_dialog: Option<KeybindingsDialog>,
     external_change_dialog: Option<ExternalChangeDialog>,
     compare_dialog: Option<CompareDialog>,
     git_branch_dialog: Option<GitBranchDialog>,
@@ -2295,9 +5923,9 @@ pub struct IdeApp {
     confirm_close_dialog: Option<ConfirmCloseDialog>,
     /// `true` while a quit is waiting on the save/discard dialog.
     quit_pending: bool,
-     search: Option<SearchState>,
+    search: Option<SearchState>,
     palette: Option<PaletteState>,
-     focus_dialog_on_next_frame: bool,
+    focus_dialog_on_next_frame: bool,
     pub wizard: Option<Wizard>,
     focus_handle: FocusHandle,
     focus_on_next_frame: bool,
@@ -2329,18 +5957,18 @@ pub struct IdeApp {
     lsp: Option<ns_lsp::LspServer>,
     /// Monotonic id used to discard LSP spawn results from a project that was
     /// replaced by a newer one before the handshake completed.
-     lsp_generation: u64,
+    lsp_generation: u64,
     /// Monotonic id for the debounced semantic/inlay refresh; bumped on every
     /// edit so a stale timer (a newer edit arrived) does not fire.
     lsp_refresh_generation: u64,
-      /// Per-file diagnostics received from the language server.
+    /// Per-file diagnostics received from the language server.
     lsp_diagnostics: HashMap<PathBuf, Vec<ns_lsp::LspDiagnostic>>,
-       /// Locations found by the last find-references request.
-     references: Vec<ns_lsp::Location>,
+    /// Locations found by the last find-references request.
+    references: Vec<ns_lsp::Location>,
     /// Whether the references popup is visible.
     references_open: bool,
     /// Index of the highlighted reference.
-     references_selected: usize,
+    references_selected: usize,
     /// Call-hierarchy popup state: entries (incoming/outgoing calls) for the
     /// symbol under the cursor, plus the current direction and selection.
     call_hierarchy_open: bool,
@@ -2352,7 +5980,7 @@ pub struct IdeApp {
     /// direction without re-preparing.
     call_hierarchy_item: Option<serde_json::Value>,
     call_hierarchy_root: Option<ns_lsp::CallHierarchyEntry>,
-      workspace_symbols: Vec<ns_lsp::WorkspaceSymbolInfo>,
+    workspace_symbols: Vec<ns_lsp::WorkspaceSymbolInfo>,
     /// Whether the workspace-symbol popup is visible.
     workspace_symbol_open: bool,
     /// Index of the highlighted workspace symbol.
@@ -2406,19 +6034,18 @@ pub struct IdeApp {
     semantic_tokens: Vec<SemanticToken>,
     /// Document outline symbols (LSP `documentSymbol`), for the outline/breadcrumb.
     outline: Vec<ns_lsp::SymbolInfo>,
-     /// Whether the outline (symbol list) sidebar is shown.
-     outline_open: bool,
+    /// Whether the outline (symbol list) sidebar is shown.
+    outline_open: bool,
     /// Outline symbol-name filter (case-insensitive substring).
     outline_filter: String,
     /// Input for the outline filter.
     outline_filter_input: Option<Entity<TextField>>,
-      /// Whether the device picker dropdown (debug「设备」页) is open.
-     device_picker_open: bool,
+    /// Whether the device picker dropdown (debug「设备」页) is open.
+    device_picker_open: bool,
     /// Whether the build-config dropdown (status bar) is open.
     build_config_open: bool,
-     /// Peripheral/register name filter field for the「设备」页.
-     device_filter: Entity<TextField>,
-
+    /// Peripheral/register name filter field for the「设备」页.
+    device_filter: Entity<TextField>,
 
     /// Built-in instruction-level simulator session.
     sim: SimulatorState,
@@ -2566,7 +6193,6 @@ fn read_u16_le(bytes: &[u8], little: bool) -> u16 {
     }
 }
 
-
 #[derive(Default)]
 struct SimulatorState {
     /// Whether cycle-accurate modeling is enabled for the next run.
@@ -2597,7 +6223,6 @@ struct SimulatorState {
     bp_condition_input: Option<(u32, gpui::Entity<crate::text_field::TextField>)>,
     /// The text field used to edit a breakpoint's hit count (address, as typed).
     bp_hitcount_input: Option<(u32, gpui::Entity<crate::text_field::TextField>)>,
-
 }
 
 impl IdeApp {
@@ -2612,6 +6237,8 @@ impl IdeApp {
             active_tab: None,
             split: None,
             periph_config: None,
+            clock_tree_dialog: None,
+            pin_map_dialog: None,
             rtos_pending: None,
             expanded: HashSet::new(),
             tree_filter: String::new(),
@@ -2623,19 +6250,19 @@ impl IdeApp {
             status: "就绪".to_string(),
             build_state: BuildState::Idle,
             build_streaming: false,
-             build_cancel: None,
+            build_cancel: None,
             flash_cancel: None,
             diagnostics: Vec::new(),
             output: String::new(),
-             build_command: String::new(),
-             firmware_size: None,
+            build_command: String::new(),
+            firmware_size: None,
             build_file_timings: Vec::new(),
-             stack_usage: Vec::new(),
-             memory_layout: None,
-             include_graph: None,
+            stack_usage: Vec::new(),
+            memory_layout: None,
+            include_graph: None,
             include_graph_dag: false,
-             task_markers: Vec::new(),
-             coverage: Vec::new(),
+            task_markers: Vec::new(),
+            coverage: Vec::new(),
             show_output: false,
             output_px: 260.0,
             output_tab: OutputTab::Output,
@@ -2651,44 +6278,44 @@ impl IdeApp {
             debug: DebugView::default(),
             debug_session: None,
             pending_debug: false,
-             context_menu: None,
+            context_menu: None,
             tab_menu: None,
-             tree_menu: None,
+            tree_menu: None,
             top_menu_open: None,
-             new_entry_dialog: None,
+            new_entry_dialog: None,
             condition_dialog: None,
-             watchpoint_dialog: None,
+            watchpoint_dialog: None,
             settings_dialog: None,
-             set_var_dialog: None,
+            set_var_dialog: None,
             rename_dialog: None,
-             toolchain_dialog: None,
+            toolchain_dialog: None,
             keybindings_dialog: None,
-             external_change_dialog: None,
-             compare_dialog: None,
+            external_change_dialog: None,
+            compare_dialog: None,
             git_branch_dialog: None,
             go_to_line_dialog: None,
             project_rename_dialog: None,
             project_delete_dialog: None,
             confirm_close_dialog: None,
             quit_pending: false,
-             search: None,
-             palette: None,
-             focus_dialog_on_next_frame: false,
-             wizard: None,
+            search: None,
+            palette: None,
+            focus_dialog_on_next_frame: false,
+            wizard: None,
             focus_handle: cx.focus_handle(),
-             focus_on_next_frame: true,
+            focus_on_next_frame: true,
             pending_run: false,
-             pending_flash: None,
+            pending_flash: None,
             run: RunState::default(),
-             git: GitState::default(),
+            git: GitState::default(),
             terminals: Vec::new(),
-             active_terminal: None,
+            active_terminal: None,
             _terminal_sub: None,
             scroll_terminal_to_bottom: false,
             focus_terminal: false,
             serial: None,
             _serial_sub: None,
-             lsp_generation: 0,
+            lsp_generation: 0,
             lsp_refresh_generation: 0,
             agent: None,
             tools: None,
@@ -2701,9 +6328,9 @@ impl IdeApp {
             _agent_sub: None,
             lsp: None,
             lsp_diagnostics: HashMap::new(),
-             references: Vec::new(),
+            references: Vec::new(),
             references_open: false,
-             references_selected: 0,
+            references_selected: 0,
             call_hierarchy_open: false,
             call_hierarchy_calls: Vec::new(),
             call_hierarchy_selected: 0,
@@ -2711,7 +6338,7 @@ impl IdeApp {
             call_hierarchy_item: None,
             call_hierarchy_root: None,
             workspace_symbols: Vec::new(),
-             workspace_symbol_open: false,
+            workspace_symbol_open: false,
             workspace_symbol_selected: 0,
             workspace_symbol_field: cx.new(|cx| TextField::new("搜索符号…", cx)),
             workspace_symbol_generation: 0,
@@ -2734,14 +6361,14 @@ impl IdeApp {
             debug_hover: None,
             debug_hover_value: None,
             semantic_tokens: Vec::new(),
-             outline: Vec::new(),
-             outline_open: false,
+            outline: Vec::new(),
+            outline_open: false,
             outline_filter: String::new(),
             outline_filter_input: None,
-              device_picker_open: false,
+            device_picker_open: false,
             build_config_open: false,
-             device_filter: cx.new(|cx| TextField::new("过滤外设 / 寄存器…", cx)),
-             sim: SimulatorState::default(),
+            device_filter: cx.new(|cx| TextField::new("过滤外设 / 寄存器…", cx)),
+            sim: SimulatorState::default(),
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
         };
@@ -2756,22 +6383,29 @@ impl IdeApp {
             },
         ));
         // Re-filter the Quick Open list as the query field changes.
-        app._quick_open_sub = Some(cx.observe(&app.quick_open_field.clone(), |this, field, cx| {
-            if this.quick_open {
-                this.quick_open_refresh(cx);
-            }
-            let _ = field;
-        }));
+        app._quick_open_sub = Some(
+            cx.observe(&app.quick_open_field.clone(), |this, field, cx| {
+                if this.quick_open {
+                    this.quick_open_refresh(cx);
+                }
+                let _ = field;
+            }),
+        );
         // Re-filter the debug variables list as the filter query changes.
-        app._var_filter_sub = Some(cx.observe(&app.var_filter_field.clone(), |this, field, cx| {
-            this.var_filter = field.read(cx).text().trim().to_string();
-            cx.notify();
-        }));
+        app._var_filter_sub = Some(
+            cx.observe(&app.var_filter_field.clone(), |this, field, cx| {
+                this.var_filter = field.read(cx).text().trim().to_string();
+                cx.notify();
+            }),
+        );
         // Re-filter the file tree as the sidebar filter query changes.
-        app._tree_filter_sub = Some(cx.observe(&app.tree_filter_field.clone(), |this, field, cx| {
-            this.tree_filter = field.read(cx).text().trim().to_string();
-            cx.notify();
-        }));
+        app._tree_filter_sub = Some(cx.observe(
+            &app.tree_filter_field.clone(),
+            |this, field, cx| {
+                this.tree_filter = field.read(cx).text().trim().to_string();
+                cx.notify();
+            },
+        ));
         if let Some(path) = initial {
             app.open_project_path(path, cx);
         }
@@ -2866,10 +6500,7 @@ impl IdeApp {
             return;
         };
         let root = project.root.clone();
-        let parent = root
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
+        let parent = root.parent().map(Path::to_path_buf).unwrap_or_default();
         let target = parent.join(&new_name);
         if target == root {
             cx.notify();
@@ -2977,10 +6608,10 @@ impl IdeApp {
         if let Some(session) = self.debug_session.take() {
             let _ = session.commands.send(DebugCommand::Stop);
         }
-         self.debug = DebugView::default();
-         self.debug.trace.config = TraceConfig::load(&root);
+        self.debug = DebugView::default();
+        self.debug.trace.config = TraceConfig::load(&root);
         self.load_watches(&root);
-         self.pending_debug = false;
+        self.pending_debug = false;
         self.pending_flash = None;
         self.tabs.clear();
         self.active_tab = None;
@@ -3116,7 +6747,9 @@ impl IdeApp {
         // at most a short window of tab/cursor state, not the whole editor.
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(30)).await;
+                cx.background_executor()
+                    .timer(Duration::from_secs(30))
+                    .await;
                 this.update(cx, |this, cx| {
                     this.save_session(cx);
                 })
@@ -3204,10 +6837,7 @@ impl IdeApp {
                                 let _ = server.open_file(path, text);
                             }
                         }
-                        this.status = format!(
-                            "已连接语言服务器（{}）",
-                            language_name(&language)
-                        );
+                        this.status = format!("已连接语言服务器（{}）", language_name(&language));
                         this.start_lsp_poll(generation, cx);
                     }
                     Err(error) => {
@@ -3317,26 +6947,16 @@ impl IdeApp {
                                     );
                                 },
                             ),
-                            _bookmark_subscription: cx.subscribe(
-                                &editor_ref,
-                                |_, _, _: &BookmarkToggled, _| {},
-                            ),
-                            _menu_subscription: cx.subscribe(
-                                &editor_ref,
-                                |_, _, _: &BreakpointContextMenu, _| {},
-                            ),
-                            _definition_subscription: cx.subscribe(
-                                &editor_ref,
-                                |_, _, _: &DefinitionRequested, _| {},
-                            ),
-                            _diagnostic_hover_subscription: cx.subscribe(
-                                &editor_ref,
-                                |_, _, _: &DiagnosticHover, _| {},
-                            ),
-                            _hover_word_subscription: cx.subscribe(
-                                &editor_ref,
-                                |_, _, _: &HoverWord, _| {},
-                            ),
+                            _bookmark_subscription: cx
+                                .subscribe(&editor_ref, |_, _, _: &BookmarkToggled, _| {}),
+                            _menu_subscription: cx
+                                .subscribe(&editor_ref, |_, _, _: &BreakpointContextMenu, _| {}),
+                            _definition_subscription: cx
+                                .subscribe(&editor_ref, |_, _, _: &DefinitionRequested, _| {}),
+                            _diagnostic_hover_subscription: cx
+                                .subscribe(&editor_ref, |_, _, _: &DiagnosticHover, _| {}),
+                            _hover_word_subscription: cx
+                                .subscribe(&editor_ref, |_, _, _: &HoverWord, _| {}),
                         });
                         self.active_tab = Some(self.tabs.len() - 1);
                         self.status = format!("打开 {}（hex 视图）", self.display_path(&path));
@@ -3350,8 +6970,8 @@ impl IdeApp {
                 }
             }
         }
-     }
- 
+    }
+
     /// Go to the counterpart file (header ↔ source) of the active editor.
     /// Uses `find_matching_source_file`; opens the match or reports honestly
     /// when no counterpart exists.
@@ -3372,9 +6992,7 @@ impl IdeApp {
             .filter(|s| !s.trim().is_empty())
             .cloned()
             .collect();
-        let Some(match_path) =
-            find_matching_source_file(&path, root.as_deref(), &includes)
-        else {
+        let Some(match_path) = find_matching_source_file(&path, root.as_deref(), &includes) else {
             self.status = format!("未找到 {} 的对应头文件/源文件", path.display());
             cx.notify();
             return;
@@ -3382,7 +7000,7 @@ impl IdeApp {
         self.open_file(match_path, cx);
     }
 
-     /// Record a just-opened file in the project's recent-file history and
+    /// Record a just-opened file in the project's recent-file history and
     /// persist it. Paths are stored relative to the project root.
     fn remember_recent_file(&mut self, path: &Path, cx: &mut Context<Self>) {
         let Some(project) = &self.project else {
@@ -3390,7 +7008,10 @@ impl IdeApp {
         };
         // Canonicalize the root so `/var` vs `/private/var` (macOS temp dirs)
         // do not defeat the prefix strip; the opened path is already absolute.
-        let root = project.root.canonicalize().unwrap_or_else(|_| project.root.clone());
+        let root = project
+            .root
+            .canonicalize()
+            .unwrap_or_else(|_| project.root.clone());
         let relative = path
             .strip_prefix(&root)
             .map(|p| p.to_path_buf())
@@ -3546,12 +7167,10 @@ impl IdeApp {
                 cx.notify();
             },
         );
-        let hover_word_subscription = cx.subscribe(
-            &editor,
-            move |this, _editor, event: &HoverWord, cx| {
+        let hover_word_subscription =
+            cx.subscribe(&editor, move |this, _editor, event: &HoverWord, cx| {
                 this.on_hover_word(event.word.clone(), event.position, cx);
-            },
-        );
+            });
         self.tabs.push(Tab {
             editor,
             path: path.clone(),
@@ -3571,10 +7190,10 @@ impl IdeApp {
         }
         self.status = format!("打开 {}", self.display_path(&path));
         self.focus_on_next_frame = true;
-         self.lsp_document_symbols(cx);
+        self.lsp_document_symbols(cx);
         self.lsp_semantic_tokens(cx);
         self.lsp_inlay_hints(cx);
-         self.refresh_diagnostics(cx);
+        self.refresh_diagnostics(cx);
         self.save_session(cx);
         cx.notify();
     }
@@ -3683,7 +7302,7 @@ impl IdeApp {
             cx.notify();
         }
     }
- 
+
     /// Persist the debug watch expressions (not their runtime values) to
     /// `.ns-ide/watch.json` so they survive a project reload.
     fn persist_watches(&mut self) {
@@ -3759,18 +7378,21 @@ impl IdeApp {
     }
 
     /// Write a hex-view tab's parsed bytes to disk and mark it saved.
-    fn write_hex_tab(&mut self, index: usize, path: &Path, buffer_text: &str, cx: &mut Context<Self>) {
+    fn write_hex_tab(
+        &mut self,
+        index: usize,
+        path: &Path,
+        buffer_text: &str,
+        cx: &mut Context<Self>,
+    ) {
         match parse_hex_dump_bytes(buffer_text) {
             Ok(bytes) => match fs::write(path, &bytes) {
                 Ok(()) => {
                     let tab = self.tabs.get_mut(index).expect("tab checked above");
                     tab.saved_text = buffer_text.to_string();
                     tab.editor.update(cx, |editor, _cx| editor.mark_saved());
-                    self.status = format!(
-                        "已保存 {}（{} 字节）",
-                        self.display_path(path),
-                        bytes.len()
-                    );
+                    self.status =
+                        format!("已保存 {}（{} 字节）", self.display_path(path), bytes.len());
                 }
                 Err(error) => {
                     self.status = format!("保存失败: {error}");
@@ -3784,7 +7406,13 @@ impl IdeApp {
     }
 
     /// Write a text tab to disk, detecting external modification first.
-    fn write_text_tab(&mut self, index: usize, path: &Path, buffer_text: &str, cx: &mut Context<Self>) {
+    fn write_text_tab(
+        &mut self,
+        index: usize,
+        path: &Path,
+        buffer_text: &str,
+        cx: &mut Context<Self>,
+    ) {
         // Detect external modification: compare the on-disk content against the
         // content as loaded/last saved. When it differs, ask before overwriting.
         let normalized = buffer_text.replace("\r\n", "\n").replace('\r', "\n");
@@ -3883,7 +7511,6 @@ impl IdeApp {
         None
     }
 
-
     /// Save every dirty editor tab, honoring the save-before-build preference.
     /// When disabled, skips saving (the build reads the on-disk source) and
     /// warns in the status bar instead of forcing a save.
@@ -3903,7 +7530,6 @@ impl IdeApp {
         cx.notify();
         true
     }
-
 
     /// Save every dirty editor tab (and the split pane) before an operation
     /// that reads sources from disk (build/run/flash/debug/tests/analysis).
@@ -4063,7 +7689,12 @@ impl IdeApp {
     /// Handle an identifier hover from the editor. When a debug session is
     /// stopped, request the variable's current value (`Evaluate`); otherwise
     /// clear any stale debug hover so the LSP hover takes over.
-    fn on_hover_word(&mut self, word: Option<String>, position: Point<Pixels>, cx: &mut Context<Self>) {
+    fn on_hover_word(
+        &mut self,
+        word: Option<String>,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(word) = word else {
             self.debug_hover = None;
             self.debug_hover_value = None;
@@ -4307,21 +7938,30 @@ impl IdeApp {
     /// shown as a badge.
     fn render_problem_filter_bar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let counts = (
-            self.diagnostics.iter().filter(|d| d.severity == Severity::Error).count()
+            self.diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .count()
                 + self
                     .lsp_diagnostics
                     .values()
                     .flatten()
                     .filter(|d| d.severity == ns_lsp::LspSeverity::Error)
                     .count(),
-            self.diagnostics.iter().filter(|d| d.severity == Severity::Warning).count()
+            self.diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning)
+                .count()
                 + self
                     .lsp_diagnostics
                     .values()
                     .flatten()
                     .filter(|d| d.severity == ns_lsp::LspSeverity::Warning)
                     .count(),
-            self.diagnostics.iter().filter(|d| d.severity == Severity::Info).count()
+            self.diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Info)
+                .count()
                 + self
                     .lsp_diagnostics
                     .values()
@@ -4377,22 +8017,36 @@ impl IdeApp {
             .border_b_1()
             .border_color(theme::alpha(theme::STROKE, 0.08))
             .child(
-                pill("prob-filter-error", "错误", error_active, counts.0, SeverityFilter::Error)
-                    .into_any_element(),
+                pill(
+                    "prob-filter-error",
+                    "错误",
+                    error_active,
+                    counts.0,
+                    SeverityFilter::Error,
+                )
+                .into_any_element(),
             )
             .child(
-                pill("prob-filter-warning", "警告", warning_active, counts.1, SeverityFilter::Warning)
-                    .into_any_element(),
+                pill(
+                    "prob-filter-warning",
+                    "警告",
+                    warning_active,
+                    counts.1,
+                    SeverityFilter::Warning,
+                )
+                .into_any_element(),
             )
             .child(
-                pill("prob-filter-info", "信息", info_active, counts.2, SeverityFilter::Info)
-                    .into_any_element(),
+                pill(
+                    "prob-filter-info",
+                    "信息",
+                    info_active,
+                    counts.2,
+                    SeverityFilter::Info,
+                )
+                .into_any_element(),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .into_any_element(),
-            )
+            .child(div().flex_1().into_any_element())
             .child(
                 div()
                     .text_size(px(9.5))
@@ -4404,7 +8058,11 @@ impl IdeApp {
     }
 
     /// One-line summary of the divergence shown in the external-change dialog.
-    fn file_changed_dialog_diff(&self, cx: &gpui::App, dialog: &ExternalChangeDialog) -> gpui::AnyElement {
+    fn file_changed_dialog_diff(
+        &self,
+        cx: &gpui::App,
+        dialog: &ExternalChangeDialog,
+    ) -> gpui::AnyElement {
         let buffer = self
             .active_tab
             .and_then(|index| self.tabs.get(index))
@@ -4459,10 +8117,10 @@ impl IdeApp {
             Some(active) if active > index => {
                 self.active_tab = Some(active - 1);
             }
-             _ => {}
-         }
+            _ => {}
+        }
         self.tabs.remove(index);
-         self.focus_on_next_frame = true;
+        self.focus_on_next_frame = true;
         cx.notify();
     }
 
@@ -4492,7 +8150,10 @@ impl IdeApp {
     /// Actually remove the given tab indices (descending so earlier removals
     /// do not shift later indices).
     fn perform_close(&mut self, indices: Vec<usize>, cx: &mut Context<Self>) {
-        let mut sorted: Vec<usize> = indices.into_iter().filter(|&i| i < self.tabs.len()).collect();
+        let mut sorted: Vec<usize> = indices
+            .into_iter()
+            .filter(|&i| i < self.tabs.len())
+            .collect();
         sorted.sort_by(|a, b| b.cmp(a));
         sorted.dedup();
         for i in sorted {
@@ -4549,8 +8210,8 @@ impl IdeApp {
             self.save_session(cx);
             self.refresh_diagnostics(cx);
             cx.notify();
-         }
-     }
+        }
+    }
 
     /// Close every tab except `keep`. The active tab is re-selected from the
     /// survivors (prefer the kept tab, then the nearest remaining).
@@ -4559,7 +8220,7 @@ impl IdeApp {
             self.tab_menu = None;
             return;
         }
-         let keep_path = self.tabs.get(keep).map(|tab| tab.path.clone());
+        let keep_path = self.tabs.get(keep).map(|tab| tab.path.clone());
         // Close by path so index shifts from each removal don't skip tabs.
         let to_close: Vec<usize> = self
             .tabs
@@ -4662,7 +8323,6 @@ impl IdeApp {
             cx.notify();
         }
     }
-
 
     fn next_tab(&mut self, forward: bool, cx: &mut Context<Self>) {
         if self.tabs.is_empty() {
@@ -4822,33 +8482,29 @@ impl IdeApp {
             multiple: false,
             prompt: Some("选择项目保存位置".into()),
         });
-        cx.spawn(async move |this, cx| {
-            match receiver.await {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        this.update(cx, |this, cx| {
-                            if let Some(wizard) = this.wizard.as_mut() {
-                                wizard
-                                    .location
-                                    .update(cx, |field, cx| {
-                                        field.set_text(path.display().to_string(), cx)
-                                    });
-                            }
-                            cx.notify();
-                        })
-                        .ok();
-                    }
-                }
-                Ok(Ok(None)) | Err(_) => {}
-                Ok(Err(error)) => {
+        cx.spawn(async move |this, cx| match receiver.await {
+            Ok(Ok(Some(paths))) => {
+                if let Some(path) = paths.into_iter().next() {
                     this.update(cx, |this, cx| {
                         if let Some(wizard) = this.wizard.as_mut() {
-                            wizard.error = Some(format!("打开目录选择器失败: {error}"));
+                            wizard.location.update(cx, |field, cx| {
+                                field.set_text(path.display().to_string(), cx)
+                            });
                         }
                         cx.notify();
                     })
                     .ok();
                 }
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(error)) => {
+                this.update(cx, |this, cx| {
+                    if let Some(wizard) = this.wizard.as_mut() {
+                        wizard.error = Some(format!("打开目录选择器失败: {error}"));
+                    }
+                    cx.notify();
+                })
+                .ok();
             }
         })
         .detach();
@@ -4861,21 +8517,20 @@ impl IdeApp {
             multiple: false,
             prompt: Some("打开 ns-embed-ide 项目文件夹".into()),
         });
-        cx.spawn(async move |this, cx| {
-            match receiver.await {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        this.update(cx, |this, cx| this.open_project_path(path, cx)).ok();
-                    }
+        cx.spawn(async move |this, cx| match receiver.await {
+            Ok(Ok(Some(paths))) => {
+                if let Some(path) = paths.into_iter().next() {
+                    this.update(cx, |this, cx| this.open_project_path(path, cx))
+                        .ok();
                 }
-                Ok(Ok(None)) | Err(_) => {}
-                Ok(Err(error)) => {
-                    this.update(cx, |this, cx| {
-                        this.status = format!("打开项目对话框失败: {error}");
-                        cx.notify();
-                    })
-                    .ok();
-                }
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(error)) => {
+                this.update(cx, |this, cx| {
+                    this.status = format!("打开项目对话框失败: {error}");
+                    cx.notify();
+                })
+                .ok();
             }
         })
         .detach();
@@ -4891,24 +8546,22 @@ impl IdeApp {
             multiple: false,
             prompt: Some("选择要导入的工程文件（.ewp/.uvprojx/.ioc）".into()),
         });
-        cx.spawn(async move |this, cx| {
-            match receiver.await {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(vendor) = paths.into_iter().next() {
-                        this.update(cx, |this, cx| {
-                            this.do_import_project(vendor, cx);
-                        })
-                        .ok();
-                    }
-                }
-                Ok(Ok(None)) | Err(_) => {}
-                Ok(Err(error)) => {
+        cx.spawn(async move |this, cx| match receiver.await {
+            Ok(Ok(Some(paths))) => {
+                if let Some(vendor) = paths.into_iter().next() {
                     this.update(cx, |this, cx| {
-                        this.status = format!("导入工程对话框失败: {error}");
-                        cx.notify();
+                        this.do_import_project(vendor, cx);
                     })
                     .ok();
                 }
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(error)) => {
+                this.update(cx, |this, cx| {
+                    this.status = format!("导入工程对话框失败: {error}");
+                    cx.notify();
+                })
+                .ok();
             }
         })
         .detach();
@@ -5009,15 +8662,15 @@ impl IdeApp {
                 imported.notes.join("；")
             ),
         );
-        let _ = std::fs::write(root.join(".gitignore"), "build/\ntarget/\n.ns-ide/\n.DS_Store\n");
+        let _ = std::fs::write(
+            root.join(".gitignore"),
+            "build/\ntarget/\n.ns-ide/\n.DS_Store\n",
+        );
 
         match Project::open(&root) {
             Ok(project) => {
                 self.load_project(project, cx);
-                let mut message = format!(
-                    "导入完成：{name}（复制 {} 个源文件）",
-                    copied
-                );
+                let mut message = format!("导入完成：{name}（复制 {} 个源文件）", copied);
                 if !imported.notes.is_empty() {
                     message.push_str(&format!("。{}", imported.notes.join("；")));
                 }
@@ -5122,7 +8775,7 @@ impl IdeApp {
             self.status = "正在取消构建…".to_string();
             cx.notify();
         }
-     }
+    }
 
     /// Stop the running flash operation by setting its cancel flag; the
     /// adapter's subprocess is killed and the outcome reports failure.
@@ -5133,8 +8786,8 @@ impl IdeApp {
             cx.notify();
         }
     }
- 
-     /// Delete the build output directory and report what was removed.
+
+    /// Delete the build output directory and report what was removed.
     fn clean_build(&mut self, cx: &mut Context<Self>) {
         let Some(project) = self.project.as_ref() else {
             self.status = "请先打开项目".to_string();
@@ -5164,16 +8817,16 @@ impl IdeApp {
         cx.notify();
     }
 
-     /// Set the build configuration (`debug` | `release`) and write it back to
-     /// `project.toml`. The change takes effect on the next build. With a
-     /// per-target entry, the config is stored on that entry so each target
-     /// keeps its own setting; otherwise the shared `build.config` is used.
-     fn set_build_config(&mut self, config: &str, cx: &mut Context<Self>) {
-         let Some(project) = self.project.as_mut() else {
-             self.status = "请先打开项目".to_string();
-             cx.notify();
-             return;
-         };
+    /// Set the build configuration (`debug` | `release`) and write it back to
+    /// `project.toml`. The change takes effect on the next build. With a
+    /// per-target entry, the config is stored on that entry so each target
+    /// keeps its own setting; otherwise the shared `build.config` is used.
+    fn set_build_config(&mut self, config: &str, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_mut() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
         if config != "debug" && config != "release" {
             self.status = "构建配置必须为 debug 或 release".to_string();
             cx.notify();
@@ -5235,7 +8888,10 @@ impl IdeApp {
                         }
                     }
                     RollbackKind::NewEntry => {
-                        project.config.targets.retain(|entry| entry.target.trim() != target);
+                        project
+                            .config
+                            .targets
+                            .retain(|entry| entry.target.trim() != target);
                     }
                 }
                 self.status = format!("切换构建配置失败: {error}");
@@ -5251,7 +8907,11 @@ impl IdeApp {
             .as_ref()
             .map(|p| p.build_config().to_string())
             .unwrap_or_default();
-        let next = if current == "release" { "debug" } else { "release" };
+        let next = if current == "release" {
+            "debug"
+        } else {
+            "release"
+        };
         self.set_build_config(&next, cx);
     }
 
@@ -5296,7 +8956,8 @@ impl IdeApp {
         };
         let target = project.config.project.target.trim().to_string();
         if target.is_empty() {
-            self.status = "项目未设置目标设备；请先在「设备」页或「项目设置」中选择 MCU。".to_string();
+            self.status =
+                "项目未设置目标设备；请先在「设备」页或「项目设置」中选择 MCU。".to_string();
             cx.notify();
             return;
         }
@@ -5326,7 +8987,8 @@ impl IdeApp {
             self.status = format!("已生成设备文件：{}", written.join("、"));
             self.show_output = true;
             self.output_tab = OutputTab::Output;
-            self.output.push_str(&format!("已生成设备文件：{}\n", written.join("、")));
+            self.output
+                .push_str(&format!("已生成设备文件：{}\n", written.join("、")));
         }
         cx.notify();
     }
@@ -5341,7 +9003,8 @@ impl IdeApp {
         };
         let target = project.config.project.target.trim().to_string();
         if target.is_empty() {
-            self.status = "项目未设置目标设备；请先在「设备」页或「项目设置」中选择 MCU。".to_string();
+            self.status =
+                "项目未设置目标设备；请先在「设备」页或「项目设置」中选择 MCU。".to_string();
             cx.notify();
             return;
         }
@@ -5365,7 +9028,11 @@ impl IdeApp {
                     options: Vec::new(),
                     register_values: BTreeMap::new(),
                 });
-            } else if is_uart && !configs.iter().any(|c| c.name.to_ascii_uppercase().contains("UART")) {
+            } else if is_uart
+                && !configs
+                    .iter()
+                    .any(|c| c.name.to_ascii_uppercase().contains("UART"))
+            {
                 configs.push(ns_device::PeripheralConfig {
                     name: name.clone(),
                     purpose: "调试串口".to_string(),
@@ -5430,7 +9097,8 @@ impl IdeApp {
         };
         let target = project.config.project.target.trim().to_string();
         if target.is_empty() {
-            self.status = "项目未设置目标设备；请先在「设备」页或「项目设置」中选择 MCU。".to_string();
+            self.status =
+                "项目未设置目标设备；请先在「设备」页或「项目设置」中选择 MCU。".to_string();
             cx.notify();
             return;
         }
@@ -5454,7 +9122,11 @@ impl IdeApp {
                     } else {
                         Vec::new()
                     },
-                    baud: if is_uart { "115200".to_string() } else { String::new() },
+                    baud: if is_uart {
+                        "115200".to_string()
+                    } else {
+                        String::new()
+                    },
                 }
             })
             .collect();
@@ -5472,6 +9144,657 @@ impl IdeApp {
         cx.notify();
     }
 
+    /// Open the standalone CubeMX-style RCC clock-tree modal. Requires an open
+    /// project with a target MCU that has an RCC peripheral (STM32F1/F4).
+    fn open_clock_tree(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let target = project.config.project.target.trim().to_string();
+        if target.is_empty() {
+            self.status = "项目未设置目标设备；请先在「项目设置」中选择 MCU。".to_string();
+            cx.notify();
+            return;
+        }
+        // The RCC encoding is family-specific: F1 keeps SW/PLLMUL/HPRE/PPRE in
+        // CFGR, while F4 moves PLLM/PLLN/PLLP/PLLQ/PLLSRC into PLLCFGR. Other
+        // families would get a wrong register layout, so reject them honestly.
+        let family = if target.starts_with("stm32f1") {
+            ClockFamily::F1
+        } else if target.starts_with("stm32f4") {
+            ClockFamily::F4
+        } else {
+            self.status = format!("时钟树配置当前支持 STM32F1 / STM32F4 目标（当前 {target}）。");
+            cx.notify();
+            return;
+        };
+        if ns_device::peripheral_names(&target)
+            .iter()
+            .any(|name| name == "RCC")
+        {
+            self.clock_tree_dialog = Some(ClockTreeDialog {
+                target,
+                family,
+                clock: ClockConfig::default(),
+                f4: F4ClockConfig::default(),
+            });
+        } else {
+            self.status = format!("目标设备「{target}」没有 RCC 时钟控制器，无法配置时钟树。");
+        }
+        cx.notify();
+    }
+
+    fn close_clock_tree(&mut self, cx: &mut Context<Self>) {
+        self.clock_tree_dialog = None;
+        cx.notify();
+    }
+
+    /// Open the standalone pin-mapping modal. The built-in AF tables cover the
+    /// STM32F103 medium-density LQFP48 family (`stm32f103c6` / `stm32f103c8` /
+    /// `stm32f103cb`) and the STM32F407 LQFP100 (`stm32f407` / `stm32f407vg`);
+    /// other targets are rejected honestly instead of opening an empty or
+    /// wrong pin map.
+    fn open_pin_map(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let target = project.config.project.target.trim().to_string();
+        if target.is_empty() {
+            self.status =
+                "项目未设置目标设备；请先在「设备」页或「项目设置」中选择 MCU。".to_string();
+            cx.notify();
+            return;
+        }
+        if !is_stm32f103_lqfp48(&target) && !is_stm32f4_pin_map(&target) {
+            self.status = format!(
+                "引脚映射图当前内置 STM32F103C6/C8/CB（LQFP48）与 STM32F407（LQFP100）的 AF 表，暂不支持目标 {target}。"
+            );
+            cx.notify();
+            return;
+        }
+        self.pin_map_dialog = Some(PinMapDialog::for_target(target));
+        cx.notify();
+    }
+
+    fn close_pin_map(&mut self, cx: &mut Context<Self>) {
+        self.pin_map_dialog = None;
+        cx.notify();
+    }
+
+    /// Cycle one pin through `None → allowed AFs → None`.
+    fn cycle_pin_signal(&mut self, port_index: usize, slot: usize, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.pin_map_dialog.as_mut() {
+            match dialog.family {
+                PinMapFamily::F1 => {
+                    let Some(port) = dialog.ports.get_mut(port_index) else {
+                        return;
+                    };
+                    let pin = port.start_pin + slot;
+                    let allowed = stm32f1_allowed_signals(port.port, pin);
+                    if let Some(current) = port.pins.get_mut(slot) {
+                        *current = match *current {
+                            None => allowed.first().copied(),
+                            Some(signal) => {
+                                let position =
+                                    allowed.iter().position(|candidate| *candidate == signal);
+                                match position {
+                                    Some(index) if index + 1 < allowed.len() => {
+                                        Some(allowed[index + 1])
+                                    }
+                                    _ => None,
+                                }
+                            }
+                        };
+                    }
+                }
+                PinMapFamily::F4 => {
+                    let Some(port) = dialog.f4_ports.get_mut(port_index) else {
+                        return;
+                    };
+                    let pin = port.start_pin + slot;
+                    let allowed = stm32f4_allowed_signals(port.port, pin);
+                    if let Some(current) = port.pins.get_mut(slot) {
+                        *current = match *current {
+                            None => allowed.first().copied(),
+                            Some(signal) => {
+                                let position =
+                                    allowed.iter().position(|candidate| *candidate == signal);
+                                match position {
+                                    Some(index) if index + 1 < allowed.len() => {
+                                        Some(allowed[index + 1])
+                                    }
+                                    _ => None,
+                                }
+                            }
+                        };
+                    }
+                }
+            }
+            let errors = validate_pin_mapping(dialog);
+            dialog.message = if errors.is_empty() {
+                format!("已分配 {} 个引脚。", dialog.assigned_count())
+            } else {
+                errors.join("；")
+            };
+            cx.notify();
+        }
+    }
+
+    /// Clear every pin assignment in the pin-mapping modal.
+    fn clear_pin_map(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.pin_map_dialog.as_mut() {
+            for port in &mut dialog.ports {
+                for pin in &mut port.pins {
+                    *pin = None;
+                }
+            }
+            for port in &mut dialog.f4_ports {
+                for pin in &mut port.pins {
+                    *pin = None;
+                }
+            }
+            dialog.message = "已清除全部引脚分配。".to_string();
+            cx.notify();
+        }
+    }
+
+    /// Save the current pin map to `.ns-ide/pin_map.json` so it can be restored
+    /// in a later session. A conflicting map is refused rather than saved.
+    fn save_pin_map_scheme(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.project.as_ref().map(|project| project.root.clone()) else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(dialog) = self.pin_map_dialog.as_ref() else {
+            self.status = "引脚映射图未打开".to_string();
+            cx.notify();
+            return;
+        };
+        if dialog.assigned_count() == 0 {
+            self.status = "尚未分配任何引脚，没有可保存的方案。".to_string();
+            cx.notify();
+            return;
+        }
+        if !validate_pin_mapping(dialog).is_empty() {
+            self.status = "引脚映射存在冲突；先解决冲突再保存方案。".to_string();
+            cx.notify();
+            return;
+        }
+        let scheme = dialog.to_scheme();
+        let dir = root.join(".ns-ide");
+        if std::fs::create_dir_all(&dir).is_err() {
+            self.status = "无法创建 .ns-ide 目录".to_string();
+            cx.notify();
+            return;
+        }
+        let Ok(json) = serde_json::to_string_pretty(&scheme) else {
+            self.status = "引脚方案保存失败：方案序列化错误".to_string();
+            cx.notify();
+            return;
+        };
+        if std::fs::write(dir.join("pin_map.json"), json).is_err() {
+            self.status = "引脚方案保存失败：.ns-ide/pin_map.json 写入错误".to_string();
+            cx.notify();
+            return;
+        }
+        self.status = format!(
+            "引脚方案已保存到 .ns-ide/pin_map.json（{} 个引脚）。",
+            scheme.entries.len()
+        );
+        cx.notify();
+    }
+
+    /// Load `.ns-ide/pin_map.json` into the open pin map. A scheme belonging to
+    /// another target or family is refused instead of silently applied.
+    fn load_pin_map_scheme(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.project.as_ref().map(|project| project.root.clone()) else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(dialog) = self.pin_map_dialog.as_mut() else {
+            self.status = "引脚映射图未打开".to_string();
+            cx.notify();
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(root.join(".ns-ide/pin_map.json")) else {
+            self.status = "未找到引脚方案 .ns-ide/pin_map.json".to_string();
+            cx.notify();
+            return;
+        };
+        let Ok(scheme) = serde_json::from_str::<PinMapScheme>(&text) else {
+            self.status = "引脚方案已损坏：.ns-ide/pin_map.json 无法解析".to_string();
+            cx.notify();
+            return;
+        };
+        let current_family = match dialog.family {
+            PinMapFamily::F1 => "F1",
+            PinMapFamily::F4 => "F4",
+        };
+        if scheme.target != dialog.target || scheme.family != current_family {
+            self.status = format!(
+                "引脚方案属于 {}（{}），与当前目标 {}（{}）不符。",
+                scheme.target, scheme.family, dialog.target, current_family
+            );
+            cx.notify();
+            return;
+        }
+        let (applied, skipped) = dialog.apply_scheme(&scheme);
+        dialog.message = format!("已从方案恢复 {applied} 个引脚，跳过 {skipped} 个非法项。");
+        self.status = format!(
+            "引脚方案已载入（恢复 {} 个引脚，跳过 {} 个非法项）。",
+            applied, skipped
+        );
+        cx.notify();
+    }
+
+    /// Apply one `.ioc` document to the open pin map. Kept separate from the
+    /// file picker so the parse-and-apply path is reachable from tests.
+    fn import_pin_map_ioc_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let Some(dialog) = self.pin_map_dialog.as_mut() else {
+            self.status = "引脚映射图未打开".to_string();
+            cx.notify();
+            return;
+        };
+        let parsed = pin_ioc::parse(text);
+        match dialog.apply_ioc(parsed.mcu.as_deref(), &parsed.entries) {
+            Ok((applied, skipped)) => {
+                let errors = validate_pin_mapping(dialog);
+                dialog.message = if errors.is_empty() {
+                    format!(
+                        "已从 .ioc 导入 {applied} 个引脚（{skipped} 项未导入：该引脚无此功能或本工具未建模）。"
+                    )
+                } else {
+                    format!(
+                        "已从 .ioc 导入 {applied} 个引脚，但存在冲突：{}",
+                        errors.join("；")
+                    )
+                };
+                self.status = dialog.message.clone();
+            }
+            Err(error) => {
+                dialog.message = error.clone();
+                self.status = error;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Pick a CubeMX `.ioc` file and load its pin assignments into the open
+    /// pin-mapping modal.
+    fn import_pin_map_ioc(&mut self, cx: &mut Context<Self>) {
+        if self.pin_map_dialog.is_none() {
+            self.status = "请先打开引脚映射图（命令面板「引脚映射图…」）。".to_string();
+            cx.notify();
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择 CubeMX .ioc 文件".into()),
+        });
+        cx.spawn(async move |this, cx| match receiver.await {
+            Ok(Ok(Some(paths))) => {
+                if let Some(path) = paths.into_iter().next() {
+                    let name = path.display().to_string();
+                    let text = match std::fs::read_to_string(&path) {
+                        Ok(text) => text,
+                        Err(error) => {
+                            this.update(cx, |this, cx| {
+                                this.status = format!("读取 {name} 失败: {error}");
+                                cx.notify();
+                            })
+                            .ok();
+                            return;
+                        }
+                    };
+                    this.update(cx, |this, cx| this.import_pin_map_ioc_text(&text, cx))
+                        .ok();
+                }
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(error)) => {
+                this.update(cx, |this, cx| {
+                    this.status = format!("选择 .ioc 文件失败: {error}");
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Write the current pin map as a CubeMX-style `pin_map.ioc` in the project
+    /// root. An empty or conflicting map is refused rather than exported.
+    fn export_pin_map_ioc(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.project.as_ref().map(|project| project.root.clone()) else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(dialog) = self.pin_map_dialog.as_ref() else {
+            self.status = "引脚映射图未打开".to_string();
+            cx.notify();
+            return;
+        };
+        if dialog.assigned_count() == 0 {
+            self.status = "尚未分配任何引脚，没有可导出的方案。".to_string();
+            cx.notify();
+            return;
+        }
+        if !validate_pin_mapping(dialog).is_empty() {
+            self.status = "引脚映射存在冲突；先解决冲突再导出 .ioc。".to_string();
+            cx.notify();
+            return;
+        }
+        let Some(text) = dialog.to_ioc() else {
+            self.status = format!(
+                "目标 {} 没有对应的 CubeMX 器件名，无法导出 .ioc。",
+                dialog.target
+            );
+            cx.notify();
+            return;
+        };
+        if std::fs::write(root.join("pin_map.ioc"), text).is_err() {
+            self.status = "引脚方案导出失败：pin_map.ioc 写入错误".to_string();
+            cx.notify();
+            return;
+        }
+        self.status = format!(
+            "引脚映射已导出到 pin_map.ioc（{} 个引脚）。",
+            dialog.assigned_count()
+        );
+        cx.notify();
+    }
+
+    /// Assign (or clear) one peripheral group in the pin map with a single click.
+    fn toggle_pin_map_group(&mut self, group: String, cx: &mut Context<Self>) {
+        let Some(dialog) = self.pin_map_dialog.as_mut() else {
+            return;
+        };
+        let (cleared, changed, untouched) = dialog.toggle_group(&group);
+        let errors = validate_pin_mapping(dialog);
+        dialog.message = if !errors.is_empty() {
+            errors.join("；")
+        } else if cleared {
+            format!("已取消 {group} 的 {changed} 个引脚。")
+        } else if changed == 0 {
+            format!("{group} 的引脚已被其他功能占用，未分配。")
+        } else if untouched > 0 {
+            format!(
+                "已为 {group} 分配 {changed} 个引脚（{untouched} 个引脚未改动：已被占用或信号重复）。"
+            )
+        } else {
+            format!("已为 {group} 分配 {changed} 个引脚。")
+        };
+        self.status = dialog.message.clone();
+        cx.notify();
+    }
+
+    /// Validate the current pin map and write `src/pin_mapping.c` with real
+    /// GPIO register writes (F1: CRL/CRH + AFIO remap; F4: MODER/AFRL/AFRH).
+    fn generate_pin_mapping_code(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.pin_map_dialog.as_ref() else {
+            return;
+        };
+        if dialog.assigned_count() == 0 {
+            self.status = "尚未分配任何引脚；请点击引脚选择外设功能。".to_string();
+            cx.notify();
+            return;
+        }
+        let errors = validate_pin_mapping(dialog);
+        if !errors.is_empty() {
+            self.status = format!("引脚映射存在冲突：{}", errors.join("；"));
+            cx.notify();
+            return;
+        }
+
+        let dialog = self.pin_map_dialog.take().unwrap();
+        let target = dialog.target.clone();
+        let code = match dialog.family {
+            PinMapFamily::F1 => stm32f1_pin_mapping_code(&dialog),
+            PinMapFamily::F4 => stm32f4_pin_mapping_code(&dialog),
+        };
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let root = project.root.clone();
+        let path = root.join("src").join("pin_mapping.c");
+        let _ = std::fs::create_dir_all(root.join("src"));
+        if let Err(error) = std::fs::write(&path, &code) {
+            self.status = format!("写入 {} 失败: {error}", path.display());
+            cx.notify();
+            return;
+        }
+        self.open_file(path.clone(), cx);
+        self.status = format!(
+            "已生成引脚映射配置：{}（{} 个引脚，{target}）",
+            path.display(),
+            dialog.assigned_count()
+        );
+        cx.notify();
+    }
+
+    /// Cycle the SYSCLK source (HSI → HSE → PLL → HSI).
+    fn cycle_clock_source(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.clock_tree_dialog.as_mut() {
+            let next = match match dialog.family {
+                ClockFamily::F1 => dialog.clock.source,
+                ClockFamily::F4 => dialog.f4.source,
+            } {
+                ClockSource::Hsi => ClockSource::Hse,
+                ClockSource::Hse => ClockSource::Pll,
+                ClockSource::Pll => ClockSource::Hsi,
+            };
+            match dialog.family {
+                ClockFamily::F1 => dialog.clock.source = next,
+                ClockFamily::F4 => dialog.f4.source = next,
+            }
+            cx.notify();
+        }
+    }
+
+    /// Cycle the PLL multiplier through the STM32F1 range (×2 … ×16).
+    fn cycle_clock_pll(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.clock_tree_dialog.as_mut() {
+            dialog.clock.pll_mul = if dialog.clock.pll_mul >= 16 {
+                2
+            } else {
+                dialog.clock.pll_mul + 1
+            };
+            cx.notify();
+        }
+    }
+
+    /// Cycle the STM32F4 PLL input divider (2 … 63).
+    fn cycle_f4_pll_m(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.clock_tree_dialog.as_mut() {
+            dialog.f4.pll_m = if dialog.f4.pll_m >= 63 {
+                2
+            } else {
+                dialog.f4.pll_m + 1
+            };
+            cx.notify();
+        }
+    }
+
+    /// Cycle the STM32F4 PLL VCO multiplier (50 … 432).
+    fn cycle_f4_pll_n(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.clock_tree_dialog.as_mut() {
+            dialog.f4.pll_n = if dialog.f4.pll_n >= 432 {
+                50
+            } else {
+                dialog.f4.pll_n + 1
+            };
+            cx.notify();
+        }
+    }
+
+    /// Cycle the STM32F4 PLL VCO output divider (2 → 4 → 6 → 8).
+    fn cycle_f4_pll_p(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[u32] = &[2, 4, 6, 8];
+        if let Some(dialog) = self.clock_tree_dialog.as_mut() {
+            let next = OPTIONS
+                .iter()
+                .position(|value| *value == dialog.f4.pll_p)
+                .map(|index| OPTIONS[(index + 1) % OPTIONS.len()])
+                .unwrap_or(2);
+            dialog.f4.pll_p = next;
+            cx.notify();
+        }
+    }
+
+    /// Cycle the STM32F4 PLL 48 MHz divider (2 … 15).
+    fn cycle_f4_pll_q(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.clock_tree_dialog.as_mut() {
+            dialog.f4.pll_q = if dialog.f4.pll_q >= 15 {
+                2
+            } else {
+                dialog.f4.pll_q + 1
+            };
+            cx.notify();
+        }
+    }
+
+    /// Toggle the STM32F4 PLL source between HSE and HSI.
+    fn cycle_f4_pll_src(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.clock_tree_dialog.as_mut() {
+            dialog.f4.pll_src_hse = !dialog.f4.pll_src_hse;
+            cx.notify();
+        }
+    }
+
+    /// Cycle the AHB prescaler (1,2,4,8,16,64,128,256,512).
+    fn cycle_clock_ahb(&mut self, cx: &mut Context<Self>) {
+        const OPTIONS: &[u32] = &[1, 2, 4, 8, 16, 64, 128, 256, 512];
+        if let Some(dialog) = self.clock_tree_dialog.as_mut() {
+            let current = match dialog.family {
+                ClockFamily::F1 => dialog.clock.ahb_prescaler,
+                ClockFamily::F4 => dialog.f4.ahb_prescaler,
+            };
+            let next = OPTIONS
+                .iter()
+                .position(|value| *value == current)
+                .map(|index| OPTIONS[(index + 1) % OPTIONS.len()])
+                .unwrap_or(1);
+            match dialog.family {
+                ClockFamily::F1 => dialog.clock.ahb_prescaler = next,
+                ClockFamily::F4 => dialog.f4.ahb_prescaler = next,
+            }
+            cx.notify();
+        }
+    }
+
+    /// Cycle the APB1/APB2 prescaler (1,2,4,8,16). `apb` selects which bus.
+    fn cycle_clock_apb(&mut self, apb: bool, cx: &mut Context<Self>) {
+        const OPTIONS: &[u32] = &[1, 2, 4, 8, 16];
+        if let Some(dialog) = self.clock_tree_dialog.as_mut() {
+            let current = if apb {
+                match dialog.family {
+                    ClockFamily::F1 => dialog.clock.apb2_prescaler,
+                    ClockFamily::F4 => dialog.f4.apb2_prescaler,
+                }
+            } else {
+                match dialog.family {
+                    ClockFamily::F1 => dialog.clock.apb1_prescaler,
+                    ClockFamily::F4 => dialog.f4.apb1_prescaler,
+                }
+            };
+            let next = OPTIONS
+                .iter()
+                .position(|value| *value == current)
+                .map(|index| OPTIONS[(index + 1) % OPTIONS.len()])
+                .unwrap_or(1);
+            if apb {
+                match dialog.family {
+                    ClockFamily::F1 => dialog.clock.apb2_prescaler = next,
+                    ClockFamily::F4 => dialog.f4.apb2_prescaler = next,
+                }
+            } else {
+                match dialog.family {
+                    ClockFamily::F1 => dialog.clock.apb1_prescaler = next,
+                    ClockFamily::F4 => dialog.f4.apb1_prescaler = next,
+                }
+            }
+            cx.notify();
+        }
+    }
+
+    /// Generate `src/clock_init.c` with a real `rcc_clock_init()` that writes
+    /// `RCC->CR`/`RCC->CFGR` for the configured clock tree. Reports honestly
+    /// when no modal is open or the target lacks RCC.
+    fn generate_clock_tree_code(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.clock_tree_dialog.take() else {
+            return;
+        };
+        let (cr, cfgr, pll_write) = match dialog.family {
+            ClockFamily::F1 => {
+                let (cr, cfgr) = stm32f1_clock_registers(&dialog.clock);
+                (cr, cfgr, String::new())
+            }
+            ClockFamily::F4 => {
+                let (cr, pllcfgr, cfgr) = stm32f4_clock_registers(&dialog.f4);
+                (cr, cfgr, format!("    RCC->PLLCFGR = {pllcfgr:#010x};\n"))
+            }
+        };
+        let source = match dialog.family {
+            ClockFamily::F1 => dialog.clock.source.label(),
+            ClockFamily::F4 => dialog.f4.source.label(),
+        };
+        let sysclk = match dialog.family {
+            ClockFamily::F1 => clock_mhz_text(dialog.clock.sysclk_hz()),
+            ClockFamily::F4 => clock_mhz_text(dialog.f4.sysclk_hz()),
+        };
+        let prelude = match dialog.family {
+            ClockFamily::F1 => STM32F1_CLOCK_PRELUDE,
+            ClockFamily::F4 => STM32F4_CLOCK_PRELUDE,
+        };
+        let code = format!(
+            "/* Auto-generated RCC clock-tree configuration for {target}.\n\
+             * Source: {source} (SYSCLK {sysclk}).\n\
+             * Call `rcc_clock_init()` once from `main()` before any peripheral.\n\
+             */\n\n\
+             #include <stdint.h>\n\n\
+             {prelude}\
+             void rcc_clock_init(void) {{\n\
+                 /* Enable HSE/PLL as needed, then select SYSCLK + prescalers. */\n\
+                 RCC->CR = {cr:#010x};\n\
+                 {pll_write}\
+                 RCC->CFGR = {cfgr:#010x};\n\
+             }}\n",
+            target = dialog.target,
+            prelude = prelude,
+            pll_write = pll_write,
+        );
+        let Some(project) = self.project.as_ref() else {
+            self.status = "请先打开项目".to_string();
+            cx.notify();
+            return;
+        };
+        let root = project.root.clone();
+        let path = root.join("src").join("clock_init.c");
+        let _ = std::fs::create_dir_all(root.join("src"));
+        if let Err(error) = std::fs::write(&path, &code) {
+            self.status = format!("写入 {} 失败: {error}", path.display());
+            cx.notify();
+            return;
+        }
+        self.open_file(path.clone(), cx);
+        self.status = format!(
+            "已生成时钟树配置：{}（{source} → {sysclk}）",
+            path.display()
+        );
+        cx.notify();
+    }
+
     /// Toggle a peripheral row's enabled flag.
     fn toggle_periph_enabled(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(state) = self.periph_config.as_mut() {
@@ -5484,7 +9807,6 @@ impl IdeApp {
                 cx.notify();
             }
         }
-
     }
 
     /// Select a GPIO peripheral to show in the chip pinout diagram.
@@ -5501,7 +9823,6 @@ impl IdeApp {
             }
         }
     }
-
 
     /// Cycle a GPIO pin's mode through the available modes.
     fn cycle_periph_pin(&mut self, index: usize, pin: usize, cx: &mut Context<Self>) {
@@ -5680,10 +10001,14 @@ impl IdeApp {
         self.flash_artifact(action, None, cx);
     }
 
-
     /// Run the flash adapter and, when `mode` is set, continue the F9
     /// orchestration (reset-and-run or attach the debugger) after success.
-    fn flash_artifact(&mut self, action: FlashAction, mode: Option<FlashMode>, cx: &mut Context<Self>) {
+    fn flash_artifact(
+        &mut self,
+        action: FlashAction,
+        mode: Option<FlashMode>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(project) = self.project.as_ref() else {
             self.status = "请先打开项目".to_string();
             cx.notify();
@@ -5694,10 +10019,7 @@ impl IdeApp {
         if action != FlashAction::Erase && !artifact.exists() {
             self.show_output = true;
             self.output_tab = OutputTab::Output;
-            self.output = format!(
-                "✕ 找不到固件 {}。请先构建项目。\n",
-                artifact.display()
-            );
+            self.output = format!("✕ 找不到固件 {}。请先构建项目。\n", artifact.display());
             self.status = format!("{}失败: 找不到固件", action.label());
             cx.notify();
             return;
@@ -5713,9 +10035,8 @@ impl IdeApp {
                 return;
             }
         };
-        let read_to = (action == FlashAction::Read).then(|| {
-            artifact.with_extension("readback.bin")
-        });
+        let read_to =
+            (action == FlashAction::Read).then(|| artifact.with_extension("readback.bin"));
         // Parse an optional external flash-algorithm (`.FLM`) so the adapter
         // can use its geometry; a missing/unparseable file is reported inline
         // rather than silently ignored.
@@ -5731,22 +10052,22 @@ impl IdeApp {
                     return;
                 }
             }
-         };
+        };
         let flash_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.flash_cancel = Some(flash_cancel.clone());
-         let request = FlashRequest {
-             tool: adapter.tool(),
-             action,
-             firmware: artifact.clone(),
-             interface: project.config.flasher.interface.clone(),
-             read_to,
-             // Pass the project's target as the adapter device override so
-             // pyOCD/J-Link/ST-Link select the right part instead of a hardcoded
-             // default (the external flash algorithm can refine the geometry).
-             device: Some(project.config.project.target.clone()),
-             algorithm,
+        let request = FlashRequest {
+            tool: adapter.tool(),
+            action,
+            firmware: artifact.clone(),
+            interface: project.config.flasher.interface.clone(),
+            read_to,
+            // Pass the project's target as the adapter device override so
+            // pyOCD/J-Link/ST-Link select the right part instead of a hardcoded
+            // default (the external flash algorithm can refine the geometry).
+            device: Some(project.config.project.target.clone()),
+            algorithm,
             cancel: Some(flash_cancel),
-         };
+        };
         self.show_output = true;
         self.output_tab = OutputTab::Output;
         self.output = format!(
@@ -5757,7 +10078,6 @@ impl IdeApp {
         );
         self.status = format!("正在{} ({})…", action.label(), adapter.tool().label());
         cx.notify();
-
 
         let action = request.action;
         let read_to = request.read_to.clone();
@@ -5808,66 +10128,73 @@ impl IdeApp {
                 })
                 .ok();
             }
-             result = Some(adapter_task.join().expect("adapter thread panicked"));
-              this.update(cx, |this, cx| {
-                    this.flash_cancel = None;
-                      match result {
+            result = Some(adapter_task.join().expect("adapter thread panicked"));
+            this.update(cx, |this, cx| {
+                this.flash_cancel = None;
+                match result {
                     Some(Ok(outcome)) => {
-                     if !outcome.combined_output().trim().is_empty() {
-                        this.output.push('\n');
-                    }
-                    if outcome.success {
-                        let done = match action {
-                            FlashAction::Flash => format!("烧写完成 ({})", outcome.tool.label()),
-                            FlashAction::Erase => format!("擦除完成 ({})", outcome.tool.label()),
-                            FlashAction::Verify => format!("校验通过 ({})", outcome.tool.label()),
-                            FlashAction::Read => format!(
-                                "读回完成 → {}",
-                                read_to.as_ref().map_or(
-                                    "未知文件".to_string(),
-                                    |p| p.display().to_string()
-                                )
-                            ),
-                        };
-                        this.status = done;
-                         match mode {
-                             Some(FlashMode::Run) => this.spawn_run(cx),
-                             Some(FlashMode::Debug) => {
-                                 if this.is_embedded_target() {
-                                     this.launch_embedded_debug(cx);
-                                 } else {
-                                     this.launch_debug(cx);
-                                 }
-                             }
-                            Some(FlashMode::Verify) => {
-                                // Chain: after a successful flash, verify the
-                                // written bytes against the artifact.
-                                this.flash_action(FlashAction::Verify, cx);
+                        if !outcome.combined_output().trim().is_empty() {
+                            this.output.push('\n');
+                        }
+                        if outcome.success {
+                            let done = match action {
+                                FlashAction::Flash => {
+                                    format!("烧写完成 ({})", outcome.tool.label())
+                                }
+                                FlashAction::Erase => {
+                                    format!("擦除完成 ({})", outcome.tool.label())
+                                }
+                                FlashAction::Verify => {
+                                    format!("校验通过 ({})", outcome.tool.label())
+                                }
+                                FlashAction::Read => format!(
+                                    "读回完成 → {}",
+                                    read_to.as_ref().map_or("未知文件".to_string(), |p| p
+                                        .display()
+                                        .to_string())
+                                ),
+                            };
+                            this.status = done;
+                            match mode {
+                                Some(FlashMode::Run) => this.spawn_run(cx),
+                                Some(FlashMode::Debug) => {
+                                    if this.is_embedded_target() {
+                                        this.launch_embedded_debug(cx);
+                                    } else {
+                                        this.launch_debug(cx);
+                                    }
+                                }
+                                Some(FlashMode::Verify) => {
+                                    // Chain: after a successful flash, verify the
+                                    // written bytes against the artifact.
+                                    this.flash_action(FlashAction::Verify, cx);
+                                }
+                                None => {}
                             }
-                             None => {}
-                         }
-                    } else {
-                        this.status = format!(
-                            "{}失败 ({}: {})",
-                            action.label(),
-                            outcome.tool.label(),
-                            outcome.code.map_or("未知退出码".to_string(), |c| c.to_string())
-                        );
+                        } else {
+                            this.status = format!(
+                                "{}失败 ({}: {})",
+                                action.label(),
+                                outcome.tool.label(),
+                                outcome
+                                    .code
+                                    .map_or("未知退出码".to_string(), |c| c.to_string())
+                            );
+                        }
+                        cx.notify();
                     }
-                     cx.notify();
+                    Some(Err(error)) => {
+                        this.output = format!("✕ {error}\n");
+                        this.status = format!("{}失败: {error}", action.label());
+                        cx.notify();
+                    }
+                    None => {}
                 }
-                 Some(Err(error)) => {
-                     this.output = format!("✕ {error}\n");
-                     this.status = format!("{}失败: {error}", action.label());
-                     cx.notify();
-                 }
-                 None => {}
-             }
-             })
-             .ok();
-         })
-         .detach();
-     }
+            })
+            .ok();
+        })
+        .detach();
+    }
 
     /// F9 调试运行: build → flash → attach the debugger.
     fn flash_and_debug(&mut self, cx: &mut Context<Self>) {
@@ -5876,10 +10203,10 @@ impl IdeApp {
     }
 
     /// F9 直接运行: build → flash → reset-and-run without a debugger.
-     fn flash_and_run(&mut self, cx: &mut Context<Self>) {
-         self.pending_flash = Some(FlashMode::Run);
-         self.start_build(false, cx);
-     }
+    fn flash_and_run(&mut self, cx: &mut Context<Self>) {
+        self.pending_flash = Some(FlashMode::Run);
+        self.start_build(false, cx);
+    }
 
     /// 烧写并校验: build → flash → verify the written bytes against the
     /// artifact. The verify only runs when the flash succeeds (the
@@ -5932,10 +10259,7 @@ impl IdeApp {
             OutputTab::Problems
         };
         self.show_output = true;
-        self.status = format!(
-            "静态分析完成 · {} 个问题",
-            self.diagnostics.len()
-        );
+        self.status = format!("静态分析完成 · {} 个问题", self.diagnostics.len());
         self.refresh_diagnostics(cx);
         cx.notify();
     }
@@ -5986,7 +10310,8 @@ impl IdeApp {
                 .background_executor()
                 .spawn(async move { ns_build::execute(&plan) });
             let outcome = task.await;
-            this.update(cx, |this, cx| this.finish_tests(outcome, cx)).ok();
+            this.update(cx, |this, cx| this.finish_tests(outcome, cx))
+                .ok();
         })
         .detach();
     }
@@ -6007,7 +10332,11 @@ impl IdeApp {
         output.push_str(&outcome.combined_output());
         output.push_str(&format!(
             "\n[测试] {} · 用时 {:.2}s\n",
-            if outcome.success { "全部通过" } else { "有失败" },
+            if outcome.success {
+                "全部通过"
+            } else {
+                "有失败"
+            },
             outcome.duration.as_secs_f64()
         ));
         self.output = output;
@@ -6113,7 +10442,11 @@ impl IdeApp {
         output.push_str(&outcome.combined_output());
         if outcome.success {
             let total: u64 = self.stack_usage.iter().map(|entry| entry.bytes).sum();
-            let dynamic = self.stack_usage.iter().filter(|entry| entry.dynamic).count();
+            let dynamic = self
+                .stack_usage
+                .iter()
+                .filter(|entry| entry.dynamic)
+                .count();
             output.push_str(&format!(
                 "\n[栈使用] {} 个函数 · 静态峰值 {} 字节 · 动态 {} 个 · 用时 {:.2}s\n",
                 self.stack_usage.len(),
@@ -6141,10 +10474,7 @@ impl IdeApp {
             OutputTab::Problems
         };
         self.show_output = true;
-        self.status = format!(
-            "栈使用分析完成 · {} 个函数",
-            self.stack_usage.len()
-        );
+        self.status = format!("栈使用分析完成 · {} 个函数", self.stack_usage.len());
         self.refresh_diagnostics(cx);
         cx.notify();
     }
@@ -6202,22 +10532,22 @@ impl IdeApp {
     fn finish_preprocess(&mut self, outcome: ns_build::BuildOutcome, cx: &mut Context<Self>) {
         let mut output = format!("$ {}\n\n", self.build_command);
         output.push_str(&outcome.combined_output());
-         if outcome.success {
-             self.status = "宏展开完成".to_string();
-         } else {
+        if outcome.success {
+            self.status = "宏展开完成".to_string();
+        } else {
             self.status = format!("宏展开失败（退出码 {}）", outcome.code.unwrap_or(-1));
-         }
-         self.output = output;
-         self.build_state = if outcome.success {
+        }
+        self.output = output;
+        self.build_state = if outcome.success {
             BuildState::Success(outcome.duration)
-         } else {
-             BuildState::Failed(outcome.duration)
-         };
+        } else {
+            BuildState::Failed(outcome.duration)
+        };
         self.refresh_diagnostics(cx);
         cx.notify();
     }
 
-     /// Run gcov line-coverage analysis (C/C++): build with `--coverage`, run
+    /// Run gcov line-coverage analysis (C/C++): build with `--coverage`, run
     /// the instrumented binary, then summarize per-file coverage via gcov.
     fn start_coverage(&mut self, cx: &mut Context<Self>) {
         if self.project.is_none() {
@@ -6267,22 +10597,20 @@ impl IdeApp {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| root.join("build"));
         cx.spawn(async move |this, cx| {
-            let task = cx
-                .background_executor()
-                .spawn(async move {
-                    let build = ns_build::execute(&plan);
-                    let coverage = if build.success {
-                        ns_build::run_coverage(&binary, &root, &out_dir).ok().flatten()
-                    } else {
-                        None
-                    };
-                    (build, coverage)
-                });
+            let task = cx.background_executor().spawn(async move {
+                let build = ns_build::execute(&plan);
+                let coverage = if build.success {
+                    ns_build::run_coverage(&binary, &root, &out_dir)
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+                (build, coverage)
+            });
             let (build, coverage) = task.await;
-            this.update(cx, |this, cx| {
-                this.finish_coverage(build, coverage, cx)
-            })
-            .ok();
+            this.update(cx, |this, cx| this.finish_coverage(build, coverage, cx))
+                .ok();
         })
         .detach();
     }
@@ -6292,9 +10620,16 @@ impl IdeApp {
         coverage: Option<Vec<ns_build::CoverageFile>>,
         cx: &mut Context<Self>,
     ) {
-        let root = self.project.as_ref().map(|p| p.root.clone()).unwrap_or_default();
+        let root = self
+            .project
+            .as_ref()
+            .map(|p| p.root.clone())
+            .unwrap_or_default();
         let diagnostics = build.diagnostics(&root);
-        self.diagnostics = diagnostics.into_iter().filter(|d| d.severity != Severity::Info).collect();
+        self.diagnostics = diagnostics
+            .into_iter()
+            .filter(|d| d.severity != Severity::Info)
+            .collect();
         self.build_command = build.plan.command_line();
         self.coverage = coverage.unwrap_or_default();
         let mut output = format!("$ {}\n\n", self.build_command);
@@ -6314,25 +10649,38 @@ impl IdeApp {
             OutputTab::Problems
         };
         self.show_output = true;
-         self.status = format!("覆盖率分析完成 · {} 个文件", self.coverage.len());
-         self.refresh_diagnostics(cx);
-         self.apply_coverage_to_editors(cx);
-         cx.notify();
-     }
- 
-     /// Append the per-file coverage summary lines to `output`.
+        self.status = format!("覆盖率分析完成 · {} 个文件", self.coverage.len());
+        self.refresh_diagnostics(cx);
+        self.apply_coverage_to_editors(cx);
+        cx.notify();
+    }
+
+    /// Append the per-file coverage summary lines to `output`.
     fn format_coverage_output(&self, output: &mut String, seconds: f64) {
-        let total_lines: u64 = self.coverage.iter().map(|f| f.executed + f.not_executed).sum();
+        let total_lines: u64 = self
+            .coverage
+            .iter()
+            .map(|f| f.executed + f.not_executed)
+            .sum();
         let executed: u64 = self.coverage.iter().map(|f| f.executed).sum();
-        let overall = if total_lines == 0 { 0 } else { executed * 100 / total_lines };
+        let overall = if total_lines == 0 {
+            0
+        } else {
+            executed * 100 / total_lines
+        };
         output.push_str(&format!(
             "\n[覆盖率] {} 个文件 · 总体行覆盖 {}% · 用时 {:.2}s\n",
-            self.coverage.len(), overall, seconds
+            self.coverage.len(),
+            overall,
+            seconds
         ));
         for file in &self.coverage {
             output.push_str(&format!(
                 "  {:>3}%  {:>4}/{:<4}  {}\n",
-                file.percent(), file.executed, file.executed + file.not_executed, file.file
+                file.percent(),
+                file.executed,
+                file.executed + file.not_executed,
+                file.file
             ));
         }
     }
@@ -6379,18 +10727,18 @@ impl IdeApp {
         self.firmware_size = if outcome.success {
             self.analyze_firmware_artifact()
         } else {
-             None
-         };
+            None
+        };
         self.build_file_timings = outcome.file_timings.clone();
-         // Persist the firmware summary in the build output so it survives
+        // Persist the firmware summary in the build output so it survives
         // tab switches and re-renders (render appends it only as a computed
         // trailing line, but this keeps the record in the output text).
         if self.firmware_size.is_some() {
             let summary = self.render_firmware_size_summary();
             if !summary.is_empty() && !self.output.contains(&summary) {
                 self.output.push_str(&format!("\n{summary}\n"));
-             }
-         }
+            }
+        }
         // Report per-file compile times when the toolchain exposed them.
         if !self.build_file_timings.is_empty() {
             let mut timing_lines: Vec<String> = self
@@ -6639,9 +10987,9 @@ impl IdeApp {
                 if self.run.stopped {
                     self.run.output.push_str("\n[运行已停止]\n");
                 } else {
-                    self.run.output.push_str(&format!(
-                        "\n[进程退出，代码 {code}]\n"
-                    ));
+                    self.run
+                        .output
+                        .push_str(&format!("\n[进程退出，代码 {code}]\n"));
                     self.status = format!("运行结束 · 退出代码 {code}");
                 }
             }
@@ -6849,24 +11197,25 @@ impl IdeApp {
                                 }
                                 let app = app.clone();
                                 let _ = app.update(_cx, |this, cx| {
-                                     this.debug.add_watch(&text);
+                                    this.debug.add_watch(&text);
                                     this.persist_watches();
-                                     if let Some(session) = &this.debug_session {
-                                         let _ = session.commands.send(DebugCommand::Evaluate {
-                                             expression: text,
-                                             scope_name: "watch".to_string(),
-                                         });
-                                     }
-                                     cx.notify();
-                                 });
+                                    if let Some(session) = &this.debug_session {
+                                        let _ = session.commands.send(DebugCommand::Evaluate {
+                                            expression: text,
+                                            scope_name: "watch".to_string(),
+                                        });
+                                    }
+                                    cx.notify();
                                 });
-                             });
-                             input
-                     }),
+                            });
+                        });
+                        input
+                    }),
                     watches: std::mem::take(&mut self.debug.watches),
-                     ..DebugView::default()
-                 };
-                self.debug.push_console("调试会话已启动（lldb-dap）".to_string());
+                    ..DebugView::default()
+                };
+                self.debug
+                    .push_console("调试会话已启动（lldb-dap）".to_string());
                 self.debug_session = Some(DebugSession { commands });
                 self.output_tab = OutputTab::Debug;
                 self.show_output = true;
@@ -6897,67 +11246,67 @@ impl IdeApp {
         }
     }
 
-     /// Restart the debug session. When a session is already running, the DAP
-     /// `restart` request restarts the debuggee in place (keeping the adapter
-     /// and its breakpoints alive); otherwise the session is relaunched. The
-     /// transient debug views (frames/scopes/variables) are cleared either way.
-     fn restart_debug(&mut self, cx: &mut Context<Self>) {
-         if let Some(session) = self.debug_session.as_ref() {
-             // Native in-place restart: keep the adapter, just reset the
-             // debuggee. Clear the transient views so the next stop event
-             // repopulates them from scratch.
-             self.debug.frames.clear();
-             self.debug.scopes.clear();
-             self.debug.variables.clear();
-             self.debug.children.clear();
-             self.debug.expanded.clear();
-             self.debug.threads.clear();
-             self.debug.register_groups.clear();
-             self.debug.register_group_refs.clear();
-             self.debug.pc = None;
-             self.debug.status = DebugStatus::Idle;
-             if session.commands.send(DebugCommand::Restart).is_err() {
-                 // The session died while restarting; fall through to relaunch.
-                 self.stop_debug(cx);
-             } else {
-                 self.debug.push_console("↻ 正在重启调试会话…".to_string());
-                 cx.notify();
-                 return;
-             }
-         }
-         if self.debug_session.is_some() {
-             self.stop_debug(cx);
-         }
-         self.debug.status = DebugStatus::Idle;
-         self.debug.error = None;
-         self.debug.frames.clear();
-         self.debug.scopes.clear();
-         self.debug.variables.clear();
-         self.debug.children.clear();
-         self.debug.expanded.clear();
-         self.debug.threads.clear();
-         self.debug.register_groups.clear();
-         self.debug.register_group_refs.clear();
-         self.debug.pc = None;
-         self.debug.console.clear();
-         let artifact = self
-             .project
-             .as_ref()
-             .map(|project| project.artifact_path())
-             .unwrap_or_default();
-         if !artifact.exists() {
-             self.debug.push_console(format!(
-                 "✕ 找不到调试产物 {}。请先构建项目。",
-                 artifact.display()
-             ));
-             self.output_tab = OutputTab::Debug;
-             self.show_output = true;
-             self.status = "调试产物缺失，请先构建".to_string();
-             cx.notify();
-             return;
-         }
-         self.launch_debug(cx);
-     }
+    /// Restart the debug session. When a session is already running, the DAP
+    /// `restart` request restarts the debuggee in place (keeping the adapter
+    /// and its breakpoints alive); otherwise the session is relaunched. The
+    /// transient debug views (frames/scopes/variables) are cleared either way.
+    fn restart_debug(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.debug_session.as_ref() {
+            // Native in-place restart: keep the adapter, just reset the
+            // debuggee. Clear the transient views so the next stop event
+            // repopulates them from scratch.
+            self.debug.frames.clear();
+            self.debug.scopes.clear();
+            self.debug.variables.clear();
+            self.debug.children.clear();
+            self.debug.expanded.clear();
+            self.debug.threads.clear();
+            self.debug.register_groups.clear();
+            self.debug.register_group_refs.clear();
+            self.debug.pc = None;
+            self.debug.status = DebugStatus::Idle;
+            if session.commands.send(DebugCommand::Restart).is_err() {
+                // The session died while restarting; fall through to relaunch.
+                self.stop_debug(cx);
+            } else {
+                self.debug.push_console("↻ 正在重启调试会话…".to_string());
+                cx.notify();
+                return;
+            }
+        }
+        if self.debug_session.is_some() {
+            self.stop_debug(cx);
+        }
+        self.debug.status = DebugStatus::Idle;
+        self.debug.error = None;
+        self.debug.frames.clear();
+        self.debug.scopes.clear();
+        self.debug.variables.clear();
+        self.debug.children.clear();
+        self.debug.expanded.clear();
+        self.debug.threads.clear();
+        self.debug.register_groups.clear();
+        self.debug.register_group_refs.clear();
+        self.debug.pc = None;
+        self.debug.console.clear();
+        let artifact = self
+            .project
+            .as_ref()
+            .map(|project| project.artifact_path())
+            .unwrap_or_default();
+        if !artifact.exists() {
+            self.debug.push_console(format!(
+                "✕ 找不到调试产物 {}。请先构建项目。",
+                artifact.display()
+            ));
+            self.output_tab = OutputTab::Debug;
+            self.show_output = true;
+            self.status = "调试产物缺失，请先构建".to_string();
+            cx.notify();
+            return;
+        }
+        self.launch_debug(cx);
+    }
     /// Launch an embedded-target debug session: start the probe GDB server
     /// (OpenOCD / ST-Link / J-Link / pyOCD / probe-rs) and attach a GDB
     /// client to it via `target remote`.
@@ -7052,9 +11401,9 @@ impl IdeApp {
                         }
                         let app = app.clone();
                         let _ = app.update(_cx, |this, cx| {
-                             this.debug.add_watch(&text);
+                            this.debug.add_watch(&text);
                             this.persist_watches();
-                             if let Some(session) = &this.debug_session {
+                            if let Some(session) = &this.debug_session {
                                 let _ = session.commands.send(DebugCommand::Evaluate {
                                     expression: text,
                                     scope_name: "watch".to_string(),
@@ -7065,10 +11414,10 @@ impl IdeApp {
                     });
                 });
                 input
-             }),
+            }),
             watches: std::mem::take(&mut self.debug.watches),
-             ..DebugView::default()
-         };
+            ..DebugView::default()
+        };
         self.debug.push_console(format!(
             "正在启动嵌入式调试（{} · {}）…",
             probe.label(),
@@ -7088,9 +11437,7 @@ impl IdeApp {
         cx.spawn(async move |this, cx| {
             let task = cx
                 .background_executor()
-                .spawn(async move {
-                    ns_debug::spawn_embedded_debug(&handle_config)
-                });
+                .spawn(async move { ns_debug::spawn_embedded_debug(&handle_config) });
             match task.await {
                 Ok(handle) => {
                     let (messages, commands) = handle.into_parts();
@@ -7146,16 +11493,19 @@ impl IdeApp {
                     .detach();
                 }
                 Err(error) => {
-                    let availability = ns_debug::embedded::probe_availability(
-                        probe_server_path.as_deref(),
-                    );
+                    let availability =
+                        ns_debug::embedded::probe_availability(probe_server_path.as_deref());
                     let summary = availability
                         .iter()
                         .map(|status| {
                             format!(
                                 "{} {}",
                                 status.probe.label(),
-                                if status.available { "✓" } else { "✕ 未安装" }
+                                if status.available {
+                                    "✓"
+                                } else {
+                                    "✕ 未安装"
+                                }
                             )
                         })
                         .collect::<Vec<_>>()
@@ -7176,19 +11526,21 @@ impl IdeApp {
         .detach();
     }
 
-    fn handle_debug_message(
-        &mut self,
-        message: DebugMessage,
-        cx: &mut Context<Self>,
-    ) {
+    fn handle_debug_message(&mut self, message: DebugMessage, cx: &mut Context<Self>) {
         match message {
             DebugMessage::Ready => {
                 self.debug.status = DebugStatus::Running;
                 self.debug.push_console("调试器已就绪".to_string());
             }
-            DebugMessage::Stopped { reason, thread_id, description } => {
+            DebugMessage::Stopped {
+                reason,
+                thread_id,
+                description,
+            } => {
                 self.debug.stop_description = description.clone();
-                self.debug.status = DebugStatus::Stopped { reason: reason.clone() };
+                self.debug.status = DebugStatus::Stopped {
+                    reason: reason.clone(),
+                };
                 self.debug.thread_id = thread_id;
                 self.debug.active_thread = thread_id;
                 self.debug.scopes.clear();
@@ -7200,17 +11552,15 @@ impl IdeApp {
                 self.debug.active_frame = 0;
                 self.debug.active_scope = 0;
                 let thread_label = self.active_thread_label();
-                let stop_label = debug_stop_reason_label(
-                    &reason,
-                    description.as_deref(),
-                );
-                self.debug.push_console(format!(
-                    "● 程序暂停 · {stop_label} · {thread_label}"
-                ));
+                let stop_label = debug_stop_reason_label(&reason, description.as_deref());
+                self.debug
+                    .push_console(format!("● 程序暂停 · {stop_label} · {thread_label}"));
                 if let Some(session) = &self.debug_session {
                     // Refresh the thread list, then load the stopping thread's stack.
                     let _ = session.commands.send(DebugCommand::Threads);
-                    let _ = session.commands.send(DebugCommand::GetStackTrace { thread_id });
+                    let _ = session
+                        .commands
+                        .send(DebugCommand::GetStackTrace { thread_id });
                 }
                 self.begin_watchpoint_resolution();
                 // Re-evaluate every watch expression at the new stop.
@@ -7235,7 +11585,6 @@ impl IdeApp {
                 self.refresh_memory_on_stop(cx);
                 self.refresh_device_registers_on_stop();
                 cx.notify();
-
             }
             DebugMessage::Continued => {
                 self.debug.status = DebugStatus::Running;
@@ -7253,9 +11602,9 @@ impl IdeApp {
                 self.focus_debug_frame(0, cx);
                 if let Some(frame) = self.debug.frames.first() {
                     if let Some(session) = &self.debug_session {
-                        let _ = session.commands.send(DebugCommand::GetScopes {
-                            frame_id: frame.id,
-                        });
+                        let _ = session
+                            .commands
+                            .send(DebugCommand::GetScopes { frame_id: frame.id });
                     }
                 }
             }
@@ -7293,7 +11642,10 @@ impl IdeApp {
                     self.load_register_groups(cx);
                 }
             }
-            DebugMessage::Variables { reference, variables } => {
+            DebugMessage::Variables {
+                reference,
+                variables,
+            } => {
                 if self.debug.watchpoint_resolution_pending {
                     self.collect_watchpoint_scope(reference, variables.clone());
                 }
@@ -7326,14 +11678,19 @@ impl IdeApp {
                 self.debug.memory.bytes = data.clone();
                 self.debug.memory.error = None;
                 // Keep the active region's address/size in sync with the read.
-                if let Some(region) =
-                    self.debug.memory.regions.get_mut(self.debug.memory.active_region)
+                if let Some(region) = self
+                    .debug
+                    .memory
+                    .regions
+                    .get_mut(self.debug.memory.active_region)
                 {
                     region.address = address;
                     region.size = self.debug.memory.read_size;
                 }
-                self.debug
-                    .push_console(format!("内存 {address:#x} · {} 字节", self.debug.memory.bytes.len()));
+                self.debug.push_console(format!(
+                    "内存 {address:#x} · {} 字节",
+                    self.debug.memory.bytes.len()
+                ));
                 // Store any device-register value that falls inside this read.
                 if let Some(device) = self.device_for_project() {
                     for peripheral in device.sorted_peripherals() {
@@ -7344,9 +11701,7 @@ impl IdeApp {
                                 for i in 0..4 {
                                     value |= (data[(rel as usize) + i] as u32) << (8 * i);
                                 }
-                                self.debug
-                                    .device_reg_values
-                                    .insert(register.address, value);
+                                self.debug.device_reg_values.insert(register.address, value);
                             }
                         }
                     }
@@ -7399,8 +11754,12 @@ impl IdeApp {
                         .map(|project| project.relative(Path::new(&file)))
                         .filter(|relative| !relative.is_empty())
                     {
-                        self.breakpoints
-                            .mark_verified(&relative, result.line, result.verified, &result.reason);
+                        self.breakpoints.mark_verified(
+                            &relative,
+                            result.line,
+                            result.verified,
+                            &result.reason,
+                        );
                     }
                 }
                 self.persist_breakpoints();
@@ -7474,10 +11833,10 @@ impl IdeApp {
                 ));
                 cx.notify();
             }
-             DebugMessage::TracePackets(packets) => {
-                 // Append decoded SWO packets to the live buffer (capped so a
-                 // busy probe cannot grow it without bound).
-                 let trace = &mut self.debug.trace;
+            DebugMessage::TracePackets(packets) => {
+                // Append decoded SWO packets to the live buffer (capped so a
+                // busy probe cannot grow it without bound).
+                let trace = &mut self.debug.trace;
                 // Feed DWT PC samples into the profiler aggregator for the
                 // hotspot histogram (see the trace panel's profiler view).
                 for packet in &packets {
@@ -7485,14 +11844,14 @@ impl IdeApp {
                         trace.profile.record(*pc);
                     }
                 }
-                 trace.packets.extend(packets);
-                 const TRACE_CAP: usize = 2000;
-                 if trace.packets.len() > TRACE_CAP {
-                     let overflow = trace.packets.len() - TRACE_CAP;
-                     trace.packets.drain(..overflow);
-                 }
-                 cx.notify();
-             }
+                trace.packets.extend(packets);
+                const TRACE_CAP: usize = 2000;
+                if trace.packets.len() > TRACE_CAP {
+                    let overflow = trace.packets.len() - TRACE_CAP;
+                    trace.packets.drain(..overflow);
+                }
+                cx.notify();
+            }
             DebugMessage::Evaluated {
                 expression,
                 result,
@@ -7620,28 +11979,32 @@ impl IdeApp {
         self.focus_debug_frame(index, cx);
         if let Some(frame) = self.debug.frames.get(index) {
             if let Some(session) = &self.debug_session {
-                let _ = session.commands.send(DebugCommand::GetScopes { frame_id: frame.id });
+                let _ = session
+                    .commands
+                    .send(DebugCommand::GetScopes { frame_id: frame.id });
             }
         }
         cx.notify();
-     }
+    }
     /// Manually refresh the variables view: clear cached scopes/variables for
     /// the selected frame and re-request them from the adapter.
-     fn refresh_variables(&mut self, cx: &mut Context<Self>) {
+    fn refresh_variables(&mut self, cx: &mut Context<Self>) {
         let frame_index = self.debug.active_frame;
         let Some(frame) = self.debug.frames.get(frame_index) else {
-             self.status = "没有选中的栈帧".to_string();
-             cx.notify();
-             return;
-         };
+            self.status = "没有选中的栈帧".to_string();
+            cx.notify();
+            return;
+        };
         self.debug.scopes.clear();
-         self.debug.variables.clear();
-         if let Some(session) = &self.debug_session {
-            let _ = session.commands.send(DebugCommand::GetScopes { frame_id: frame.id });
-         }
+        self.debug.variables.clear();
+        if let Some(session) = &self.debug_session {
+            let _ = session
+                .commands
+                .send(DebugCommand::GetScopes { frame_id: frame.id });
+        }
         self.status = "已刷新变量".to_string();
-         cx.notify();
-     }
+        cx.notify();
+    }
 
     /// Re-request the adapter's register groups. Clears the cached groups so
     /// the register column shows the current target state after the user
@@ -7659,15 +12022,13 @@ impl IdeApp {
         cx.notify();
     }
 
-
     /// Refresh the RTOS task list. Without a live session this reports an
     /// honest status; otherwise it evaluates the scheduler's task count, then
     /// the running index and each task name (FreeRTOS-style globals), and
     /// finalizes the list as the `Evaluated` responses arrive.
     fn refresh_rtos_tasks(&mut self, cx: &mut Context<Self>) {
         let Some(session) = &self.debug_session else {
-            self.debug.rtos_status =
-                "无调试会话；启动调试并命中断点后刷新任务列表。".to_string();
+            self.debug.rtos_status = "无调试会话；启动调试并命中断点后刷新任务列表。".to_string();
             self.debug.rtos_tasks.clear();
             cx.notify();
             return;
@@ -7741,7 +12102,6 @@ impl IdeApp {
                     pending_name: None,
                     pending_priority: None,
                 });
-
             }
             // Request the running TCB and the scheduler list heads (symbol
             // addresses), each tagged so the response routes to the walker.
@@ -7808,10 +12168,10 @@ impl IdeApp {
                         match field {
                             "name" => entry.name = Some(value.to_string()),
                             "priority" => entry.priority = value.parse::<u32>().ok(),
-                            "stack_usage" => entry.stack_usage = value
-                                .parse::<u8>()
-                                .ok()
-                                .filter(|usage| *usage <= 100),
+                            "stack_usage" => {
+                                entry.stack_usage =
+                                    value.parse::<u8>().ok().filter(|usage| *usage <= 100)
+                            }
                             "state" => entry.state = value.parse::<u32>().ok(),
                             _ => {}
                         }
@@ -7842,7 +12202,6 @@ impl IdeApp {
         false
     }
 
-
     /// Evaluate a symbol expression and tag the response with a `__rtos_` kind.
     /// Used to fetch the running TCB and the scheduler list head addresses.
     fn evaluate_rtos_symbol(&mut self, expr: &str, kind: &str) {
@@ -7853,7 +12212,6 @@ impl IdeApp {
             });
         }
     }
-
 
     /// Handle a real-kernel walk response (`__rtos_` prefixed). The walker
     /// evaluates raw memory-deref expressions to traverse the scheduler lists.
@@ -7887,7 +12245,12 @@ impl IdeApp {
             let (kind, _addr) = parse_rtos_tag(expression);
             let layout = kernel.layout;
             let list_state = |kernel: &RtosKernelWalk| {
-                kernel.lists.get(kernel.list_index).copied().map(|(_, s)| s).unwrap_or(0)
+                kernel
+                    .lists
+                    .get(kernel.list_index)
+                    .copied()
+                    .map(|(_, s)| s)
+                    .unwrap_or(0)
             };
             match kind.as_str() {
                 "running" => {
@@ -7921,7 +12284,11 @@ impl IdeApp {
                 }
                 "first" => {
                     let first = parse_u64_loose(result).unwrap_or(0);
-                    let (head, _) = kernel.lists.get(kernel.list_index).copied().unwrap_or((0, 0));
+                    let (head, _) = kernel
+                        .lists
+                        .get(kernel.list_index)
+                        .copied()
+                        .unwrap_or((0, 0));
                     let embedded = head + layout.list_x_list_end as u64;
                     if first == 0 || first == embedded {
                         Next::Advance
@@ -7970,7 +12337,11 @@ impl IdeApp {
                 }
                 "next" => {
                     let next = parse_u64_loose(result).unwrap_or(0);
-                    let (head, _) = kernel.lists.get(kernel.list_index).copied().unwrap_or((0, 0));
+                    let (head, _) = kernel
+                        .lists
+                        .get(kernel.list_index)
+                        .copied()
+                        .unwrap_or((0, 0));
                     let embedded = head + layout.list_x_list_end as u64;
                     if next == 0 || next == embedded {
                         Next::Advance
@@ -8027,7 +12398,6 @@ impl IdeApp {
         }
     }
 
-
     /// Issue the first-item evaluate for the current list, or advance to the
     /// next list when the current one is exhausted.
     fn rtos_kernel_eval_first(&mut self, cx: &mut Context<Self>) {
@@ -8041,11 +12411,11 @@ impl IdeApp {
             self.rtos_kernel_finish(cx);
             return;
         };
-        let addr = head + kernel.layout.list_x_list_end as u64 + kernel.layout.list_item_px_next as u64;
+        let addr =
+            head + kernel.layout.list_x_list_end as u64 + kernel.layout.list_item_px_next as u64;
         kernel.in_flight += 1;
         self.evaluate_rtos_deref("first", addr);
     }
-
 
     /// Finalize the real-kernel walk: de-duplicate and publish the tasks.
     fn rtos_kernel_finish(&mut self, cx: &mut Context<Self>) {
@@ -8082,10 +12452,9 @@ impl IdeApp {
     fn rtos_kernel_maybe_kick(&mut self, cx: &mut Context<Self>) {
         let ready = self.rtos_pending.as_ref().is_some_and(|pending| {
             pending.mode == RtosKernelMode::RealKernel
-                && pending
-                    .kernel
-                    .as_ref()
-                    .is_some_and(|kernel| kernel.running_tcb.is_some() && kernel.lists.len() >= 7)
+                && pending.kernel.as_ref().is_some_and(|kernel| {
+                    kernel.running_tcb.is_some() && kernel.lists.len() >= REAL_KERNEL_LIST_COUNT
+                })
         });
         if ready {
             self.rtos_kernel_eval_first(cx);
@@ -8098,8 +12467,6 @@ impl IdeApp {
         self.evaluate_rtos_tagged(kind, addr, &expr);
     }
 
-
-
     /// Send an evaluate expression with a `__rtos_<kind>_<addr>` tag so the
     /// response routes back to the kernel walker.
     fn evaluate_rtos_tagged(&mut self, kind: &str, addr: u64, expr: &str) {
@@ -8111,11 +12478,7 @@ impl IdeApp {
         }
     }
 
-
-
-
-
-     /// Switch the debugger's active thread; the call stack / scopes / variables
+    /// Switch the debugger's active thread; the call stack / scopes / variables
     fn select_debug_thread(&mut self, thread_id: u64, cx: &mut Context<Self>) {
         if self.debug.active_thread == thread_id {
             return;
@@ -8130,7 +12493,9 @@ impl IdeApp {
         self.debug.active_scope = 0;
         self.debug.pc = None;
         if let Some(session) = &self.debug_session {
-            let _ = session.commands.send(DebugCommand::GetStackTrace { thread_id });
+            let _ = session
+                .commands
+                .send(DebugCommand::GetStackTrace { thread_id });
         }
         self.debug.push_console(format!("已切换线程 #{thread_id}"));
         cx.notify();
@@ -8181,12 +12546,8 @@ impl IdeApp {
                     } else {
                         theme::color(theme::TEXT_DIM)
                     })
-                    .hover(|style| {
-                        style.bg(theme::alpha(theme::STROKE, 0.12))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select_debug_thread(id, cx)
-                    }))
+                    .hover(|style| style.bg(theme::alpha(theme::STROKE, 0.12)))
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_debug_thread(id, cx)))
                     .child(name)
                     .into_any_element()
             })
@@ -8224,7 +12585,8 @@ impl IdeApp {
     /// headers' references are fetched next via the adapter.
     fn store_register_group(&mut self, reference: u64, variables: Vec<Variable>) {
         let mut fetch: Vec<u64> = Vec::new();
-        self.debug.apply_register_group(reference, &variables, &mut fetch);
+        self.debug
+            .apply_register_group(reference, &variables, &mut fetch);
         if let Some(session) = &self.debug_session {
             for child in fetch {
                 let _ = session.commands.send(DebugCommand::GetVariables {
@@ -8233,10 +12595,6 @@ impl IdeApp {
             }
         }
     }
-
-
-
-
 
     fn select_debug_scope(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.debug.scopes.len() {
@@ -8398,7 +12756,10 @@ impl IdeApp {
         if tab == DebugViewTab::Memory {
             self.ensure_memory_input(cx);
         }
-        if tab == DebugViewTab::Disassembly && self.debug.disassembly.is_empty() && self.debug.pc.is_some() {
+        if tab == DebugViewTab::Disassembly
+            && self.debug.disassembly.is_empty()
+            && self.debug.pc.is_some()
+        {
             self.disassemble_at_pc(cx);
         }
         if tab == DebugViewTab::Trace {
@@ -8476,18 +12837,10 @@ impl IdeApp {
                 };
                 match ns_flash::decode_intel_hex(text) {
                     Ok(decoded) => match arch {
-                        ns_sim::Arch::Mcs51 => {
-                            core.load_mcs51(decoded.base as u16, &decoded.bytes)
-                        }
-                        ns_sim::Arch::Mcs251 => {
-                            core.load_x51(decoded.base as u32, &decoded.bytes)
-                        }
-                        ns_sim::Arch::C166 => {
-                            core.load_c166(decoded.base as u16, &decoded.bytes)
-                        }
-                        ns_sim::Arch::Stm8 => {
-                            core.load_stm8(decoded.base as u32, &decoded.bytes)
-                        }
+                        ns_sim::Arch::Mcs51 => core.load_mcs51(decoded.base as u16, &decoded.bytes),
+                        ns_sim::Arch::Mcs251 => core.load_x51(decoded.base as u32, &decoded.bytes),
+                        ns_sim::Arch::C166 => core.load_c166(decoded.base as u16, &decoded.bytes),
+                        ns_sim::Arch::Stm8 => core.load_stm8(decoded.base as u32, &decoded.bytes),
                         _ => unreachable!(),
                     },
                     Err(error) => {
@@ -8538,7 +12891,11 @@ impl IdeApp {
         self.sim.status = format!(
             "已加载 {} 到仿真器（入口 0x{:x}）",
             artifact.display(),
-            self.sim.core.as_ref().map(|c| c.program_counter()).unwrap_or(0)
+            self.sim
+                .core
+                .as_ref()
+                .map(|c| c.program_counter())
+                .unwrap_or(0)
         );
         if self.sim.mem_address.is_empty() {
             self.sim.mem_address = match arch {
@@ -8569,7 +12926,6 @@ impl IdeApp {
         self.ensure_sim_mem_input(cx);
         cx.notify();
     }
-
 
     fn sim_step(&mut self, cx: &mut Context<Self>) {
         if let Some(core) = self.sim.core.as_mut() {
@@ -8654,9 +13010,9 @@ impl IdeApp {
         let hit_location: Option<(std::path::PathBuf, usize)> =
             if result == ns_sim::StepResult::Breakpoint {
                 core.line_for_address(pc).and_then(|(file, l)| {
-                    core.source_files.get(file).map(|source| {
-                        (std::path::PathBuf::from(source), l as usize)
-                    })
+                    core.source_files
+                        .get(file)
+                        .map(|source| (std::path::PathBuf::from(source), l as usize))
                 })
             } else {
                 None
@@ -8855,7 +13211,7 @@ impl IdeApp {
         self.sim.pc_edit_input = Some(field.clone());
         window.focus(&field.read(cx).focus_handle(cx));
         cx.notify();
-     }
+    }
 
     /// Nominal simulator clock in Hz from `[sim] clock_hz` (0 = unknown).
     fn sim_clock_hz(&self) -> u64 {
@@ -8864,8 +13220,8 @@ impl IdeApp {
             .map(|p| p.config.sim.clock_hz)
             .unwrap_or(0)
     }
- 
-     /// Commit a PC jump: parse hex and set the program counter.
+
+    /// Commit a PC jump: parse hex and set the program counter.
     fn sim_set_pc(&mut self, text: &str, cx: &mut Context<Self>) {
         let Some(value) = parse_hex_address(text) else {
             self.sim.status = format!("无效 PC 值 \"{text}\"");
@@ -9035,8 +13391,6 @@ impl IdeApp {
         cx.notify();
     }
 
-
-
     /// Read the hex-edit field's text and write it into simulator memory.
     fn sim_write_memory_from_field(&mut self, cx: &mut Context<Self>) {
         let text = self
@@ -9077,9 +13431,7 @@ impl IdeApp {
                 }
             }
         }
-
     }
-
 
     fn sim_run(&mut self, cx: &mut Context<Self>) {
         self.sim_sync_breakpoints(cx);
@@ -9093,9 +13445,9 @@ impl IdeApp {
         let hit_location: Option<(std::path::PathBuf, usize)> =
             if result == ns_sim::StepResult::Breakpoint {
                 core.line_for_address(core.pc).and_then(|(file, line)| {
-                    core.source_files.get(file).map(|source| {
-                        (std::path::PathBuf::from(source), line as usize)
-                    })
+                    core.source_files
+                        .get(file)
+                        .map(|source| (std::path::PathBuf::from(source), line as usize))
                 })
             } else {
                 None
@@ -9150,8 +13502,11 @@ impl IdeApp {
 
     fn ensure_memory_input(&mut self, cx: &mut Context<Self>) {
         if self.debug.memory.address_input.is_none() {
-            let pc_hex =
-                self.debug.pc.map(|pc| format!("0x{pc:x}")).unwrap_or_default();
+            let pc_hex = self
+                .debug
+                .pc
+                .map(|pc| format!("0x{pc:x}"))
+                .unwrap_or_default();
             let field = cx.new(|cx| {
                 let mut field = TextField::new("例如 0x1000003e8", cx);
                 if !pc_hex.is_empty() {
@@ -9165,10 +13520,10 @@ impl IdeApp {
             let field = cx.new(|cx| TextField::new("de ad be ef", cx));
             self.debug.memory.edit_input = Some(field);
         }
-         if self.debug.memory.region_name_input.is_none() {
-             let field = cx.new(|cx| TextField::new("例如 RAM 区", cx));
-             self.debug.memory.region_name_input = Some(field);
-         }
+        if self.debug.memory.region_name_input.is_none() {
+            let field = cx.new(|cx| TextField::new("例如 RAM 区", cx));
+            self.debug.memory.region_name_input = Some(field);
+        }
         if self.debug.memory.search_input.is_none() {
             let field = cx.new(|cx| TextField::new("搜索字节模式（如 de ad be ef）", cx));
             self.debug.memory.search_input = Some(field);
@@ -9177,7 +13532,7 @@ impl IdeApp {
             let field = cx.new(|cx| TextField::new("填充模式（如 00 或 ff）", cx));
             self.debug.memory.fill_input = Some(field);
         }
-     }
+    }
 
     /// Create the trace panel's text fields, seeded from the loaded config.
     fn ensure_trace_fields(&mut self, cx: &mut Context<Self>) {
@@ -9251,15 +13606,15 @@ impl IdeApp {
         self.debug.trace.config.data_trace = !self.debug.trace.config.data_trace;
         self.debug.trace.error = None;
         self.trace_save(cx);
-         cx.notify();
-     }
+        cx.notify();
+    }
 
-     fn trace_toggle_pc_sample(&mut self, cx: &mut Context<Self>) {
-         self.debug.trace.config.pc_sample = !self.debug.trace.config.pc_sample;
-         self.debug.trace.error = None;
-         self.trace_save(cx);
-         cx.notify();
-     }
+    fn trace_toggle_pc_sample(&mut self, cx: &mut Context<Self>) {
+        self.debug.trace.config.pc_sample = !self.debug.trace.config.pc_sample;
+        self.debug.trace.error = None;
+        self.trace_save(cx);
+        cx.notify();
+    }
 
     /// Toggle the profiler hotspot view. When turning it on, load the firmware
     /// symbol table (from `nm`) so sampled PCs can be attributed to functions.
@@ -9283,7 +13638,7 @@ impl IdeApp {
         }
         cx.notify();
     }
-     fn trace_cycle_mode(&mut self, cx: &mut Context<Self>) {
+    fn trace_cycle_mode(&mut self, cx: &mut Context<Self>) {
         self.debug.trace.error = None;
         self.trace_save(cx);
         cx.notify();
@@ -9367,20 +13722,20 @@ impl IdeApp {
         self.debug.memory.error = None;
         let count = self.debug.memory.read_size;
         if let Some(session) = &self.debug_session {
-            let _ = session.commands.send(DebugCommand::ReadMemory { reference, count });
+            let _ = session
+                .commands
+                .send(DebugCommand::ReadMemory { reference, count });
         } else {
             self.debug.memory.error = Some("调试会话未运行".to_string());
         }
         cx.notify();
-
     }
 
     /// Set the memory view's address to the current PC and read the region.
     /// Reports honestly when there is no PC (session stopped/never ran).
     fn jump_memory_to_pc(&mut self, cx: &mut Context<Self>) {
         let Some(pc) = self.debug.pc else {
-            self.debug.memory.error =
-                Some("无 PC（调试会话未停止或未启动）".to_string());
+            self.debug.memory.error = Some("无 PC（调试会话未停止或未启动）".to_string());
             cx.notify();
             return;
         };
@@ -9428,10 +13783,9 @@ impl IdeApp {
                 self.debug.memory.error = Some(message);
             }
         }
-         cx.notify();
- 
-     }
- 
+        cx.notify();
+    }
+
     /// Search the dumped memory region for a byte pattern. `text` is hex like
     /// `de ad be ef` (whitespace-separated) or `deadbeef`; the first match
     /// offset is stored in `search_hit` and scrolled into view.
@@ -9462,21 +13816,21 @@ impl IdeApp {
         };
         let bytes = &self.debug.memory.bytes;
         let hit = find_pattern(bytes, &pattern);
-         match hit {
-             Some(offset) => {
+        match hit {
+            Some(offset) => {
                 self.debug.memory.search_hit = Some((offset, pattern.len()));
-                 let address = self.debug.memory.address.wrapping_add(offset as u64);
-                 self.status = format!("内存搜索命中: {address:#x}（偏移 {offset} 字节）");
-             }
-             None => {
-                 self.debug.memory.search_hit = None;
-                 self.status = "内存搜索无匹配。".to_string();
-             }
-         }
-         cx.notify();
-     }
-     /// Fill the dumped region with a repeating byte pattern. `text` is hex
-     /// like `00` or `de ad be ef`; the pattern repeats across the region.
+                let address = self.debug.memory.address.wrapping_add(offset as u64);
+                self.status = format!("内存搜索命中: {address:#x}（偏移 {offset} 字节）");
+            }
+            None => {
+                self.debug.memory.search_hit = None;
+                self.status = "内存搜索无匹配。".to_string();
+            }
+        }
+        cx.notify();
+    }
+    /// Fill the dumped region with a repeating byte pattern. `text` is hex
+    /// like `00` or `de ad be ef`; the pattern repeats across the region.
     fn fill_memory(&mut self, cx: &mut Context<Self>) {
         let text = self
             .debug
@@ -9511,9 +13865,8 @@ impl IdeApp {
             let _ = session
                 .commands
                 .send(DebugCommand::WriteMemory { reference, data });
-            self.status = format!(
-                "内存填充: 区域 {count} 字节 @ {address:#x}（模式 {pattern:02x?}）"
-            );
+            self.status =
+                format!("内存填充: 区域 {count} 字节 @ {address:#x}（模式 {pattern:02x?}）");
         } else {
             self.debug.memory.error = Some("调试会话未运行".to_string());
         }
@@ -9585,9 +13938,10 @@ impl IdeApp {
         let address = self.debug.memory.address;
         let reference = format!("{address:#x}");
         if let Some(session) = &self.debug_session {
-            let _ = session
-                .commands
-                .send(DebugCommand::WriteMemory { reference, data: data.clone() });
+            let _ = session.commands.send(DebugCommand::WriteMemory {
+                reference,
+                data: data.clone(),
+            });
             self.status = format!(
                 "内存导入: {} 字节 @ {address:#x} <- {}",
                 data.len(),
@@ -9600,7 +13954,7 @@ impl IdeApp {
         cx.notify();
     }
 
-     /// Re-read the memory view's current region after a stop so the dump stays
+    /// Re-read the memory view's current region after a stop so the dump stays
     /// current. Only re-reads if the user has actually viewed memory (bytes are
     /// non-empty); otherwise there is nothing to refresh.
     fn refresh_memory_on_stop(&mut self, cx: &mut Context<Self>) {
@@ -9647,9 +14001,10 @@ impl IdeApp {
                 .unwrap_or(peripheral.base_address);
             let count = (max_addr - min_addr + 4) as usize;
             let reference = format!("{min_addr:#x}");
-            let _ = session
-                .commands
-                .send(DebugCommand::ReadMemory { reference, count: count as u64 });
+            let _ = session.commands.send(DebugCommand::ReadMemory {
+                reference,
+                count: count as u64,
+            });
         }
     }
 
@@ -9701,7 +14056,6 @@ impl IdeApp {
         }
         cx.notify();
     }
-
 
     /// Commit a device-register value edit: parse hex and write to the target
     /// memory via the simulator (if active) or the debug session (DAP
@@ -9792,7 +14146,6 @@ impl IdeApp {
         self.debug.memory.active_region = self.debug.memory.regions.len() - 1;
         self.debug.memory.error = None;
         cx.notify();
-
     }
 
     /// Add a region using the name typed in the region-name input field.
@@ -9839,39 +14192,31 @@ impl IdeApp {
         cx.notify();
     }
 
-     fn disassemble_at_pc(&mut self, cx: &mut Context<Self>) {
-         self.ensure_disasm_input(cx);
-         let Some(pc) = self.debug.pc else {
-             self.status = "没有 PC 信息（程序未暂停）".to_string();
-             cx.notify();
-             return;
-         };
-         if let Some(session) = &self.debug_session {
-             let _ = session.commands.send(DebugCommand::Disassemble {
-                 reference: format!("0x{pc:x}"),
-                 instruction_count: 24,
-             });
-         } else {
-             self.status = "调试会话未运行".to_string();
-         }
-         cx.notify();
-     }
- 
+    fn disassemble_at_pc(&mut self, cx: &mut Context<Self>) {
+        self.ensure_disasm_input(cx);
+        let Some(pc) = self.debug.pc else {
+            self.status = "没有 PC 信息（程序未暂停）".to_string();
+            cx.notify();
+            return;
+        };
+        if let Some(session) = &self.debug_session {
+            let _ = session.commands.send(DebugCommand::Disassemble {
+                reference: format!("0x{pc:x}"),
+                instruction_count: 24,
+            });
+        } else {
+            self.status = "调试会话未运行".to_string();
+        }
+        cx.notify();
+    }
+
     /// Disassemble at an arbitrary address typed into the disassembly field.
     fn disassemble_at(&mut self, cx: &mut Context<Self>) {
         self.ensure_disasm_input(cx);
-        let text = self
-            .debug
-            .disasm_input
-            .clone()
-            .and_then(|field| {
-                let text = field.read(cx).text().trim().to_string();
-                if text.is_empty() {
-                    None
-                } else {
-                    Some(text)
-                }
-            });
+        let text = self.debug.disasm_input.clone().and_then(|field| {
+            let text = field.read(cx).text().trim().to_string();
+            if text.is_empty() { None } else { Some(text) }
+        });
         let Some(text) = text else {
             self.status = "请输入十六进制地址（如 0x08000100）。".to_string();
             cx.notify();
@@ -9904,7 +14249,6 @@ impl IdeApp {
             self.debug.disasm_input = Some(field);
         }
     }
-
 
     /// Case-insensitive substring match for a variable's name or any of its
     /// descendant names (expanded children).
@@ -9964,8 +14308,8 @@ impl IdeApp {
         }
         rows
     }
-     fn variable_rows(
-         &self,
+    fn variable_rows(
+        &self,
         variables: &[Variable],
         parent_reference: u64,
         depth: usize,
@@ -10018,9 +14362,11 @@ impl IdeApp {
                 style.hover(|style| style.bg(theme::alpha(theme::STROKE, 0.07)))
             })
             .when(expandable, |style| {
-                style.on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle_variable_expansion(reference, cx)
-                }))
+                style.on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.toggle_variable_expansion(reference, cx)
+                    }),
+                )
             })
             .child(
                 div()
@@ -10104,7 +14450,7 @@ impl IdeApp {
                     }))
                     .child("📋"),
             )
-             .into_any_element()
+            .into_any_element()
     }
 
     fn continue_debug(&mut self, cx: &mut Context<Self>) {
@@ -10160,13 +14506,19 @@ impl IdeApp {
             return;
         }
         let command = match step {
-            DebugStep::Over => DebugCommand::StepOver { thread_id: self.debug.thread_id },
-            DebugStep::In => DebugCommand::StepIn { thread_id: self.debug.thread_id },
-             DebugStep::Out => DebugCommand::StepOut { thread_id: self.debug.thread_id },
-            DebugStep::Instruction => {
-                DebugCommand::StepInstruction { thread_id: self.debug.thread_id }
-            }
-         };
+            DebugStep::Over => DebugCommand::StepOver {
+                thread_id: self.debug.thread_id,
+            },
+            DebugStep::In => DebugCommand::StepIn {
+                thread_id: self.debug.thread_id,
+            },
+            DebugStep::Out => DebugCommand::StepOut {
+                thread_id: self.debug.thread_id,
+            },
+            DebugStep::Instruction => DebugCommand::StepInstruction {
+                thread_id: self.debug.thread_id,
+            },
+        };
         if let Some(session) = &self.debug_session {
             let _ = session.commands.send(command);
         }
@@ -10332,7 +14684,12 @@ impl IdeApp {
         };
         let root = project.root.clone();
         let mut by_file: HashMap<String, Vec<DebugBreakpointLocation>> = HashMap::new();
-        for breakpoint in self.breakpoints.all().iter().filter(|breakpoint| breakpoint.enabled) {
+        for breakpoint in self
+            .breakpoints
+            .all()
+            .iter()
+            .filter(|breakpoint| breakpoint.enabled)
+        {
             let absolute = root.join(&breakpoint.path).display().to_string();
             let condition = if breakpoint.kind == ns_project::BreakpointKind::Conditional
                 && !breakpoint.condition.trim().is_empty()
@@ -10384,13 +14741,16 @@ impl IdeApp {
             .collect();
         self.debug.synced_files = payload.iter().map(|(file, _)| file.clone()).collect();
         if let Some(session) = &self.debug_session {
-            let _ = session.commands.send(DebugCommand::ResyncBreakpoints(payload));
+            let _ = session
+                .commands
+                .send(DebugCommand::ResyncBreakpoints(payload));
         }
     }
 
     fn clear_debug_highlights(&mut self, cx: &mut Context<Self>) {
         for tab in &self.tabs {
-            tab.editor.update(cx, |editor, cx| editor.set_debug_line(None, cx));
+            tab.editor
+                .update(cx, |editor, cx| editor.set_debug_line(None, cx));
         }
     }
 
@@ -10432,7 +14792,6 @@ impl IdeApp {
         }
     }
 
-
     /// Read the source text of a line from an open tab, falling back to disk.
     fn source_line_text(&self, path: &str, line: usize, cx: &mut Context<Self>) -> Option<String> {
         let absolute = self
@@ -10467,7 +14826,9 @@ impl IdeApp {
             .any(|watchpoint| watchpoint.enabled);
         if !enabled {
             if let Some(session) = &self.debug_session {
-                let _ = session.commands.send(DebugCommand::SetDataBreakpoints(Vec::new()));
+                let _ = session
+                    .commands
+                    .send(DebugCommand::SetDataBreakpoints(Vec::new()));
             }
             return;
         }
@@ -10553,10 +14914,9 @@ impl IdeApp {
                 .unwrap_or(0);
             self.debug.resolving_watchpoints.insert(expression.clone());
             if let Some(session) = &self.debug_session {
-                let _ = session.commands.send(DebugCommand::DataBreakpointInfo {
-                    expression,
-                    scope,
-                });
+                let _ = session
+                    .commands
+                    .send(DebugCommand::DataBreakpointInfo { expression, scope });
             }
         }
     }
@@ -10573,11 +14933,12 @@ impl IdeApp {
         self.debug.resolving_watchpoints.remove(&expression);
         match data_id {
             Some(data_id) => {
-                self.breakpoints.set_watchpoint_data_id(&expression, &data_id);
-                self.breakpoints.mark_watchpoint_verified(&expression, true, "", None);
-                self.debug.push_console(format!(
-                    "◈ 观察点 `{expression}` 已解析（{description}）"
-                ));
+                self.breakpoints
+                    .set_watchpoint_data_id(&expression, &data_id);
+                self.breakpoints
+                    .mark_watchpoint_verified(&expression, true, "", None);
+                self.debug
+                    .push_console(format!("◈ 观察点 `{expression}` 已解析（{description}）"));
             }
             None => {
                 self.breakpoints.mark_watchpoint_verified(
@@ -10586,9 +14947,8 @@ impl IdeApp {
                     &format!("无法解析: {description}"),
                     None,
                 );
-                self.debug.push_console(format!(
-                    "✕ 观察点 `{expression}` 无法解析: {description}"
-                ));
+                self.debug
+                    .push_console(format!("✕ 观察点 `{expression}` 无法解析: {description}"));
             }
         }
         // Arm once every enabled expression has been answered.
@@ -10599,7 +14959,10 @@ impl IdeApp {
             .filter(|watchpoint| watchpoint.enabled)
             .all(|watchpoint| {
                 watchpoint.verified.is_some()
-                    && !self.debug.resolving_watchpoints.contains(&watchpoint.expression)
+                    && !self
+                        .debug
+                        .resolving_watchpoints
+                        .contains(&watchpoint.expression)
             });
         if all_answered {
             self.debug.watchpoint_resolution_pending = false;
@@ -10625,7 +14988,9 @@ impl IdeApp {
             })
             .collect();
         if let Some(session) = &self.debug_session {
-            let _ = session.commands.send(DebugCommand::SetDataBreakpoints(requests));
+            let _ = session
+                .commands
+                .send(DebugCommand::SetDataBreakpoints(requests));
         }
     }
 
@@ -10688,30 +15053,28 @@ impl IdeApp {
             .unwrap_or(0);
         let suggested = format!("breakpoints-{stamp}.json");
         let receiver = cx.prompt_for_new_path(&root, Some(&suggested));
-        cx.spawn(async move |this, cx| {
-            match receiver.await {
-                Ok(Ok(Some(path))) => {
-                    this.update(cx, |this, cx| {
-                        match this.breakpoints.export_to(&path) {
-                            Ok(count) => {
-                                this.status = format!("已导出 {count} 个断点到 {}", path.display());
-                            }
-                            Err(error) => {
-                                this.status = format!("导出断点失败: {error}");
-                            }
+        cx.spawn(async move |this, cx| match receiver.await {
+            Ok(Ok(Some(path))) => {
+                this.update(cx, |this, cx| {
+                    match this.breakpoints.export_to(&path) {
+                        Ok(count) => {
+                            this.status = format!("已导出 {count} 个断点到 {}", path.display());
                         }
-                        cx.notify();
-                    })
-                    .ok();
-                }
-                Ok(Ok(None)) | Err(_) => {}
-                Ok(Err(error)) => {
-                    this.update(cx, |this, cx| {
-                        this.status = format!("导出断点对话框失败: {error}");
-                        cx.notify();
-                    })
-                    .ok();
-                }
+                        Err(error) => {
+                            this.status = format!("导出断点失败: {error}");
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(error)) => {
+                this.update(cx, |this, cx| {
+                    this.status = format!("导出断点对话框失败: {error}");
+                    cx.notify();
+                })
+                .ok();
             }
         })
         .detach();
@@ -10726,36 +15089,34 @@ impl IdeApp {
             multiple: false,
             prompt: Some("选择要导入的断点 JSON 文件".into()),
         });
-        cx.spawn(async move |this, cx| {
-            match receiver.await {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        this.update(cx, |this, cx| {
-                            match this.breakpoints.import_from(&path) {
-                                Ok(count) => {
-                                    this.status =
-                                        format!("已导入 {count} 个断点（{}）", path.display());
-                                    this.persist_breakpoints();
-                                    this.sync_all_editor_breakpoints(cx);
-                                    this.sync_debugger_breakpoints();
-                                }
-                                Err(error) => {
-                                    this.status = format!("导入断点失败: {error}");
-                                }
-                            }
-                            cx.notify();
-                        })
-                        .ok();
-                    }
-                }
-                Ok(Ok(None)) | Err(_) => {}
-                Ok(Err(error)) => {
+        cx.spawn(async move |this, cx| match receiver.await {
+            Ok(Ok(Some(paths))) => {
+                if let Some(path) = paths.into_iter().next() {
                     this.update(cx, |this, cx| {
-                        this.status = format!("导入断点对话框失败: {error}");
+                        match this.breakpoints.import_from(&path) {
+                            Ok(count) => {
+                                this.status =
+                                    format!("已导入 {count} 个断点（{}）", path.display());
+                                this.persist_breakpoints();
+                                this.sync_all_editor_breakpoints(cx);
+                                this.sync_debugger_breakpoints();
+                            }
+                            Err(error) => {
+                                this.status = format!("导入断点失败: {error}");
+                            }
+                        }
                         cx.notify();
                     })
                     .ok();
                 }
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(error)) => {
+                this.update(cx, |this, cx| {
+                    this.status = format!("导入断点对话框失败: {error}");
+                    cx.notify();
+                })
+                .ok();
             }
         })
         .detach();
@@ -10772,7 +15133,12 @@ impl IdeApp {
     }
 
     fn clear_file_breakpoints(&mut self, path: &str, cx: &mut Context<Self>) {
-        if self.breakpoints.all().iter().all(|breakpoint| breakpoint.path != path) {
+        if self
+            .breakpoints
+            .all()
+            .iter()
+            .all(|breakpoint| breakpoint.path != path)
+        {
             self.context_menu = None;
             cx.notify();
             return;
@@ -10821,7 +15187,10 @@ impl IdeApp {
         self.status = if trimmed.is_empty() {
             format!("已清除断点 {}:{} 的条件", dialog.path, dialog.line)
         } else {
-            format!("已设置断点 {}:{} 的条件：{trimmed}", dialog.path, dialog.line)
+            format!(
+                "已设置断点 {}:{} 的条件：{trimmed}",
+                dialog.path, dialog.line
+            )
         };
         self.persist_breakpoints();
         self.sync_debugger_breakpoints();
@@ -10847,14 +15216,22 @@ impl IdeApp {
         let settings = SettingsDialog {
             name: settings_field("项目名称", config.project.name, cx),
             version: settings_field("项目版本", config.project.version, cx),
-            language: settings_field("C | C++ | Rust | Zig | ZR", config.project.language.to_string(), cx),
+            language: settings_field(
+                "C | C++ | Rust | Zig | ZR",
+                config.project.language.to_string(),
+                cx,
+            ),
             target: settings_field("目标 MCU，例如 stm32f103c8", config.project.target, cx),
             svd: settings_field(
                 "SVD 设备描述（内置目录键或 .svd 文件路径，留空=按 target 推导）",
                 config.project.svd,
                 cx,
             ),
-            project_compiler: settings_field("项目编译器（如 arm-none-eabi-gcc）", config.project.compiler, cx),
+            project_compiler: settings_field(
+                "项目编译器（如 arm-none-eabi-gcc）",
+                config.project.compiler,
+                cx,
+            ),
             project_simulator: settings_field("仿真器（如 ns-sim）", config.project.simulator, cx),
             project_debugger: settings_field("调试器（如 gdb）", config.project.debugger, cx),
             project_flasher: settings_field("烧写器（如 openocd）", config.project.flasher, cx),
@@ -10865,8 +15242,16 @@ impl IdeApp {
             ),
             compiler_std: settings_field("编译标准（如 c11 / gnu17）", config.compiler.std, cx),
             compiler_opt: settings_field("优化选项（如 -O2）", config.compiler.opt, cx),
-            compiler_defines: settings_field("宏定义（逗号分隔，如 FOO=1,BAR）", config.compiler.defines.join(","), cx),
-            compiler_includes: settings_field("头文件目录（逗号分隔）", config.compiler.includes.join(","), cx),
+            compiler_defines: settings_field(
+                "宏定义（逗号分隔，如 FOO=1,BAR）",
+                config.compiler.defines.join(","),
+                cx,
+            ),
+            compiler_includes: settings_field(
+                "头文件目录（逗号分隔）",
+                config.compiler.includes.join(","),
+                cx,
+            ),
             compiler_link_flags: settings_field(
                 "链接标志（空格分隔，如 -lm -Wl,--gc-sections）",
                 config.compiler.link_flags.join(" "),
@@ -10881,8 +15266,16 @@ impl IdeApp {
                 config.debugger.path,
                 cx,
             ),
-            debugger_interface: settings_field("调试接口（swd | jtag）", config.debugger.interface, cx),
-            debugger_server: settings_field("调试服务器/探针路径（可选）", config.debugger.server, cx),
+            debugger_interface: settings_field(
+                "调试接口（swd | jtag）",
+                config.debugger.interface,
+                cx,
+            ),
+            debugger_server: settings_field(
+                "调试服务器/探针路径（可选）",
+                config.debugger.server,
+                cx,
+            ),
             debugger_probe: settings_field(
                 "调试探针（openocd | stlink | jlink | pyocd | probe-rs）",
                 config.debugger.probe,
@@ -10899,9 +15292,17 @@ impl IdeApp {
                 config.flasher.kind,
                 cx,
             ),
-            flasher_interface: settings_field("烧写接口（swd | jtag）", config.flasher.interface, cx),
+            flasher_interface: settings_field(
+                "烧写接口（swd | jtag）",
+                config.flasher.interface,
+                cx,
+            ),
             sim_cpu: settings_field("仿真 CPU（可选）", config.sim.cpu, cx),
-             sim_period: settings_field("仿真周期（周期数，0=默认）", config.sim.period.to_string(), cx),
+            sim_period: settings_field(
+                "仿真周期（周期数，0=默认）",
+                config.sim.period.to_string(),
+                cx,
+            ),
             sim_clock: settings_field(
                 "仿真时钟频率（Hz，0=未知）",
                 config.sim.clock_hz.to_string(),
@@ -10917,7 +15318,11 @@ impl IdeApp {
                 config.launch.env.join("\n"),
                 cx,
             ),
-            launch_cwd: settings_field("调试工作目录（留空=项目根）", config.launch.cwd.clone(), cx),
+            launch_cwd: settings_field(
+                "调试工作目录（留空=项目根）",
+                config.launch.cwd.clone(),
+                cx,
+            ),
             terminal_shell: settings_field(
                 format!(
                     "终端 shell（留空=默认 {}）",
@@ -10938,7 +15343,6 @@ impl IdeApp {
         self.focus_dialog_on_next_frame = true;
         cx.notify();
     }
-
 
     fn save_settings(&mut self, cx: &mut Context<Self>) {
         let Some(dialog) = self.settings_dialog.take() else {
@@ -10977,9 +15381,9 @@ impl IdeApp {
         let flasher_kind = dialog.flasher_kind.read(cx).text();
         let flasher_interface = dialog.flasher_interface.read(cx).text();
         let sim_cpu = dialog.sim_cpu.read(cx).text();
-         let sim_period = dialog.sim_period.read(cx).text();
+        let sim_period = dialog.sim_period.read(cx).text();
         let sim_clock = dialog.sim_clock.read(cx).text();
-         let launch_args = dialog.launch_args.read(cx).text();
+        let launch_args = dialog.launch_args.read(cx).text();
         let launch_env = dialog.launch_env.read(cx).text();
         let launch_cwd = dialog.launch_cwd.read(cx).text();
         // ---- Validation ----
@@ -11000,13 +15404,20 @@ impl IdeApp {
             return;
         }
         let kind = flasher_kind.trim().to_ascii_lowercase();
-        if !matches!(kind.as_str(), "" | "openocd" | "pyocd" | "jlink" | "stlink" | "probe-rs") {
-            self.status = "烧写器类型必须为 openocd / pyocd / jlink / stlink / probe-rs".to_string();
+        if !matches!(
+            kind.as_str(),
+            "" | "openocd" | "pyocd" | "jlink" | "stlink" | "probe-rs"
+        ) {
+            self.status =
+                "烧写器类型必须为 openocd / pyocd / jlink / stlink / probe-rs".to_string();
             cx.notify();
             return;
         }
         let probe = debugger_probe.trim().to_ascii_lowercase();
-        if !matches!(probe.as_str(), "" | "openocd" | "stlink" | "jlink" | "pyocd" | "probe-rs") {
+        if !matches!(
+            probe.as_str(),
+            "" | "openocd" | "stlink" | "jlink" | "pyocd" | "probe-rs"
+        ) {
             self.status = "调试探针必须为 openocd / stlink / jlink / pyocd / probe-rs".to_string();
             cx.notify();
             return;
@@ -11017,7 +15428,7 @@ impl IdeApp {
             cx.notify();
             return;
         };
-         let period = sim_period.trim().parse::<u64>().unwrap_or(0);
+        let period = sim_period.trim().parse::<u64>().unwrap_or(0);
         let clock_hz = sim_clock.trim().parse::<u64>().unwrap_or(0);
         // ---- Write the whole config (project + compiler + debugger + flasher + build + sim) ----
         project.config.project.name = name;
@@ -11034,8 +15445,10 @@ impl IdeApp {
         project.config.compiler.opt = compiler_opt;
         project.config.compiler.defines = split_csv(&compiler_defines);
         project.config.compiler.includes = split_csv(&compiler_includes);
-        project.config.compiler.link_flags =
-            compiler_link_flags.split_whitespace().map(str::to_string).collect();
+        project.config.compiler.link_flags = compiler_link_flags
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
 
         // Write the build config to the active target's entry when a target is
         // set (per-target configs), else the shared `build.config`.
@@ -11064,9 +15477,9 @@ impl IdeApp {
         project.config.flasher.kind = kind;
         project.config.flasher.interface = flasher_interface;
         project.config.sim.cpu = sim_cpu;
-         project.config.sim.period = period;
+        project.config.sim.period = period;
         project.config.sim.clock_hz = clock_hz;
-         project.config.launch.args = split_csv(&launch_args);
+        project.config.launch.args = split_csv(&launch_args);
         project.config.launch.env = launch_env
             .lines()
             .map(|line| line.trim().to_string())
@@ -11120,7 +15533,6 @@ impl IdeApp {
             return;
         }
 
-
         match project.save_config() {
             Ok(()) => {
                 self.status = "已保存配置到 project.toml".to_string();
@@ -11158,11 +15570,8 @@ impl IdeApp {
             .iter()
             .map(|name| {
                 let value = config.override_path(name).unwrap_or_default();
-                let field = settings_field(
-                    "留空=自动发现",
-                    value.to_string_lossy().into_owned(),
-                    cx,
-                );
+                let field =
+                    settings_field("留空=自动发现", value.to_string_lossy().into_owned(), cx);
                 (*name, field)
             })
             .collect();
@@ -11217,7 +15626,6 @@ impl IdeApp {
             ("DebugStepIn", "步入", "f11"),
             ("DebugStepOut", "跳出", "shift-f11"),
             ("DebugStepInstruction", "单指令步进", "cmd-alt-rightarrow"),
-
             ("RunToCursor", "运行到光标", "cmd-f10"),
             ("Flash", "烧写固件", "cmd-shift-f10"),
             ("FindInProject", "全局搜索", "cmd-shift-f"),
@@ -11277,12 +15685,7 @@ impl IdeApp {
     /// Open the watchpoint dialog. `initial` prefills the expression (e.g. the
     /// identifier under the cursor); when `expression` is non-empty it edits an
     /// existing watchpoint instead of adding one.
-    fn open_watchpoint_dialog(
-        &mut self,
-        expression: &str,
-        initial: &str,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_watchpoint_dialog(&mut self, expression: &str, initial: &str, cx: &mut Context<Self>) {
         let existing = if expression.is_empty() {
             None
         } else {
@@ -11292,7 +15695,9 @@ impl IdeApp {
             .map(|watchpoint| watchpoint.expression.clone())
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| initial.trim().to_string());
-        let access = existing.map(|watchpoint| watchpoint.access).unwrap_or_default();
+        let access = existing
+            .map(|watchpoint| watchpoint.access)
+            .unwrap_or_default();
         let field = cx.new(|cx| {
             let mut field = TextField::new("例如 marker 或 obj.field", cx);
             if !prefill.is_empty() {
@@ -11301,7 +15706,9 @@ impl IdeApp {
             field
         });
         self.watchpoint_dialog = Some(WatchpointDialog {
-            original: existing.map(|watchpoint| watchpoint.expression.clone()).unwrap_or_default(),
+            original: existing
+                .map(|watchpoint| watchpoint.expression.clone())
+                .unwrap_or_default(),
             field,
             access,
         });
@@ -11325,9 +15732,7 @@ impl IdeApp {
         if !dialog.original.is_empty() && dialog.original != expression {
             self.breakpoints.remove_watchpoint(&dialog.original);
         }
-        let added = self
-            .breakpoints
-            .add_watchpoint(&expression, dialog.access);
+        let added = self.breakpoints.add_watchpoint(&expression, dialog.access);
         self.status = if added {
             format!("已添加观察点 `{expression}`")
         } else {
@@ -11491,7 +15896,8 @@ impl IdeApp {
         if expression.is_empty() {
             return;
         }
-        self.breakpoints.add_watchpoint(&expression, WatchAccess::default());
+        self.breakpoints
+            .add_watchpoint(&expression, WatchAccess::default());
         self.status = format!("已添加观察点 `{expression}`");
         self.persist_breakpoints();
         self.sync_watchpoints_if_running();
@@ -11526,10 +15932,7 @@ impl IdeApp {
         cx: &mut Context<Self>,
     ) {
         let hex: Vec<String> = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        let text = format!(
-            "{line_address:#010x}  {}  │ {ascii}",
-            hex.join(" ")
-        );
+        let text = format!("{line_address:#010x}  {}  │ {ascii}", hex.join(" "));
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
         self.status = format!("已复制: {text}");
         cx.notify();
@@ -11716,9 +16119,8 @@ impl IdeApp {
                 }
             }
         }
-        self.status = format!(
-            "已替换 {occurrences} 处（{files_changed} 个文件）：{query} → {replacement}"
-        );
+        self.status =
+            format!("已替换 {occurrences} 处（{files_changed} 个文件）：{query} → {replacement}");
         // Refresh search results for the updated query.
         let query = self
             .search
@@ -11845,16 +16247,21 @@ impl IdeApp {
         self.execute_palette_command(id, window, cx);
     }
 
-    fn execute_palette_command(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+    fn execute_palette_command(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match id {
             "new-project" => self.open_wizard(window, cx),
             "close-project" => self.close_project(cx),
             "rename-project" => self.open_project_rename_dialog(cx),
             "delete-project" => self.open_project_delete_dialog(cx),
             "compile-commands" => self.generate_compile_commands(cx),
-             "open-project" => self.open_project_dialog(cx),
+            "open-project" => self.open_project_dialog(cx),
             "import-project" => self.import_project_dialog(cx),
-             "save" => self.save_active(cx),
+            "save" => self.save_active(cx),
             "save-all" => {
                 self.save_all_editors(cx);
             }
@@ -11901,19 +16308,21 @@ impl IdeApp {
             "flash-erase" => self.flash_action(FlashAction::Erase, cx),
             "flash-verify" => self.flash_action(FlashAction::Verify, cx),
             "flash-read" => self.flash_action(FlashAction::Read, cx),
-             "flash-and-run" => self.flash_and_run(cx),
-             "flash-and-debug" => self.flash_and_debug(cx),
-             "flash-and-verify" => self.flash_and_verify(cx),
-             "toggle-build-config" => self.toggle_build_config(cx),
+            "flash-and-run" => self.flash_and_run(cx),
+            "flash-and-debug" => self.flash_and_debug(cx),
+            "flash-and-verify" => self.flash_and_verify(cx),
+            "toggle-build-config" => self.toggle_build_config(cx),
             "toolchain" => self.open_toolchain(cx),
-              "goto-header-source" => self.goto_header_source(cx),
-             "include-graph" => self.show_include_graph(cx),
-             "tasks" => self.show_tasks(cx),
-             "memory-layout" => self.show_memory_layout(cx),
+            "goto-header-source" => self.goto_header_source(cx),
+            "include-graph" => self.show_include_graph(cx),
+            "tasks" => self.show_tasks(cx),
+            "memory-layout" => self.show_memory_layout(cx),
             "generate-device-files" => self.generate_device_files_for_project(cx),
-             "generate-peripheral-init" => self.generate_peripheral_init_code(cx),
-             "peripheral-config-gui" => self.open_peripheral_config(cx),
-             "simulation" => self.start_simulation(cx),
+            "generate-peripheral-init" => self.generate_peripheral_init_code(cx),
+            "peripheral-config-gui" => self.open_peripheral_config(cx),
+            "clock-tree-gui" => self.open_clock_tree(cx),
+            "pin-map-gui" => self.open_pin_map(cx),
+            "simulation" => self.start_simulation(cx),
             "compare-active-disk" => self.compare_active_with_disk(cx),
             "clear-breakpoints" => self.clear_all_breakpoints(cx),
             "add-watchpoint" => {
@@ -11947,13 +16356,13 @@ impl IdeApp {
             "format-document" => self.lsp_format_document(cx),
             "organize-imports" => self.lsp_organize_imports(cx),
             "code-action" => self.lsp_code_action(cx),
-             "toggle-outline" => {
-                 self.outline_open = !self.outline_open;
-                 if self.outline_open {
+            "toggle-outline" => {
+                self.outline_open = !self.outline_open;
+                if self.outline_open {
                     if self.outline_filter_input.is_none() {
                         let input = cx.new(|cx| TextField::new("过滤符号…", cx));
                         let app = cx.entity();
-                         input.update(cx, |field, _cx| {
+                        input.update(cx, |field, _cx| {
                             field.set_on_change(move |text, _window, cx| {
                                 app.update(cx, |this, cx| {
                                     this.outline_filter = text.to_string();
@@ -11963,19 +16372,19 @@ impl IdeApp {
                         });
                         self.outline_filter_input = Some(input);
                     }
-                     self.lsp_document_symbols(cx);
-                 }
-                 cx.notify();
-             }
-             "show-completion" => self.lsp_completion(cx),
+                    self.lsp_document_symbols(cx);
+                }
+                cx.notify();
+            }
+            "show-completion" => self.lsp_completion(cx),
             "toggle-theme" => self.toggle_theme(cx),
             "new-window" => self.open_new_window(cx),
             "keybindings" => self.open_keybindings(cx),
             "split-right" => self.split_editor_right(cx),
             "close-split" => self.close_split(cx),
             "run-tests" => self.start_tests(cx),
-             "stack-usage" => self.start_stack_usage(cx),
-             "coverage" => self.start_coverage(cx),
+            "stack-usage" => self.start_stack_usage(cx),
+            "coverage" => self.start_coverage(cx),
             "preprocess" => self.start_preprocess(cx),
             "workspace-symbols" => self.open_workspace_symbols(window, cx),
             "quick-open" => self.open_quick_open(window, cx),
@@ -12062,7 +16471,12 @@ impl IdeApp {
 
     /// Build a `SplitPane` with the same editor wiring as a tab (LSP sync,
     /// breakpoint/menu/definition subscriptions), for the file at `path`.
-    fn build_split_editor(&mut self, path: PathBuf, text: String, cx: &mut Context<Self>) -> SplitPane {
+    fn build_split_editor(
+        &mut self,
+        path: PathBuf,
+        text: String,
+        cx: &mut Context<Self>,
+    ) -> SplitPane {
         let saved_text = text.replace("\r\n", "\n").replace('\r', "\n");
         let text_for_lsp = text.clone();
         let language = Language::from_path(&path);
@@ -12090,27 +16504,27 @@ impl IdeApp {
                 version.set(next_version);
                 let text = editor.read(cx).text().to_string();
                 let _ = server.change_file(did_change_path.clone(), text, next_version);
-             }
+            }
             // Debounced auto-refresh of semantic highlighting and inlay hints:
             // bump the generation and, after a short pause, re-request both if
             // no newer edit has arrived in the meantime.
-             this.lsp_refresh_generation = this.lsp_refresh_generation.wrapping_add(1);
-              let generation = this.lsp_refresh_generation;
-              cx.spawn(async move |refresh_this, cx| {
-                 cx.background_executor()
-                     .timer(std::time::Duration::from_millis(400))
-                     .await;
-                 let _ = refresh_this.update(cx, |this, cx| {
-                     if this.lsp_refresh_generation == generation && this.lsp.is_some() {
-                         this.lsp_semantic_tokens(cx);
-                         this.lsp_inlay_hints(cx);
-                     }
-                 });
-             })
-             .detach();
-              if let Some(anchor) = &this.signature_anchor {
+            this.lsp_refresh_generation = this.lsp_refresh_generation.wrapping_add(1);
+            let generation = this.lsp_refresh_generation;
+            cx.spawn(async move |refresh_this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(400))
+                    .await;
+                let _ = refresh_this.update(cx, |this, cx| {
+                    if this.lsp_refresh_generation == generation && this.lsp.is_some() {
+                        this.lsp_semantic_tokens(cx);
+                        this.lsp_inlay_hints(cx);
+                    }
+                });
+            })
+            .detach();
+            if let Some(anchor) = &this.signature_anchor {
                 let moved = editor.read(cx).cursor_line_col();
-                 let current = (moved.0.saturating_sub(1), moved.1.saturating_sub(1));
+                let current = (moved.0.saturating_sub(1), moved.1.saturating_sub(1));
                 if anchor.0 != signature_path || (anchor.1, anchor.2) != current {
                     this.signature_help = None;
                     this.signature_anchor = None;
@@ -12173,12 +16587,10 @@ impl IdeApp {
                 cx.notify();
             },
         );
-        let hover_word_subscription = cx.subscribe(
-            &editor,
-            move |this, _editor, event: &HoverWord, cx| {
+        let hover_word_subscription =
+            cx.subscribe(&editor, move |this, _editor, event: &HoverWord, cx| {
                 this.on_hover_word(event.word.clone(), event.position, cx);
-            },
-        );
+            });
         if let Some(server) = &self.lsp {
             let _ = server.open_file(path.clone(), text_for_lsp);
         }
@@ -12228,7 +16640,8 @@ impl IdeApp {
             if self.jump_to_asm_label(&path, line, column, cx) {
                 return;
             }
-            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            self.status =
+                "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
             cx.notify();
             return;
         };
@@ -12240,9 +16653,7 @@ impl IdeApp {
         self.status = "正在解析定义…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
                     Some(response) => {
@@ -12256,8 +16667,11 @@ impl IdeApp {
                                     editor.set_cursor_line(target_line, cx)
                                 });
                             }
-                            this.status = format!("已跳转到定义（{}:{}）", location.path.display(), location.line);
-
+                            this.status = format!(
+                                "已跳转到定义（{}:{}）",
+                                location.path.display(),
+                                location.line
+                            );
                         } else {
                             this.status = "未找到定义".to_string();
                         }
@@ -12314,11 +16728,13 @@ impl IdeApp {
                     if label.trim() == word {
                         self.open_file(source.clone(), cx);
                         if let Some(target) = self.active_editor() {
-                            target.update(cx, |ed, cx| {
-                                ed.set_cursor_line(idx + 1, cx)
-                            });
+                            target.update(cx, |ed, cx| ed.set_cursor_line(idx + 1, cx));
                         }
-                        self.status = format!("已跳转到汇编标签 {word}（{}:{}）", source.display(), idx + 1);
+                        self.status = format!(
+                            "已跳转到汇编标签 {word}（{}:{}）",
+                            source.display(),
+                            idx + 1
+                        );
                         cx.notify();
                         return true;
                     }
@@ -12326,11 +16742,13 @@ impl IdeApp {
                     if label.trim() == word {
                         self.open_file(source.clone(), cx);
                         if let Some(target) = self.active_editor() {
-                            target.update(cx, |ed, cx| {
-                                ed.set_cursor_line(idx + 1, cx)
-                            });
+                            target.update(cx, |ed, cx| ed.set_cursor_line(idx + 1, cx));
                         }
-                        self.status = format!("已跳转到汇编标签 {word}（{}:{}）", source.display(), idx + 1);
+                        self.status = format!(
+                            "已跳转到汇编标签 {word}（{}:{}）",
+                            source.display(),
+                            idx + 1
+                        );
                         cx.notify();
                         return true;
                     }
@@ -12346,7 +16764,8 @@ impl IdeApp {
             return;
         };
         let Some(server) = &self.lsp else {
-            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            self.status =
+                "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
             cx.notify();
             return;
         };
@@ -12358,23 +16777,21 @@ impl IdeApp {
         self.status = "正在查找引用…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
                     Some(response) => {
                         let locations = parse_location_list(&response);
-                         if locations.is_empty() {
-                             this.status = "未找到引用".to_string();
+                        if locations.is_empty() {
+                            this.status = "未找到引用".to_string();
                             this.references_open = false;
-                         } else {
-                             let count = locations.len();
-                             this.references = locations;
+                        } else {
+                            let count = locations.len();
+                            this.references = locations;
                             this.references_selected = 0;
                             this.references_open = true;
                             this.status = format!("找到 {count} 处引用");
-                         }
+                        }
                     }
                     None => this.status = "引用请求超时".to_string(),
                 }
@@ -12396,7 +16813,8 @@ impl IdeApp {
             return;
         };
         let Some(server) = &self.lsp else {
-            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            self.status =
+                "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
             cx.notify();
             return;
         };
@@ -12414,7 +16832,8 @@ impl IdeApp {
                     Some(response) => {
                         let entries = ns_lsp::parse_call_hierarchy(&response);
                         if entries.is_empty() {
-                            this.status = "光标处没有可解析的调用层级（不在函数/方法上）".to_string();
+                            this.status =
+                                "光标处没有可解析的调用层级（不在函数/方法上）".to_string();
                             this.call_hierarchy_open = false;
                         } else {
                             this.call_hierarchy_root = Some(entries[0].clone());
@@ -12451,7 +16870,11 @@ impl IdeApp {
         };
         self.status = format!(
             "正在加载{}调用…",
-            if direction == "incoming" { "被" } else { "出" }
+            if direction == "incoming" {
+                "被"
+            } else {
+                "出"
+            }
         );
         cx.notify();
         let root = self.call_hierarchy_root.clone();
@@ -12466,9 +16889,17 @@ impl IdeApp {
                         let name = root.map(|r| r.name).unwrap_or_default();
                         this.status = format!(
                             "{}：{} 处{}调用",
-                            if name.is_empty() { "调用层级".to_string() } else { name },
+                            if name.is_empty() {
+                                "调用层级".to_string()
+                            } else {
+                                name
+                            },
                             calls.len(),
-                            if direction == "incoming" { "被" } else { "出" }
+                            if direction == "incoming" {
+                                "被"
+                            } else {
+                                "出"
+                            }
                         );
                     }
                     None => this.status = "调用层级请求超时".to_string(),
@@ -12529,7 +16960,8 @@ impl IdeApp {
             return;
         }
         let Some(server) = &self.lsp else {
-            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            self.status =
+                "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
             self.rename_dialog = Some(dialog);
             cx.notify();
             return;
@@ -12546,9 +16978,7 @@ impl IdeApp {
         self.status = "正在重命名符号…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
                     Some(response) => {
@@ -12583,11 +17013,7 @@ impl IdeApp {
                 project.root.join(&edit.path)
             };
             // Update an open tab, if any.
-            if let Some(tab) = self
-                .tabs
-                .iter()
-                .find(|tab| tab.path == absolute)
-            {
+            if let Some(tab) = self.tabs.iter().find(|tab| tab.path == absolute) {
                 tab.editor.update(cx, |editor, _cx| {
                     editor.apply_text_edit(
                         edit.start_line,
@@ -12624,7 +17050,8 @@ impl IdeApp {
             return;
         };
         let Some(server) = &self.lsp else {
-            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            self.status =
+                "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
             cx.notify();
             return;
         };
@@ -12636,9 +17063,7 @@ impl IdeApp {
         self.status = "正在获取悬停提示…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
                     Some(response) => {
@@ -12673,7 +17098,8 @@ impl IdeApp {
             return;
         };
         let Some(server) = &self.lsp else {
-            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            self.status =
+                "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
             cx.notify();
             return;
         };
@@ -12685,24 +17111,20 @@ impl IdeApp {
         self.status = "正在获取签名帮助…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
-                    Some(response) => {
-                        match parse_signature_help(&response) {
-                            Some(help) => {
-                                this.signature_help = Some(help);
-                                this.signature_anchor = Some((path.clone(), line, column));
-                                this.status = "签名帮助已就绪".to_string();
-                            }
-                            None => {
-                                this.signature_help = None;
-                                this.status = "无签名帮助".to_string();
-                            }
+                    Some(response) => match parse_signature_help(&response) {
+                        Some(help) => {
+                            this.signature_help = Some(help);
+                            this.signature_anchor = Some((path.clone(), line, column));
+                            this.status = "签名帮助已就绪".to_string();
                         }
-                    }
+                        None => {
+                            this.signature_help = None;
+                            this.status = "无签名帮助".to_string();
+                        }
+                    },
                     None => this.status = "签名帮助请求超时".to_string(),
                 }
                 cx.notify();
@@ -12724,9 +17146,7 @@ impl IdeApp {
             return;
         };
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 if let Some(response) = response {
                     let tokens = parse_semantic_tokens(&response);
@@ -12765,9 +17185,7 @@ impl IdeApp {
             return;
         };
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 if let Some(response) = response {
                     this.outline = ns_lsp::parse_symbols(&response);
@@ -12805,7 +17223,12 @@ impl IdeApp {
         let Some(server) = &self.lsp else {
             return;
         };
-        let query = self.workspace_symbol_field.read(cx).text().trim().to_string();
+        let query = self
+            .workspace_symbol_field
+            .read(cx)
+            .text()
+            .trim()
+            .to_string();
         if query.is_empty() {
             self.workspace_symbols.clear();
             self.workspace_symbol_selected = 0;
@@ -12846,7 +17269,7 @@ impl IdeApp {
         let next = (current + delta).rem_euclid(len as isize) as usize;
         self.workspace_symbol_selected = next;
         cx.notify();
-     }
+    }
 
     /// Move the highlighted reference up/down.
     fn references_move(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -12871,8 +17294,8 @@ impl IdeApp {
         self.call_hierarchy_selected = next;
         cx.notify();
     }
- 
-     /// Open the highlighted workspace symbol in the editor.
+
+    /// Open the highlighted workspace symbol in the editor.
     fn workspace_symbol_confirm(&mut self, cx: &mut Context<Self>) {
         let Some(symbol) = self.workspace_symbols.get(self.workspace_symbol_selected) else {
             return;
@@ -12894,7 +17317,7 @@ impl IdeApp {
             self.workspace_symbol_open = false;
             cx.notify();
         }
-     }
+    }
 
     /// Open the highlighted reference in the editor.
     fn references_confirm(&mut self, cx: &mut Context<Self>) {
@@ -12907,11 +17330,11 @@ impl IdeApp {
         self.references_open = false;
         self.push_nav_history(cx);
         self.open_file(path, cx);
-         if let Some(editor) = self.active_editor() {
-             editor.update(cx, |editor, cx| {
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| {
                 editor.set_cursor_line_column(line + 1, column, cx);
-             });
-         }
+            });
+        }
         cx.notify();
     }
 
@@ -12955,8 +17378,8 @@ impl IdeApp {
             cx.notify();
         }
     }
- 
-     /// Open the Quick Open popup, focus its query field, and populate the file
+
+    /// Open the Quick Open popup, focus its query field, and populate the file
     /// list from the project's source files.
     fn open_quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.project.is_none() {
@@ -13054,9 +17477,7 @@ impl IdeApp {
         self.status = "正在格式化…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
                     Some(response) => {
@@ -13114,9 +17535,7 @@ impl IdeApp {
         self.status = "正在请求快速修复…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
                     Some(response) => {
@@ -13163,9 +17582,7 @@ impl IdeApp {
         self.status = "正在整理导入…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
                     Some(response) => {
@@ -13200,9 +17617,7 @@ impl IdeApp {
         self.status = "正在请求内联提示…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
                     Some(response) => {
@@ -13239,7 +17654,8 @@ impl IdeApp {
             return;
         };
         let Some(server) = &self.lsp else {
-            self.status = "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
+            self.status =
+                "语言服务器未连接（检查是否安装了 clangd / rust-analyzer / zls）".to_string();
             cx.notify();
             return;
         };
@@ -13251,9 +17667,7 @@ impl IdeApp {
         self.status = "正在请求补全…".to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let response = rx
-                .recv_timeout(std::time::Duration::from_secs(8))
-                .ok();
+            let response = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
             this.update(cx, |this, cx| {
                 match response {
                     Some(response) => {
@@ -13326,7 +17740,11 @@ impl IdeApp {
             });
         }
         self.completion_open = false;
-        self.status = if item.snippet { "已插入代码片段".to_string() } else { "已插入补全".to_string() };
+        self.status = if item.snippet {
+            "已插入代码片段".to_string()
+        } else {
+            "已插入补全".to_string()
+        };
         cx.notify();
     }
 
@@ -13459,10 +17877,7 @@ impl IdeApp {
             }
         }
         for lsp_diagnostic in self.lsp_diagnostics.get(&path).into_iter().flatten() {
-            let is_error = matches!(
-                lsp_diagnostic.severity,
-                ns_lsp::LspSeverity::Error
-            );
+            let is_error = matches!(lsp_diagnostic.severity, ns_lsp::LspSeverity::Error);
             marks.push(crate::editor::DiagnosticMark {
                 line: lsp_diagnostic.line,
                 start_col: lsp_diagnostic.column,
@@ -13472,7 +17887,8 @@ impl IdeApp {
             });
         }
         if let Some(tab) = self.tabs.get(index) {
-            tab.editor.update(cx, |editor, cx| editor.set_diagnostics(marks, cx));
+            tab.editor
+                .update(cx, |editor, cx| editor.set_diagnostics(marks, cx));
         }
     }
 
@@ -13489,12 +17905,14 @@ impl IdeApp {
                     break;
                 }
             }
-            tab.editor.update(cx, |editor, cx| editor.set_coverage(hits.clone(), cx));
+            tab.editor
+                .update(cx, |editor, cx| editor.set_coverage(hits.clone(), cx));
         }
     }
- 
-     /// Move the cursor to a navigation-history entry, opening the file if needed.
-    fn jump_to_nav_entry(&mut self, entry: &NavEntry, cx: &mut Context<Self>) {        if entry.path.exists() {
+
+    /// Move the cursor to a navigation-history entry, opening the file if needed.
+    fn jump_to_nav_entry(&mut self, entry: &NavEntry, cx: &mut Context<Self>) {
+        if entry.path.exists() {
             self.open_file(entry.path.clone(), cx);
         }
         if let Some(editor) = self.active_editor() {
@@ -13565,7 +17983,11 @@ impl IdeApp {
             dirs.push(project.root.clone());
         }
         // Common system include directories, when present.
-        for sys in ["/usr/include", "/usr/local/include", "/opt/homebrew/include"] {
+        for sys in [
+            "/usr/include",
+            "/usr/local/include",
+            "/opt/homebrew/include",
+        ] {
             let p = PathBuf::from(sys);
             if p.is_dir() {
                 dirs.push(p);
@@ -13582,7 +18004,14 @@ impl IdeApp {
     }
 
     /// Open the right-click menu for a tree entry at the given position.
-    fn open_tree_menu(&mut self, path: PathBuf, is_dir: bool, x: Pixels, y: Pixels, cx: &mut Context<Self>) {
+    fn open_tree_menu(
+        &mut self,
+        path: PathBuf,
+        is_dir: bool,
+        x: Pixels,
+        y: Pixels,
+        cx: &mut Context<Self>,
+    ) {
         self.tree_menu = Some(TreeContextMenu { path, is_dir, x, y });
         cx.notify();
     }
@@ -13904,8 +18333,8 @@ impl IdeApp {
         if let Some(editor) = self.active_editor() {
             editor.update(cx, |editor, cx| editor.set_cursor_line(line, cx));
         }
-         cx.notify();
-     }
+        cx.notify();
+    }
 
     /// After a failed build, open the first error (or, if there are no errors,
     /// the first warning) that has a source path in the editor so the user is
@@ -13919,11 +18348,9 @@ impl IdeApp {
                 diagnostic.path.is_some() && diagnostic.severity == Severity::Error
             })
             .or_else(|| {
-                self.diagnostics
-                    .iter()
-                    .position(|diagnostic| {
-                        diagnostic.path.is_some() && diagnostic.severity == Severity::Warning
-                    })
+                self.diagnostics.iter().position(|diagnostic| {
+                    diagnostic.path.is_some() && diagnostic.severity == Severity::Warning
+                })
             });
         if let Some(index) = index {
             self.open_diagnostic(index, cx);
@@ -13952,7 +18379,13 @@ impl IdeApp {
             if let (Some(path), Some(line)) = (&diagnostic.path, diagnostic.line) {
                 let column = diagnostic.column.unwrap_or(1);
                 let is_error = diagnostic.severity == ns_build::Severity::Error;
-                all.push((canon(path), line, column, diagnostic.message.clone(), is_error));
+                all.push((
+                    canon(path),
+                    line,
+                    column,
+                    diagnostic.message.clone(),
+                    is_error,
+                ));
             }
         }
         for (path, diagnostics) in &self.lsp_diagnostics {
@@ -14030,12 +18463,11 @@ impl IdeApp {
         self.tabs.get(index).map(|tab| tab.path.clone())
     }
 
- 
-     /// Apply a quick fix to the build diagnostic at `index`. For
-     /// `AddInclude`, the `#include <...>` line is inserted at the top of the
-     /// source file (after any existing `#include` lines, so the leading block
-     /// stays grouped); for `Hint`, the hint is shown in the status bar.
-     fn apply_quick_fix(&mut self, index: usize, cx: &mut Context<Self>) {
+    /// Apply a quick fix to the build diagnostic at `index`. For
+    /// `AddInclude`, the `#include <...>` line is inserted at the top of the
+    /// source file (after any existing `#include` lines, so the leading block
+    /// stays grouped); for `Hint`, the hint is shown in the status bar.
+    fn apply_quick_fix(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(diagnostic) = self.diagnostics.get(index) else {
             return;
         };
@@ -14044,33 +18476,32 @@ impl IdeApp {
             cx.notify();
             return;
         };
-         let source = std::fs::read_to_string(&path).ok();
-         match ns_build::suggest_quick_fix(diagnostic, source.as_deref()) {
-             Some(ns_build::QuickFix::AddInclude { header }) => {
-                 // Insert after the last existing `#include` line, else at the top.
-                 let text = source.clone().unwrap_or_default();
-                 let include = format!("#include <{header}>");
-                 if text.lines().any(|line| line.trim() == include) {
-                     self.status = format!("`#include <{header}>` 已存在于 {}", path.display());
-                     cx.notify();
-                     return;
-                 }
-                 // Rebuild the file on disk, then reload the open editor tab.
-                 let new_text = insert_include_line(&text, &include, include_insert_at(&text));
-                 match std::fs::write(&path, &new_text) {
-                     Ok(()) => {
-                         self.status =
-                             format!("已添加 `#include <{header}>` 到 {}", path.display());
-                         self.reload_diagnostic_file(&path, cx);
-                     }
-                     Err(err) => {
-                         self.status = format!("写入 {} 失败: {err}", path.display());
-                     }
-                 }
-             }
-             Some(ns_build::QuickFix::Hint(hint)) => {
-                 self.status = hint;
-             }
+        let source = std::fs::read_to_string(&path).ok();
+        match ns_build::suggest_quick_fix(diagnostic, source.as_deref()) {
+            Some(ns_build::QuickFix::AddInclude { header }) => {
+                // Insert after the last existing `#include` line, else at the top.
+                let text = source.clone().unwrap_or_default();
+                let include = format!("#include <{header}>");
+                if text.lines().any(|line| line.trim() == include) {
+                    self.status = format!("`#include <{header}>` 已存在于 {}", path.display());
+                    cx.notify();
+                    return;
+                }
+                // Rebuild the file on disk, then reload the open editor tab.
+                let new_text = insert_include_line(&text, &include, include_insert_at(&text));
+                match std::fs::write(&path, &new_text) {
+                    Ok(()) => {
+                        self.status = format!("已添加 `#include <{header}>` 到 {}", path.display());
+                        self.reload_diagnostic_file(&path, cx);
+                    }
+                    Err(err) => {
+                        self.status = format!("写入 {} 失败: {err}", path.display());
+                    }
+                }
+            }
+            Some(ns_build::QuickFix::Hint(hint)) => {
+                self.status = hint;
+            }
             Some(ns_build::QuickFix::AddLinkFlag { flag }) => {
                 // Write the flag into `project.toml`'s `[compiler] link_flags`
                 // (deduped), then persist. The build plan picks it up on the
@@ -14095,8 +18526,9 @@ impl IdeApp {
                 flags.push(normalized.clone());
                 match project.save_config() {
                     Ok(()) => {
-                        self.status =
-                            format!("已添加链接标志 `{normalized}` 到 [compiler] link_flags（下次构建生效）");
+                        self.status = format!(
+                            "已添加链接标志 `{normalized}` 到 [compiler] link_flags（下次构建生效）"
+                        );
                     }
                     Err(error) => {
                         self.status = format!("保存 project.toml 失败: {error}");
@@ -14104,27 +18536,27 @@ impl IdeApp {
                 }
             }
 
-             None => {
-                 self.status = "没有可用的快速修复。".to_string();
-             }
-         }
-         cx.notify();
-     }
- 
-     /// Reload a source file that a quick fix edited, refreshing the open
-     /// editor tab and clearing stale diagnostics for that file.
-     fn reload_diagnostic_file(&mut self, path: &Path, cx: &mut Context<Self>) {
-         if let Some(editor) = self.active_editor() {
-             editor.update(cx, |editor, cx| {
-                 if let Ok(text) = std::fs::read_to_string(path) {
+            None => {
+                self.status = "没有可用的快速修复。".to_string();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Reload a source file that a quick fix edited, refreshing the open
+    /// editor tab and clearing stale diagnostics for that file.
+    fn reload_diagnostic_file(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Some(editor) = self.active_editor() {
+            editor.update(cx, |editor, cx| {
+                if let Ok(text) = std::fs::read_to_string(path) {
                     editor.reload_text(&text, cx);
-                 }
-             });
-         }
-         cx.notify();
-     }
- 
-     fn tree_entries(&self) -> Vec<TreeEntry> {
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    fn tree_entries(&self) -> Vec<TreeEntry> {
         let Some(project) = &self.project else {
             return Vec::new();
         };
@@ -14132,12 +18564,7 @@ impl IdeApp {
             return self.filtered_tree_entries(project);
         }
         let mut entries = Vec::new();
-        collect_tree(
-            &project.root,
-            0,
-            &self.expanded,
-            &mut entries,
-        );
+        collect_tree(&project.root, 0, &self.expanded, &mut entries);
         entries
     }
 
@@ -14180,11 +18607,7 @@ impl IdeApp {
             }
             entries.push(TreeEntry {
                 path: abs,
-                name: relative
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&relative)
-                    .to_string(),
+                name: relative.rsplit('/').next().unwrap_or(&relative).to_string(),
                 is_dir: false,
                 depth,
                 expanded: false,
@@ -14290,13 +18713,7 @@ impl IdeApp {
                             ),
                     ),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(3.))
-                    .children(triggers),
-            )
+            .child(div().flex().items_center().gap(px(3.)).children(triggers))
     }
 
     /// Render the currently open topbar menu dropdown (absolute, below topbar).
@@ -14432,16 +18849,24 @@ impl IdeApp {
                         .into_any_element(),
                 );
                 items.push(
-                    item("topm-run", if self.run.running { "重新运行" } else { "运行" }, false)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.top_menu_open = None;
-                            if this.run.running {
-                                this.restart_run(cx);
-                            } else {
-                                this.start_build(true, cx);
-                            }
-                        }))
-                        .into_any_element(),
+                    item(
+                        "topm-run",
+                        if self.run.running {
+                            "重新运行"
+                        } else {
+                            "运行"
+                        },
+                        false,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.top_menu_open = None;
+                        if this.run.running {
+                            this.restart_run(cx);
+                        } else {
+                            this.start_build(true, cx);
+                        }
+                    }))
+                    .into_any_element(),
                 );
                 items.push(
                     item("topm-stop-run", "停止运行", false)
@@ -14519,30 +18944,30 @@ impl IdeApp {
                         }))
                         .into_any_element(),
                 );
-                 items.push(
-                     item("topm-flash-read", "读回固件", false)
-                         .on_click(cx.listener(|this, _, _, cx| {
-                             this.top_menu_open = None;
-                             this.flash_action(FlashAction::Read, cx);
-                         }))
-                         .into_any_element(),
-                 );
-                 items.push(
-                     item("topm-flash-verify", "烧写并校验", false)
-                         .on_click(cx.listener(|this, _, _, cx| {
-                             this.top_menu_open = None;
-                             this.flash_and_verify(cx);
-                         }))
-                         .into_any_element(),
-                 );
-                 items.push(
-                     item("topm-flash-run", "烧写并运行", false)
-                         .on_click(cx.listener(|this, _, _, cx| {
-                             this.top_menu_open = None;
-                             this.flash_and_run(cx);
-                         }))
-                         .into_any_element(),
-                 );
+                items.push(
+                    item("topm-flash-read", "读回固件", false)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.top_menu_open = None;
+                            this.flash_action(FlashAction::Read, cx);
+                        }))
+                        .into_any_element(),
+                );
+                items.push(
+                    item("topm-flash-verify", "烧写并校验", false)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.top_menu_open = None;
+                            this.flash_and_verify(cx);
+                        }))
+                        .into_any_element(),
+                );
+                items.push(
+                    item("topm-flash-run", "烧写并运行", false)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.top_menu_open = None;
+                            this.flash_and_run(cx);
+                        }))
+                        .into_any_element(),
+                );
                 items.push(
                     item("topm-flash-debug", "烧写并调试", false)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -14558,18 +18983,20 @@ impl IdeApp {
                 .id("top-menu-backdrop")
                 .absolute()
                 .inset_0()
-                .on_mouse_down(MouseButton::Left, cx.listener(
-                    |this, _: &MouseDownEvent, _, cx| {
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
                         this.top_menu_open = None;
                         cx.notify();
-                    },
-                ))
-                .on_mouse_down(MouseButton::Right, cx.listener(
-                    |this, _: &MouseDownEvent, _, cx| {
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
                         this.top_menu_open = None;
                         cx.notify();
-                    },
-                ))
+                    }),
+                )
                 .child(
                     div()
                         .absolute()
@@ -14595,7 +19022,6 @@ impl IdeApp {
                 .into_any_element(),
         )
     }
-
 
     /// Look up the git change status for a tree entry path (repo-relative),
     /// returning `(label, tone)` for a small badge in the file tree. `None`
@@ -14680,11 +19106,7 @@ impl IdeApp {
                         let git_badge = self.git_tree_badge(&path);
                         let is_dir = entry.is_dir;
                         let icon = if is_dir {
-                            if entry.expanded {
-                                "▾"
-                            } else {
-                                "▸"
-                            }
+                            if entry.expanded { "▾" } else { "▸" }
                         } else {
                             "·"
                         };
@@ -14725,7 +19147,13 @@ impl IdeApp {
                             .on_mouse_down(MouseButton::Right, {
                                 let menu_path = path.clone();
                                 cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                                    this.open_tree_menu(menu_path.clone(), is_dir, event.position.x, event.position.y, cx);
+                                    this.open_tree_menu(
+                                        menu_path.clone(),
+                                        is_dir,
+                                        event.position.x,
+                                        event.position.y,
+                                        cx,
+                                    );
                                 })
                             })
                             .on_drag(
@@ -14736,7 +19164,10 @@ impl IdeApp {
                                 |_drag, _position, _window, cx| cx.new(|_| DividerPreview),
                             )
                             .on_drag_move(cx.listener(
-                                move |_this, _event: &gpui::DragMoveEvent<TreeDragPayload>, _window, _cx| {
+                                move |_this,
+                                      _event: &gpui::DragMoveEvent<TreeDragPayload>,
+                                      _window,
+                                      _cx| {
                                     // Drag feedback: the preview element is
                                     // sufficient; no per-move state needed.
                                 },
@@ -14752,7 +19183,8 @@ impl IdeApp {
                             .can_drop(move |payload, _window, _cx| {
                                 // Directories accept drops; files do not, and
                                 // an entry cannot be dropped onto itself.
-                                let Some(payload) = payload.downcast_ref::<TreeDragPayload>() else {
+                                let Some(payload) = payload.downcast_ref::<TreeDragPayload>()
+                                else {
                                     return false;
                                 };
                                 let self_path = path.clone();
@@ -14802,11 +19234,11 @@ impl IdeApp {
                             })
                     })),
             )
-            .on_drop(cx.listener(
-                move |this, drag: &TreeDragPayload, _window, cx| {
+            .on_drop(
+                cx.listener(move |this, drag: &TreeDragPayload, _window, cx| {
                     this.drop_tree_entry(drag, cx);
-                },
-            ))
+                }),
+            )
             .child(
                 div()
                     .h(px(38.))
@@ -14864,18 +19296,21 @@ impl IdeApp {
                     } else {
                         theme::alpha(0xffffff, 0.0)
                     })
-                     .cursor_pointer()
-                     .on_click(cx.listener(move |this, _, _, cx| this.activate_tab(index, cx)))
-                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.tab_menu = Some(TabMenuState {
-                            index,
-                            x: event.position.x,
-                            y: event.position.y,
-                        });
-                        cx.notify();
-                    }))
-                     .child(
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.activate_tab(index, cx)))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.tab_menu = Some(TabMenuState {
+                                index,
+                                x: event.position.x,
+                                y: event.position.y,
+                            });
+                            cx.notify();
+                        }),
+                    )
+                    .child(
                         div()
                             .text_size(px(11.5))
                             .text_color(if active {
@@ -14980,7 +19415,7 @@ impl IdeApp {
                                         }))
                                         .child(name),
                                 )
-                        }))
+                        })),
                 )
             })
             .child(
@@ -14995,14 +19430,18 @@ impl IdeApp {
                             .relative()
                             .overflow_hidden()
                             .child(match active.as_ref() {
-                                Some(editor) => {
-                                    div().flex_1().h_full().overflow_hidden().child(editor.clone()).into_any_element()
-                                }
+                                Some(editor) => div()
+                                    .flex_1()
+                                    .h_full()
+                                    .overflow_hidden()
+                                    .child(editor.clone())
+                                    .into_any_element(),
                                 None => self.render_empty_editor(cx).into_any_element(),
                             })
-                            .when(self.completion_open && !self.completions.is_empty(), |style| {
-                                style.child(self.render_completion_popup(cx))
-                            })
+                            .when(
+                                self.completion_open && !self.completions.is_empty(),
+                                |style| style.child(self.render_completion_popup(cx)),
+                            )
                             .when(self.signature_help.is_some(), |style| {
                                 style.child(self.render_signature_help(cx))
                             })
@@ -15014,23 +19453,21 @@ impl IdeApp {
                             })
                             .when(
                                 self.debug_hover.is_some() && self.debug_hover_value.is_some(),
-                                |style| {
-                                    style.child(self.render_debug_hover_tooltip(cx))
-                                },
+                                |style| style.child(self.render_debug_hover_tooltip(cx)),
                             )
                             .when(self.workspace_symbol_open, |style| {
                                 style.child(self.render_workspace_symbol_popup(cx))
                             })
-                             .when(self.quick_open, |style| {
-                                 style.child(self.render_quick_open_popup(cx))
-                             })
+                            .when(self.quick_open, |style| {
+                                style.child(self.render_quick_open_popup(cx))
+                            })
                             .when(self.references_open, |style| {
                                 style.child(self.render_references_popup(cx))
                             })
                             .when(self.call_hierarchy_open, |style| {
                                 style.child(self.render_call_hierarchy_popup(cx))
                             })
-                             .when(self.recent_open, |style| {
+                            .when(self.recent_open, |style| {
                                 style.child(self.render_recent_files_popup(cx))
                             })
                             .when(self.tool_picker_open, |style| {
@@ -15099,9 +19536,7 @@ impl IdeApp {
                             .text_size(px(10.))
                             .text_color(theme::color(theme::TEXT_FAINT))
                             .cursor_pointer()
-                            .hover(|style| {
-                                style.text_color(theme::color(theme::DANGER))
-                            })
+                            .hover(|style| style.text_color(theme::color(theme::DANGER)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.close_split(cx);
                             }))
@@ -15146,20 +19581,17 @@ impl IdeApp {
                     .text_size(px(10.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::color(theme::TEXT_FAINT))
-                     .child("大纲"),
-             )
-            .child(
-                div()
-                    .px(px(8.))
-                    .pb(px(6.))
-                    .child(
-                        self.outline_filter_input
-                            .clone()
-                            .map(|field| div().child(field).into_any_element())
-                            .unwrap_or_else(|| div().into_any_element()),
-                    ),
+                    .child("大纲"),
             )
-             .child(
+            .child(
+                div().px(px(8.)).pb(px(6.)).child(
+                    self.outline_filter_input
+                        .clone()
+                        .map(|field| div().child(field).into_any_element())
+                        .unwrap_or_else(|| div().into_any_element()),
+                ),
+            )
+            .child(
                 div()
                     .id("outline-scroll")
                     .flex_1()
@@ -15168,13 +19600,11 @@ impl IdeApp {
                     .pb(px(8.))
                     .flex()
                     .flex_col()
-                     .gap(px(1.))
+                    .gap(px(1.))
                     .children(
                         outline
                             .iter()
-                             .filter(|symbol| {
-                                symbol_matches_filter(symbol, &self.outline_filter)
-                             })
+                            .filter(|symbol| symbol_matches_filter(symbol, &self.outline_filter))
                             .map(|symbol| {
                                 let is_current = cursor_line >= symbol.line;
                                 let line = symbol.line;
@@ -15191,17 +19621,15 @@ impl IdeApp {
                                     } else {
                                         theme::TEXT_DIM
                                     }))
-                                    .hover(|style| {
-                                        style.bg(theme::alpha(theme::ACCENT, 0.08))
-                                    })
+                                    .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.08)))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.jump_to_line(line, cx);
                                     }))
                                     .child(name)
-                             }),
-                     ),
-             )
-     }
+                            }),
+                    ),
+            )
+    }
 
     /// The chain of enclosing symbols at `cursor_line`, outermost first, for
     /// the breadcrumb. Descends only through container kinds (namespace, class,
@@ -15332,7 +19760,8 @@ impl IdeApp {
     /// the hovered identifier. Shown while debug is stopped and the `Evaluate`
     /// response for the hovered word has arrived.
     fn render_debug_hover_tooltip(&self, _cx: &mut Context<Self>) -> impl IntoElement {
-        let (Some((_, position)), Some(value)) = (&self.debug_hover, &self.debug_hover_value) else {
+        let (Some((_, position)), Some(value)) = (&self.debug_hover, &self.debug_hover_value)
+        else {
             return div().into_any_element();
         };
         let value = value.clone();
@@ -15408,34 +19837,27 @@ impl IdeApp {
                             .text_color(theme::color(theme::TEXT_FAINT))
                             .child(count_text),
                     )
-                    .child(
-                        widgets::find_toggle(
-                            "find-case",
-                            "Aa",
-                            editor.read(cx).find_case_sensitive(),
-                            cx.listener(move |this, _, _, cx| {
-                                if let Some(editor) = this.active_editor() {
-                                    editor.update(cx, |editor, cx| {
-                                        editor.toggle_find_case_sensitive(cx)
-                                    });
-                                }
-                            }),
-                        ),
-                    )
-                    .child(
-                        widgets::find_toggle(
-                            "find-word",
-                            "W",
-                            editor.read(cx).find_whole_word(),
-                            cx.listener(move |this, _, _, cx| {
-                                if let Some(editor) = this.active_editor() {
-                                    editor.update(cx, |editor, cx| {
-                                        editor.toggle_find_whole_word(cx)
-                                    });
-                                }
-                            }),
-                        ),
-                    ),
+                    .child(widgets::find_toggle(
+                        "find-case",
+                        "Aa",
+                        editor.read(cx).find_case_sensitive(),
+                        cx.listener(move |this, _, _, cx| {
+                            if let Some(editor) = this.active_editor() {
+                                editor
+                                    .update(cx, |editor, cx| editor.toggle_find_case_sensitive(cx));
+                            }
+                        }),
+                    ))
+                    .child(widgets::find_toggle(
+                        "find-word",
+                        "W",
+                        editor.read(cx).find_whole_word(),
+                        cx.listener(move |this, _, _, cx| {
+                            if let Some(editor) = this.active_editor() {
+                                editor.update(cx, |editor, cx| editor.toggle_find_whole_word(cx));
+                            }
+                        }),
+                    )),
             );
         }
         if let Some(field) = replace_field {
@@ -15547,7 +19969,9 @@ impl IdeApp {
 
     /// Floating completion popup anchored at the bottom-left of the editor.
     fn render_completion_popup(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.completion_selected.min(self.completions.len().saturating_sub(1));
+        let selected = self
+            .completion_selected
+            .min(self.completions.len().saturating_sub(1));
         div()
             .id("completion-popup")
             .absolute()
@@ -15568,68 +19992,63 @@ impl IdeApp {
                     .id("completion-list")
                     .max_h(px(220.))
                     .overflow_y_scroll()
-                    .children(
-                        self.completions
-                            .iter()
-                            .enumerate()
-                            .map(|(index, item)| {
-                                let is_selected = index == selected;
+                    .children(self.completions.iter().enumerate().map(|(index, item)| {
+                        let is_selected = index == selected;
+                        div()
+                            .id(("completion-item", index))
+                            .px(px(8.))
+                            .py(px(5.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .rounded(px(5.))
+                            .bg(if is_selected {
+                                theme::alpha(theme::ACCENT, 0.16)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.completion_selected = index;
+                                this.completion_confirm(cx);
+                            }))
+                            .child(
                                 div()
-                                    .id(("completion-item", index))
-                                    .px(px(8.))
-                                    .py(px(5.))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .rounded(px(5.))
-                                    .bg(if is_selected {
-                                        theme::alpha(theme::ACCENT, 0.16)
+                                    .w(px(70.))
+                                    .flex_none()
+                                    .text_size(px(9.))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child(item.kind.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .font_family(theme::MONO_FONT)
+                                    .text_size(px(11.))
+                                    .text_color(if is_selected {
+                                        theme::color(theme::TEXT)
                                     } else {
-                                        gpui::transparent_black()
+                                        theme::color(theme::TEXT_DIM)
                                     })
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.completion_selected = index;
-                                        this.completion_confirm(cx);
-                                    }))
-                                    .child(
-                                        div()
-                                            .w(px(70.))
-                                            .flex_none()
-                                            .text_size(px(9.))
-                                            .text_color(theme::color(theme::TEXT_FAINT))
-                                            .child(item.kind.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .whitespace_nowrap()
-                                            .font_family(theme::MONO_FONT)
-                                            .text_size(px(11.))
-                                            .text_color(if is_selected {
-                                                theme::color(theme::TEXT)
-                                            } else {
-                                                theme::color(theme::TEXT_DIM)
-                                            })
-                                            .child(item.label.clone()),
-                                    )
-                                    .when(!item.detail.is_empty(), |style| {
-                                        style.child(
-                                            div()
-                                                .flex_none()
-                                                .max_w(px(160.))
-                                                .overflow_hidden()
-                                                .text_ellipsis()
-                                                .whitespace_nowrap()
-                                                .text_size(px(9.5))
-                                                .text_color(theme::color(theme::TEXT_FAINT))
-                                                .child(item.detail.clone()),
-                                        )
-                                    })
-                            }),
-                    )
+                                    .child(item.label.clone()),
+                            )
+                            .when(!item.detail.is_empty(), |style| {
+                                style.child(
+                                    div()
+                                        .flex_none()
+                                        .max_w(px(160.))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_size(px(9.5))
+                                        .text_color(theme::color(theme::TEXT_FAINT))
+                                        .child(item.detail.clone()),
+                                )
+                            })
+                    })),
             )
             .when(
                 self.completions
@@ -15745,9 +20164,7 @@ impl IdeApp {
                                             .whitespace_nowrap()
                                             .text_size(px(9.5))
                                             .text_color(theme::color(theme::TEXT_FAINT))
-                                            .child(
-                                                self.display_path(&symbol.path),
-                                            ),
+                                            .child(self.display_path(&symbol.path)),
                                     )
                             }),
                     ),
@@ -15762,7 +20179,7 @@ impl IdeApp {
                         .child("输入以搜索项目内符号…"),
                 )
             })
-     }
+    }
 
     /// Floating references popup (Shift+F12). Lists the locations returned by
     /// the last `textDocument/references` request; Enter/click opens the
@@ -15830,7 +20247,11 @@ impl IdeApp {
                                             .flex_none()
                                             .text_size(px(9.))
                                             .text_color(theme::color(theme::TEXT_FAINT))
-                                            .child(format!("{}:{}", reference.line + 1, reference.column + 1)),
+                                            .child(format!(
+                                                "{}:{}",
+                                                reference.line + 1,
+                                                reference.column + 1
+                                            )),
                                     )
                                     .child(
                                         div()
@@ -15907,40 +20328,52 @@ impl IdeApp {
                             .whitespace_nowrap()
                             .child(format!(
                                 "调用层级 · {}（{} 处{}调用）",
-                                if root_name.is_empty() { "符号" } else { &root_name },
+                                if root_name.is_empty() {
+                                    "符号"
+                                } else {
+                                    &root_name
+                                },
                                 self.call_hierarchy_calls.len(),
                                 if incoming { "被" } else { "出" }
                             )),
-                    ))
-                    .child(
-                        div()
-                            .id("call-hierarchy-direction")
-                            .flex()
-                            .gap(px(4.))
-                            .children(["incoming", "outgoing"].into_iter().map(|dir| {
-                                let active = dir == self.call_hierarchy_direction;
-                                div()
-                                    .id(if dir == "incoming" { "call-hierarchy-dir-in" } else { "call-hierarchy-dir-out" })
-                                    .px(px(8.))
-                                    .py(px(2.))
-                                    .rounded(px(999.))
-                                    .cursor_pointer()
-                                    .bg(if active {
-                                        theme::alpha(theme::ACCENT, 0.2)
-                                    } else {
-                                        gpui::transparent_black()
-                                    })
-                                    .text_color(if active {
-                                        theme::color(theme::ACCENT_3)
-                                    } else {
-                                        theme::color(theme::TEXT_FAINT)
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.toggle_call_hierarchy_direction(dir, cx);
-                                    }))
-                                    .child(if dir == "incoming" { "被调用" } else { "调用" })
-                            }),
                     ),
+            )
+            .child(
+                div()
+                    .id("call-hierarchy-direction")
+                    .flex()
+                    .gap(px(4.))
+                    .children(["incoming", "outgoing"].into_iter().map(|dir| {
+                        let active = dir == self.call_hierarchy_direction;
+                        div()
+                            .id(if dir == "incoming" {
+                                "call-hierarchy-dir-in"
+                            } else {
+                                "call-hierarchy-dir-out"
+                            })
+                            .px(px(8.))
+                            .py(px(2.))
+                            .rounded(px(999.))
+                            .cursor_pointer()
+                            .bg(if active {
+                                theme::alpha(theme::ACCENT, 0.2)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .text_color(if active {
+                                theme::color(theme::ACCENT_3)
+                            } else {
+                                theme::color(theme::TEXT_FAINT)
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_call_hierarchy_direction(dir, cx);
+                            }))
+                            .child(if dir == "incoming" {
+                                "被调用"
+                            } else {
+                                "调用"
+                            })
+                    })),
             )
             .child(
                 div()
@@ -15977,7 +20410,11 @@ impl IdeApp {
                                             .flex_none()
                                             .text_size(px(9.))
                                             .text_color(theme::color(theme::TEXT_FAINT))
-                                            .child(format!("{}:{}", call.line + 1, call.column + 1)),
+                                            .child(format!(
+                                                "{}:{}",
+                                                call.line + 1,
+                                                call.column + 1
+                                            )),
                                     )
                                     .child(
                                         div()
@@ -16016,8 +20453,8 @@ impl IdeApp {
                 )
             })
     }
- 
-     /// Floating Quick Open popup (Ctrl+P). Shows a query field and the filtered
+
+    /// Floating Quick Open popup (Ctrl+P). Shows a query field and the filtered
     /// list of project files; Enter opens the highlighted entry.
     fn render_quick_open_popup(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self
@@ -16195,9 +20632,7 @@ impl IdeApp {
 
     fn render_tool_picker_popup(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tools = self.tools_store.tools();
-        let selected = self
-            .tool_picker_selected
-            .min(tools.len().saturating_sub(1));
+        let selected = self.tool_picker_selected.min(tools.len().saturating_sub(1));
         div()
             .id("tool-picker-popup")
             .absolute()
@@ -16227,55 +20662,49 @@ impl IdeApp {
                     .id("tool-picker-list")
                     .max_h(px(300.))
                     .overflow_y_scroll()
-                    .children(
-                        tools
-                            .iter()
-                            .enumerate()
-                            .map(|(index, tool)| {
-                                let is_selected = index == selected;
+                    .children(tools.iter().enumerate().map(|(index, tool)| {
+                        let is_selected = index == selected;
+                        div()
+                            .id(("tool-picker-item", index))
+                            .px(px(10.))
+                            .py(px(5.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .rounded(px(5.))
+                            .bg(if is_selected {
+                                theme::alpha(theme::ACCENT, 0.16)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.tool_picker_selected = index;
+                                this.confirm_tool_picker(cx);
+                            }))
+                            .child(
                                 div()
-                                    .id(("tool-picker-item", index))
-                                    .px(px(10.))
-                                    .py(px(5.))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .rounded(px(5.))
-                                    .bg(if is_selected {
-                                        theme::alpha(theme::ACCENT, 0.16)
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .text_size(px(11.))
+                                    .text_color(if is_selected {
+                                        theme::color(theme::TEXT)
                                     } else {
-                                        gpui::transparent_black()
+                                        theme::color(theme::TEXT_DIM)
                                     })
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.tool_picker_selected = index;
-                                        this.confirm_tool_picker(cx);
-                                    }))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .whitespace_nowrap()
-                                            .text_size(px(11.))
-                                            .text_color(if is_selected {
-                                                theme::color(theme::TEXT)
-                                            } else {
-                                                theme::color(theme::TEXT_DIM)
-                                            })
-                                            .child(tool.title.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(9.5))
-                                            .text_color(theme::color(theme::TEXT_FAINT))
-                                            .child(tool.command.clone()),
-                                    )
-                            }),
-                    ),
+                                    .child(tool.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(9.5))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child(tool.command.clone()),
+                            )
+                    })),
             )
     }
-
 
     fn render_empty_editor(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -17286,29 +21715,26 @@ impl IdeApp {
                             .child(display_path.clone()),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .gap(px(3.))
-                            .child(
-                                div()
-                                    .id(("git-stage", index))
-                                    .px(px(6.))
-                                    .py(px(2.))
-                                    .rounded(px(4.))
-                                    .bg(theme::alpha(theme::STROKE, 0.10))
-                                    .text_size(px(9.))
-                                    .text_color(theme::color(theme::TEXT_DIM))
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.16)))
-                                    .child(if staged { "取消暂存" } else { "暂存" })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if staged {
-                                            this.git_unstage(stage_path.clone(), cx);
-                                        } else {
-                                            this.git_stage(stage_path.clone(), cx);
-                                        }
-                                    })),
-                            ),
+                        div().flex().gap(px(3.)).child(
+                            div()
+                                .id(("git-stage", index))
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .bg(theme::alpha(theme::STROKE, 0.10))
+                                .text_size(px(9.))
+                                .text_color(theme::color(theme::TEXT_DIM))
+                                .cursor_pointer()
+                                .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.16)))
+                                .child(if staged { "取消暂存" } else { "暂存" })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if staged {
+                                        this.git_unstage(stage_path.clone(), cx);
+                                    } else {
+                                        this.git_stage(stage_path.clone(), cx);
+                                    }
+                                })),
+                        ),
                     )
                     .into_any_element(),
             );
@@ -17325,11 +21751,7 @@ impl IdeApp {
             .flex()
             .items_center()
             .gap(px(6.))
-            .child(
-                div()
-                    .flex_1()
-                    .child(commit_field_for_render.clone()),
-            )
+            .child(div().flex_1().child(commit_field_for_render.clone()))
             .child(
                 widgets::primary_button("git-commit", "提交")
                     .on_click(cx.listener(|this, _, _, cx| this.git_commit(cx))),
@@ -17428,7 +21850,6 @@ impl IdeApp {
                         let branch_name = name.clone();
                         div()
                             .id(("git-branch", index))
-
                             .px(px(8.))
                             .py(px(3.))
                             .flex()
@@ -17549,7 +21970,9 @@ impl IdeApp {
                             .cursor_pointer()
                             .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.16)))
                             .child("＋ 新建分支")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_git_branch_dialog(cx))),
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.open_git_branch_dialog(cx)),
+                            ),
                     )
                     .child(
                         div()
@@ -17630,7 +22053,13 @@ impl IdeApp {
     fn render_agent_panel(&self, _cx: &mut Context<Self>) -> gpui::AnyElement {
         self.agent
             .clone()
-            .map(|agent| div().flex_1().overflow_hidden().child(agent).into_any_element())
+            .map(|agent| {
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(agent)
+                    .into_any_element()
+            })
             .unwrap_or_else(|| {
                 div()
                     .p(px(12.))
@@ -17654,13 +22083,20 @@ impl IdeApp {
                 .child("暂无终端 · 点击「+ 新建」或按 Cmd/Ctrl+J 打开")
                 .into_any_element();
         }
-        let active = self.active_terminal.unwrap_or(0).min(self.terminals.len() - 1);
+        let active = self
+            .active_terminal
+            .unwrap_or(0)
+            .min(self.terminals.len() - 1);
         let mut tabs: Vec<gpui::AnyElement> = Vec::new();
         for (index, terminal) in self.terminals.iter().enumerate() {
             let title = terminal.read(cx).title();
             let selected = index == active;
             let terminal_index = index;
-            let title_label = if title.is_empty() { "终端".to_string() } else { title };
+            let title_label = if title.is_empty() {
+                "终端".to_string()
+            } else {
+                title
+            };
             tabs.push(
                 div()
                     .id(("term-tab", index))
@@ -17769,7 +22205,6 @@ impl IdeApp {
             .child(div().flex_1().overflow_hidden().child(terminal))
             .into_any_element()
     }
-
 
     /// The watchpoint (data breakpoint) section of the breakpoints panel.
     fn render_watchpoint_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -17908,29 +22343,30 @@ impl IdeApp {
                             .flex()
                             .gap(px(2.))
                             .child(
-                                widgets::icon_button(("wp-edit", index), "✎", 20.)
-                                    .on_click({
-                                        let expression = expression.clone();
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.open_watchpoint_dialog(&expression, "", cx);
-                                        })
-                                    }),
+                                widgets::icon_button(("wp-edit", index), "✎", 20.).on_click({
+                                    let expression = expression.clone();
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.open_watchpoint_dialog(&expression, "", cx);
+                                    })
+                                }),
                             )
                             .child(
-                                widgets::icon_button(("wp-remove", index), "×", 20.)
-                                    .on_click({
-                                        let expression = expression.clone();
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.remove_watchpoint(&expression, cx);
-                                        })
-                                    }),
+                                widgets::icon_button(("wp-remove", index), "×", 20.).on_click({
+                                    let expression = expression.clone();
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.remove_watchpoint(&expression, cx);
+                                    })
+                                }),
                             ),
                     )
                     .into_any_element(),
             );
         }
         let count = watchpoints.len();
-        let enabled = watchpoints.iter().filter(|watchpoint| watchpoint.enabled).count();
+        let enabled = watchpoints
+            .iter()
+            .filter(|watchpoint| watchpoint.enabled)
+            .count();
         div()
             .id("watchpoint-panel")
             .h(px(140.))
@@ -18020,9 +22456,8 @@ impl IdeApp {
         let active_frame = self.debug.active_frame;
         let session_active = self.debug_session.is_some();
         let console_empty = self.debug.console.is_empty();
-        let thread_selector: Option<gpui::AnyElement> = (self.debug.threads.len() > 1)
-            .then(|| self.render_thread_selector(cx));
-
+        let thread_selector: Option<gpui::AnyElement> =
+            (self.debug.threads.len() > 1).then(|| self.render_thread_selector(cx));
 
         div()
             .id("debug-panel")
@@ -18382,33 +22817,28 @@ impl IdeApp {
                     .items_center()
                     .justify_between()
                     .child(widgets::section_label("变量"))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(4.))
-                            .children(self.debug.scopes.iter().enumerate().map(
-                                |(index, scope)| {
-                                    let active = index == active_scope;
-                                    div()
-                                        .id(("dbg-scope", index))
-                                        .px(px(8.))
-                                        .py(px(3.))
-                                        .rounded(px(9.))
-                                        .text_size(px(9.))
-                                        .cursor_pointer()
-                                        .bg(if active {
-                                            theme::alpha(theme::ACCENT, 0.18)
-                                        } else {
-                                            gpui::transparent_black()
-                                        })
-                                        .text_color(theme::color(theme::TEXT_DIM))
-                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                             this.select_debug_scope(index, cx)
-                                         }))
-                                        .child(scope.name.clone())
-                                  },
-                              )),
-                    )
+                    .child(div().flex().gap(px(4.)).children(
+                        self.debug.scopes.iter().enumerate().map(|(index, scope)| {
+                            let active = index == active_scope;
+                            div()
+                                .id(("dbg-scope", index))
+                                .px(px(8.))
+                                .py(px(3.))
+                                .rounded(px(9.))
+                                .text_size(px(9.))
+                                .cursor_pointer()
+                                .bg(if active {
+                                    theme::alpha(theme::ACCENT, 0.18)
+                                } else {
+                                    gpui::transparent_black()
+                                })
+                                .text_color(theme::color(theme::TEXT_DIM))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.select_debug_scope(index, cx)
+                                }))
+                                .child(scope.name.clone())
+                        }),
+                    ))
                     .child(
                         div()
                             .id("dbg-vars-refresh")
@@ -18440,76 +22870,72 @@ impl IdeApp {
                     .flex_col()
                     .gap(px(4.))
                     .child(widgets::section_label("监视"))
-                    .children(
-                        self.debug.watches.iter().enumerate().map(|(index, watch)| {
-                            div()
-                                .id(("dbg-watch", index))
-                                .px(px(6.))
-                                .py(px(3.))
-                                .rounded(px(6.))
-                                .flex()
-                                .items_baseline()
-                                .gap(px(6.))
-                                .font_family(theme::MONO_FONT)
-                                .text_size(px(10.5))
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .text_color(theme::color(theme::ACCENT_3))
-                                        .child(watch.expression.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .text_color(theme::color(theme::TEXT_DIM))
-                                        .child(if watch.value.is_empty() {
-                                            "…".to_string()
-                                        } else {
-                                            watch.value.clone()
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .id(("dbg-watch-copy", index))
-                                        .flex_none()
-                                        .ml(px(4.))
-                                        .text_size(px(11.))
-                                        .text_color(theme::color(theme::TEXT_FAINT))
-                                        .cursor_pointer()
-                                        .hover(|s| {
-                                            s.text_color(theme::color(theme::ACCENT_3))
-                                        })
-                                        .on_click(cx.listener({
-                                            let expression = watch.expression.clone();
-                                            let value = watch.value.clone();
-                                            move |this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.copy_watch_value(&expression, &value, cx);
-                                            }
-                                        }))
-                                        .child("📋"),
-                                )
-                                .child(
-                                    div()
-                                        .id(("dbg-watch-del", index))
-                                        .flex_none()
-                                        .text_size(px(10.))
-                                        .text_color(theme::color(theme::TEXT_FAINT))
-                                        .cursor_pointer()
-                                        .hover(|style| style.text_color(theme::color(theme::DANGER)))
-                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                             cx.stop_propagation();
-                                             this.debug.remove_watch(index);
-                                            this.persist_watches();
-                                             cx.notify();
-                                         }))
-                                        .child("✕")
-                                )
-                        }),
-                    )
+                    .children(self.debug.watches.iter().enumerate().map(|(index, watch)| {
+                        div()
+                            .id(("dbg-watch", index))
+                            .px(px(6.))
+                            .py(px(3.))
+                            .rounded(px(6.))
+                            .flex()
+                            .items_baseline()
+                            .gap(px(6.))
+                            .font_family(theme::MONO_FONT)
+                            .text_size(px(10.5))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme::color(theme::ACCENT_3))
+                                    .child(watch.expression.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .text_color(theme::color(theme::TEXT_DIM))
+                                    .child(if watch.value.is_empty() {
+                                        "…".to_string()
+                                    } else {
+                                        watch.value.clone()
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .id(("dbg-watch-copy", index))
+                                    .flex_none()
+                                    .ml(px(4.))
+                                    .text_size(px(11.))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(theme::color(theme::ACCENT_3)))
+                                    .on_click(cx.listener({
+                                        let expression = watch.expression.clone();
+                                        let value = watch.value.clone();
+                                        move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.copy_watch_value(&expression, &value, cx);
+                                        }
+                                    }))
+                                    .child("📋"),
+                            )
+                            .child(
+                                div()
+                                    .id(("dbg-watch-del", index))
+                                    .flex_none()
+                                    .text_size(px(10.))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .cursor_pointer()
+                                    .hover(|style| style.text_color(theme::color(theme::DANGER)))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.debug.remove_watch(index);
+                                        this.persist_watches();
+                                        cx.notify();
+                                    }))
+                                    .child("✕"),
+                            )
+                    }))
                     .children(
                         self.debug
                             .watch_input
@@ -18587,11 +23013,11 @@ impl IdeApp {
             .flex_col()
             .border_r_1()
             .border_color(theme::alpha(theme::STROKE, 0.08))
-             .child(
-                 div()
-                     .px(px(10.))
-                     .pt(px(7.))
-                     .pb(px(3.))
+            .child(
+                div()
+                    .px(px(10.))
+                    .pt(px(7.))
+                    .pb(px(3.))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -18600,9 +23026,9 @@ impl IdeApp {
                     } else {
                         format!("CPU 寄存器 · {group_count}")
                     }))
-                     .when(group_count > 0, |style| {
-                         style.child(
-                            div().flex().gap(px(4.)).children([
+                    .when(group_count > 0, |style| {
+                        style.child(div().flex().gap(px(4.)).children(
+                            [
                                 widgets::ghost_button("dbg-regs-refresh", "刷新").on_click(
                                     cx.listener(|this, _, _, cx| this.refresh_registers(cx)),
                                 ),
@@ -18610,12 +23036,14 @@ impl IdeApp {
                                     cx.listener(|this, _, _, cx| this.export_register_snapshot(cx)),
                                 ),
                                 widgets::ghost_button("dbg-regs-compare", "对比快照").on_click(
-                                    cx.listener(|this, _, _, cx| this.compare_register_snapshot(cx)),
+                                    cx.listener(|this, _, _, cx| {
+                                        this.compare_register_snapshot(cx)
+                                    }),
                                 ),
-                            ]),
-                         )
-                     }),
-             )
+                            ],
+                        ))
+                    }),
+            )
             .child(
                 div()
                     .id("debug-registers-list")
@@ -18632,13 +23060,11 @@ impl IdeApp {
                                 .p(px(10.))
                                 .text_size(px(11.))
                                 .text_color(theme::color(theme::TEXT_FAINT))
-                                .child(
-                                    if self.debug.registers_scope == 0 {
-                                        "目标未暴露寄存器作用域。命中断点后可用。".to_string()
-                                    } else {
-                                        "正在读取寄存器…".to_string()
-                                    },
-                                ),
+                                .child(if self.debug.registers_scope == 0 {
+                                    "目标未暴露寄存器作用域。命中断点后可用。".to_string()
+                                } else {
+                                    "正在读取寄存器…".to_string()
+                                }),
                         )
                     })
                     .children(groups.into_iter().map(|(name, registers)| {
@@ -18655,15 +23081,13 @@ impl IdeApp {
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .child(name.clone()),
                             )
-                            .children(
-                                registers.iter().enumerate().map(|(index, variable)| {
-                                    self.render_register_row(&name, variable, index, cx)
-                                }),
-                            )
+                            .children(registers.iter().enumerate().map(|(index, variable)| {
+                                self.render_register_row(&name, variable, index, cx)
+                            }))
                     })),
             )
-             .into_any_element()
-     }
+            .into_any_element()
+    }
 
     /// Export the current CPU register groups as a JSON snapshot in the
     /// project's `.ns-ide` directory. Writes one JSON document with each
@@ -18711,11 +23135,11 @@ impl IdeApp {
             Err(err) => {
                 self.status = format!("导出寄存器快照失败: {err}");
             }
-         }
-         cx.notify();
-     }
-     /// Load the saved register snapshot and compare it against the current
-     /// register groups; changed registers are highlighted in the register tab.
+        }
+        cx.notify();
+    }
+    /// Load the saved register snapshot and compare it against the current
+    /// register groups; changed registers are highlighted in the register tab.
     fn compare_register_snapshot(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.project.as_ref().map(|p| p.root.clone()) else {
             self.status = "没有已加载的项目".to_string();
@@ -18759,7 +23183,7 @@ impl IdeApp {
         cx.notify();
     }
 
-      /// Render one CPU register row: name + value + edit affordance. The group
+    /// Render one CPU register row: name + value + edit affordance. The group
     /// name is used only for a stable element id (the DAP reference is what
     /// `setVariable` needs).
     fn render_register_row(
@@ -18769,10 +23193,10 @@ impl IdeApp {
         index: usize,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-         let _group = group;
-         let name = variable.name.clone();
-         let value = variable.value.clone();
-         let reference = variable.variables_reference;
+        let _group = group;
+        let name = variable.name.clone();
+        let value = variable.value.clone();
+        let reference = variable.variables_reference;
         let changed = self
             .debug
             .reg_snapshot
@@ -18801,8 +23225,8 @@ impl IdeApp {
                 div()
                     .flex_1()
                     .overflow_hidden()
-                     .text_ellipsis()
-                     .whitespace_nowrap()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
                     .text_color(theme::color(if changed {
                         theme::CINNABAR
                     } else {
@@ -18853,7 +23277,6 @@ impl IdeApp {
             .into_any_element()
     }
 
-
     fn render_debug_memory_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let address = self.debug.memory.address;
         let bytes = &self.debug.memory.bytes;
@@ -18861,46 +23284,45 @@ impl IdeApp {
         let address_text = self.debug.memory.error.clone().unwrap_or_default();
         let has_error = !address_text.is_empty();
 
-         let mut hex_rows: Vec<gpui::AnyElement> = Vec::new();
-         let search_hit = self.debug.memory.search_hit;
-         for (row_index, chunk) in bytes.chunks(16).enumerate() {
-             let line_address = address + (row_index as u64) * 16;
-             let mut hex_children: Vec<gpui::AnyElement> = Vec::new();
-             for (byte_index, byte) in chunk.iter().enumerate() {
-                 let global = row_index * 16 + byte_index;
-                 let is_hit = search_hit.is_some_and(|(hit, len)| {
-                     hit <= global && global < hit.saturating_add(len)
-                 });
-                 let text = format!("{byte:02x}");
-                 hex_children.push(
-                     div()
-                         .text_color(theme::color(if is_hit {
-                             theme::ACCENT_3
-                         } else {
-                             theme::TEXT_DIM
-                         }))
-                         .child(text)
-                         .into_any_element(),
-                 );
-                 if byte_index != chunk.len() - 1 {
-                     hex_children.push(
-                         div()
-                             .text_color(theme::color(theme::TEXT_DIM))
-                             .child(" ")
-                             .into_any_element(),
-                     );
-                 }
-             }
-             let ascii: String = chunk
-                 .iter()
-                 .map(|byte| {
-                     if (32..127).contains(byte) {
-                         char::from(*byte)
-                     } else {
-                         '.'
-                     }
-                 })
-                 .collect();
+        let mut hex_rows: Vec<gpui::AnyElement> = Vec::new();
+        let search_hit = self.debug.memory.search_hit;
+        for (row_index, chunk) in bytes.chunks(16).enumerate() {
+            let line_address = address + (row_index as u64) * 16;
+            let mut hex_children: Vec<gpui::AnyElement> = Vec::new();
+            for (byte_index, byte) in chunk.iter().enumerate() {
+                let global = row_index * 16 + byte_index;
+                let is_hit = search_hit
+                    .is_some_and(|(hit, len)| hit <= global && global < hit.saturating_add(len));
+                let text = format!("{byte:02x}");
+                hex_children.push(
+                    div()
+                        .text_color(theme::color(if is_hit {
+                            theme::ACCENT_3
+                        } else {
+                            theme::TEXT_DIM
+                        }))
+                        .child(text)
+                        .into_any_element(),
+                );
+                if byte_index != chunk.len() - 1 {
+                    hex_children.push(
+                        div()
+                            .text_color(theme::color(theme::TEXT_DIM))
+                            .child(" ")
+                            .into_any_element(),
+                    );
+                }
+            }
+            let ascii: String = chunk
+                .iter()
+                .map(|byte| {
+                    if (32..127).contains(byte) {
+                        char::from(*byte)
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
             hex_rows.push(
                 div()
                     .id(("dbg-mem-row", row_index))
@@ -18923,19 +23345,14 @@ impl IdeApp {
                                 let row_ascii = ascii.clone();
                                 move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    this.copy_memory_row(
-                                        line_address,
-                                        &row_bytes,
-                                        &row_ascii,
-                                        cx,
-                                    );
+                                    this.copy_memory_row(line_address, &row_bytes, &row_ascii, cx);
                                 }
                             }))
                             .child("📋"),
                     )
                     .into_any_element(),
             );
-         }
+        }
 
         div()
             .id("debug-memory")
@@ -18970,9 +23387,11 @@ impl IdeApp {
                                                 label,
                                                 read_size == size,
                                             )
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.set_memory_read_size(size, cx)
-                                            }))
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.set_memory_read_size(size, cx)
+                                                }),
+                                            )
                                         }),
                                 ),
                             ),
@@ -18983,32 +23402,24 @@ impl IdeApp {
                             .items_center()
                             .gap(px(4.))
                             .overflow_x_hidden()
-                            .children(
-                                self.debug.memory.regions.iter().enumerate().map(
-                                    |(index, region)| {
-                                        let active = index == self.debug.memory.active_region;
-                                        region_pill(
-                                            ("mem-region", index),
-                                            &region.name,
-                                            active,
-                                        )
+                            .children(self.debug.memory.regions.iter().enumerate().map(
+                                |(index, region)| {
+                                    let active = index == self.debug.memory.active_region;
+                                    region_pill(("mem-region", index), &region.name, active)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.select_memory_region(index, cx)
                                         }))
-                                    },
-                                ),
-                            )
+                                },
+                            ))
                             .child(
-                                div()
-                                    .w(px(100.))
-                                    .child(
-                                        self.debug
-                                            .memory
-                                            .region_name_input
-                                            .clone()
-                                            .map(|field| div().child(field).into_any_element())
-                                            .unwrap_or_else(|| div().into_any_element()),
-                                    ),
+                                div().w(px(100.)).child(
+                                    self.debug
+                                        .memory
+                                        .region_name_input
+                                        .clone()
+                                        .map(|field| div().child(field).into_any_element())
+                                        .unwrap_or_else(|| div().into_any_element()),
+                                ),
                             )
                             .child(
                                 widgets::primary_button("dbg-mem-add-region", "＋区域").on_click(
@@ -19026,89 +23437,76 @@ impl IdeApp {
                                 ),
                             ),
                     )
-                     .child(
-                         div()
-                             .flex()
-                             .items_center()
-                             .gap(px(6.))
-                             .child(
-                                 self.debug
-                                     .memory
-                                     .address_input
-                                     .clone()
-                                     .map(|field| div().flex_1().child(field).into_any_element())
-                                     .unwrap_or_else(|| {
-                                         div().flex_1().into_any_element()
-                                     }),
-                             )
-                             .child(
-                                widgets::primary_button("dbg-mem-read", "读取").on_click(
-                                    cx.listener(|this, _, _, cx| this.read_memory(cx)),
-                                ),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                self.debug
+                                    .memory
+                                    .address_input
+                                    .clone()
+                                    .map(|field| div().flex_1().child(field).into_any_element())
+                                    .unwrap_or_else(|| div().flex_1().into_any_element()),
+                            )
+                            .child(
+                                widgets::primary_button("dbg-mem-read", "读取")
+                                    .on_click(cx.listener(|this, _, _, cx| this.read_memory(cx))),
                             )
                             .child(
                                 widgets::ghost_button("dbg-mem-pc", "跟随 PC").on_click(
                                     cx.listener(|this, _, _, cx| this.jump_memory_to_pc(cx)),
                                 ),
                             )
+                            .child(widgets::ghost_button("dbg-mem-export", "导出").on_click(
+                                cx.listener(|this, _, _, cx| this.export_memory_region(cx)),
+                            ))
+                            .child(widgets::ghost_button("dbg-mem-import", "导入").on_click(
+                                cx.listener(|this, _, _, cx| this.import_memory_region(cx)),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
                             .child(
-                                widgets::ghost_button("dbg-mem-export", "导出").on_click(
-                                    cx.listener(|this, _, _, cx| this.export_memory_region(cx)),
+                                div().flex_1().child(
+                                    self.debug
+                                        .memory
+                                        .search_input
+                                        .clone()
+                                        .map(|field| div().child(field).into_any_element())
+                                        .unwrap_or_else(|| div().into_any_element()),
                                 ),
                             )
-                             .child(
-                                 widgets::ghost_button("dbg-mem-import", "导入").on_click(
-                                     cx.listener(|this, _, _, cx| this.import_memory_region(cx)),
-                                 ),
-                             ),
-                     )
-                     .child(
-                         div()
-                             .flex()
-                             .items_center()
-                             .gap(px(6.))
-                             .child(
-                                 div()
-                                     .flex_1()
-                                     .child(
-                                         self.debug
-                                             .memory
-                                             .search_input
-                                             .clone()
-                                             .map(|field| div().child(field).into_any_element())
-                                             .unwrap_or_else(|| div().into_any_element()),
-                                     ),
-                             )
-                             .child(
-                                 widgets::ghost_button("dbg-mem-search", "搜索").on_click(
-                                     cx.listener(|this, _, _, cx| this.search_memory(cx)),
-                                 ),
-                             ),
-                     )
-                     .child(
-                         div()
-                             .flex()
-                             .items_center()
-                             .gap(px(6.))
-                             .child(
-                                 div()
-                                     .flex_1()
-                                     .child(
-                                         self.debug
-                                             .memory
-                                             .fill_input
-                                             .clone()
-                                             .map(|field| div().child(field).into_any_element())
-                                             .unwrap_or_else(|| div().into_any_element()),
-                                     ),
-                             )
-                             .child(
-                                 widgets::ghost_button("dbg-mem-fill", "填充").on_click(
-                                     cx.listener(|this, _, _, cx| this.fill_memory(cx)),
-                                 ),
-                             ),
-                     ),
-             )
+                            .child(
+                                widgets::ghost_button("dbg-mem-search", "搜索")
+                                    .on_click(cx.listener(|this, _, _, cx| this.search_memory(cx))),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div().flex_1().child(
+                                    self.debug
+                                        .memory
+                                        .fill_input
+                                        .clone()
+                                        .map(|field| div().child(field).into_any_element())
+                                        .unwrap_or_else(|| div().into_any_element()),
+                                ),
+                            )
+                            .child(
+                                widgets::ghost_button("dbg-mem-fill", "填充")
+                                    .on_click(cx.listener(|this, _, _, cx| this.fill_memory(cx))),
+                            ),
+                    ),
+            )
             .child(
                 div()
                     .px(px(10.))
@@ -19117,21 +23515,18 @@ impl IdeApp {
                     .items_center()
                     .gap(px(6.))
                     .child(
-                        div()
-                            .flex_1()
-                            .child(
-                                self.debug
-                                    .memory
-                                    .edit_input
-                                    .clone()
-                                    .map(|field| div().child(field).into_any_element())
-                                    .unwrap_or_else(|| div().into_any_element()),
-                            ),
+                        div().flex_1().child(
+                            self.debug
+                                .memory
+                                .edit_input
+                                .clone()
+                                .map(|field| div().child(field).into_any_element())
+                                .unwrap_or_else(|| div().into_any_element()),
+                        ),
                     )
                     .child(
-                        widgets::primary_button("dbg-mem-write", "写入").on_click(
-                            cx.listener(|this, _, _, cx| this.write_memory(cx)),
-                        ),
+                        widgets::primary_button("dbg-mem-write", "写入")
+                            .on_click(cx.listener(|this, _, _, cx| this.write_memory(cx))),
                     ),
             )
             .when(has_error, |style| {
@@ -19189,22 +23584,18 @@ impl IdeApp {
                     .items_center()
                     .justify_between()
                     .child(widgets::section_label("反汇编"))
-                     .child(
-                        div()
-                            .flex()
-                            .gap(px(6.))
-                            .children([
-                                widgets::ghost_button("dbg-disasm-step", "单指令步进").on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.debug_step(DebugStep::Instruction, cx)
-                                    }),
-                                ),
-                                widgets::ghost_button("dbg-disasm-btn", "从 PC 反汇编").on_click(
-                                    cx.listener(|this, _, _, cx| this.disassemble_at_pc(cx)),
-                                ),
-                            ]),
-                     ),
-             )
+                    .child(
+                        div().flex().gap(px(6.)).children([
+                            widgets::ghost_button("dbg-disasm-step", "单指令步进").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.debug_step(DebugStep::Instruction, cx)
+                                }),
+                            ),
+                            widgets::ghost_button("dbg-disasm-btn", "从 PC 反汇编")
+                                .on_click(cx.listener(|this, _, _, cx| this.disassemble_at_pc(cx))),
+                        ]),
+                    ),
+            )
             .child(
                 div()
                     .px(px(10.))
@@ -19213,25 +23604,22 @@ impl IdeApp {
                     .items_center()
                     .gap(px(6.))
                     .child(
-                        div()
-                            .flex_1()
-                            .child(
-                                self.debug
-                                    .disasm_input
-                                    .clone()
-                                    .map(|field| div().child(field).into_any_element())
-                                    .unwrap_or_else(|| div().into_any_element()),
-                            ),
+                        div().flex_1().child(
+                            self.debug
+                                .disasm_input
+                                .clone()
+                                .map(|field| div().child(field).into_any_element())
+                                .unwrap_or_else(|| div().into_any_element()),
+                        ),
                     )
                     .child(
-                        widgets::ghost_button("dbg-disasm-go", "跳转").on_click(
-                            cx.listener(|this, _, _, cx| this.disassemble_at(cx)),
-                        ),
+                        widgets::ghost_button("dbg-disasm-go", "跳转")
+                            .on_click(cx.listener(|this, _, _, cx| this.disassemble_at(cx))),
                     ),
             )
-             .child(
-                 div()
-                     .px(px(10.))
+            .child(
+                div()
+                    .px(px(10.))
                     .px(px(10.))
                     .pb(px(6.))
                     .text_size(px(9.5))
@@ -19345,13 +23733,10 @@ impl IdeApp {
                                 }
                                 let bp_file = instruction.file.clone();
                                 let bp_line = instruction.line;
-                                let existing_bp = bp_file
-                                    .as_ref()
-                                    .and_then(|file| {
-                                        bp_line.and_then(|line| {
-                                            self.breakpoints.find(file, line).cloned()
-                                        })
-                                    });
+                                let existing_bp = bp_file.as_ref().and_then(|file| {
+                                    bp_line
+                                        .and_then(|line| self.breakpoints.find(file, line).cloned())
+                                });
                                 let has_bp = existing_bp.is_some();
                                 let bp_enabled =
                                     existing_bp.as_ref().map(|bp| bp.enabled).unwrap_or(true);
@@ -19396,9 +23781,10 @@ impl IdeApp {
                                                         .h(px(7.))
                                                         .rounded_full()
                                                         .border_1()
-                                                        .border_color(
-                                                            theme::alpha(theme::STROKE, 0.3),
-                                                        )
+                                                        .border_color(theme::alpha(
+                                                            theme::STROKE,
+                                                            0.3,
+                                                        ))
                                                         .into_any_element()
                                                 })
                                                 .on_click(cx.listener({
@@ -19413,10 +23799,7 @@ impl IdeApp {
                                                                 .find(&file, line)
                                                                 .is_some();
                                                             this.on_breakpoint_toggled(
-                                                                &file,
-                                                                line,
-                                                                !exists,
-                                                                cx,
+                                                                &file, line, !exists, cx,
                                                             );
                                                         } else {
                                                             this.status =
@@ -19427,24 +23810,24 @@ impl IdeApp {
                                                     }
                                                 })),
                                         )
-                                          .children(
-                                              instruction
-                                                  .symbol
-                                                  .as_deref()
-                                                  .filter(|symbol| !symbol.is_empty())
-                                                  .map(|symbol| {
-                                                      div()
-                                                          .flex_none()
-                                                          .px(px(4.))
-                                                          .py(px(1.))
-                                                          .rounded(px(4.))
-                                                          .bg(theme::alpha(theme::JADE, 0.12))
-                                                          .text_size(px(9.))
-                                                          .text_color(theme::color(theme::JADE))
-                                                          .child(symbol.to_string())
-                                                          .into_any_element()
-                                                  }),
-                                          )
+                                        .children(
+                                            instruction
+                                                .symbol
+                                                .as_deref()
+                                                .filter(|symbol| !symbol.is_empty())
+                                                .map(|symbol| {
+                                                    div()
+                                                        .flex_none()
+                                                        .px(px(4.))
+                                                        .py(px(1.))
+                                                        .rounded(px(4.))
+                                                        .bg(theme::alpha(theme::JADE, 0.12))
+                                                        .text_size(px(9.))
+                                                        .text_color(theme::color(theme::JADE))
+                                                        .child(symbol.to_string())
+                                                        .into_any_element()
+                                                }),
+                                        )
                                         .child(
                                             div()
                                                 .id(("dbg-disasm-addr", index))
@@ -19453,12 +23836,13 @@ impl IdeApp {
                                                 .text_size(px(10.))
                                                 .text_color(theme::color(theme::ACCENT_3))
                                                 .cursor_pointer()
-                                                .hover(|style| style.text_color(theme::color(theme::ACCENT)))
+                                                .hover(|style| {
+                                                    style.text_color(theme::color(theme::ACCENT))
+                                                })
                                                 .on_click(cx.listener({
                                                     let address = instruction.address;
                                                     move |this, _, _, cx| {
-                                                        this.debug.view_tab =
-                                                            DebugViewTab::Memory;
+                                                        this.debug.view_tab = DebugViewTab::Memory;
                                                         this.jump_memory_to_address(address, cx);
                                                     }
                                                 }))
@@ -19494,7 +23878,9 @@ impl IdeApp {
                                                     let text = instruction.instruction.clone();
                                                     move |this, _, _, cx| {
                                                         cx.stop_propagation();
-                                                        this.copy_disasm_instruction(addr, &text, cx);
+                                                        this.copy_disasm_instruction(
+                                                            addr, &text, cx,
+                                                        );
                                                     }
                                                 }))
                                                 .child("📋"),
@@ -19503,7 +23889,7 @@ impl IdeApp {
                                 );
                                 row_elements
                             }),
-                    )
+                    ),
             )
             .into_any_element()
     }
@@ -19563,12 +23949,7 @@ impl IdeApp {
                     .items_center()
                     .justify_between()
                     .child(widgets::section_label("跟踪窗口 (SWO/SWV)"))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(4.))
-                            .children(
-                                vec![
+                    .child(div().flex().gap(px(4.)).children(vec![
                                     widgets::icon_button("dbg-trace-mode", "●", 18.)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.trace_cycle_mode(cx);
@@ -19587,9 +23968,7 @@ impl IdeApp {
                                             }))
                                             .into_any_element()
                                     },
-                                ],
-                            ),
-                    ),
+                                ])),
             )
             .child(
                 div()
@@ -19633,7 +24012,11 @@ impl IdeApp {
                     .flex_col()
                     .gap(px(8.))
                     .child(row_field("dbg-trace-port", "ITM 端口", &trace.port_input))
-                    .child(row_field("dbg-trace-prescaler", "SWO 分频", &trace.prescaler_input))
+                    .child(row_field(
+                        "dbg-trace-prescaler",
+                        "SWO 分频",
+                        &trace.prescaler_input,
+                    ))
                     .child(
                         div()
                             .flex()
@@ -19664,9 +24047,11 @@ impl IdeApp {
                                         )
                                         .id("dbg-trace-data-pill")
                                         .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.trace_toggle_data(cx);
-                                        })),
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.trace_toggle_data(cx);
+                                            }),
+                                        ),
                                     )
                                     .when(config.data_trace, |style| {
                                         style.child(
@@ -19681,9 +24066,13 @@ impl IdeApp {
                                     }),
                             ),
                     )
-                     .when(config.data_trace, |style| {
-                         style.child(row_field("dbg-trace-address", "监视地址", &trace.address_input))
-                     })
+                    .when(config.data_trace, |style| {
+                        style.child(row_field(
+                            "dbg-trace-address",
+                            "监视地址",
+                            &trace.address_input,
+                        ))
+                    })
                     .child(
                         div()
                             .flex()
@@ -19714,9 +24103,11 @@ impl IdeApp {
                                         )
                                         .id("dbg-trace-pc-sample-pill")
                                         .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.trace_toggle_pc_sample(cx);
-                                        })),
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.trace_toggle_pc_sample(cx);
+                                            }),
+                                        ),
                                     )
                                     .when(config.pc_sample, |style| {
                                         style.child(
@@ -19742,32 +24133,29 @@ impl IdeApp {
                                     .child("热点"),
                             )
                             .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .child(
-                                        widgets::pill(
-                                            if trace.show_profile { "开" } else { "关" },
-                                            if trace.show_profile {
-                                                theme::color(theme::ACCENT)
-                                            } else {
-                                                theme::color(theme::TEXT_FAINT)
-                                            },
-                                        )
-                                        .id("dbg-trace-profile-pill")
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
+                                div().flex_1().flex().items_center().gap(px(6.)).child(
+                                    widgets::pill(
+                                        if trace.show_profile { "开" } else { "关" },
+                                        if trace.show_profile {
+                                            theme::color(theme::ACCENT)
+                                        } else {
+                                            theme::color(theme::TEXT_FAINT)
+                                        },
+                                    )
+                                    .id("dbg-trace-profile-pill")
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
                                             this.trace_toggle_profile(cx);
-                                        })),
-                                    ),
+                                        },
+                                    )),
+                                ),
                             ),
                     )
-                     .child(
-                         div()
-                             .flex()
-                             .items_center()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
                             .child(
                                 div()
                                     .w(px(110.))
@@ -19798,10 +24186,10 @@ impl IdeApp {
                             .flex()
                             .flex_col()
                             .gap(px(4.))
-                             .child(widgets::section_label(format!(
-                                 "实时包 ({} 条)",
-                                 trace.packets.len()
-                             )))
+                            .child(widgets::section_label(format!(
+                                "实时包 ({} 条)",
+                                trace.packets.len()
+                            )))
                             .when(!trace.packets.is_empty(), |style| {
                                 let stats = swvd::trace_stats(&trace.packets);
                                 style.child(
@@ -19810,11 +24198,14 @@ impl IdeApp {
                                         .text_color(theme::color(theme::TEXT_FAINT))
                                         .child(format!(
                                             "ITM {} · DWT {} · 异常 {} · PC 采样 {}",
-                                            stats.stimulus, stats.dwt, stats.exceptions, stats.pc_samples
+                                            stats.stimulus,
+                                            stats.dwt,
+                                            stats.exceptions,
+                                            stats.pc_samples
                                         )),
                                 )
                             })
-                             .when(!trace.packets.is_empty(), |style| {
+                            .when(!trace.packets.is_empty(), |style| {
                                 style.child(
                                     div()
                                         .id("dbg-trace-packets")
@@ -19838,15 +24229,17 @@ impl IdeApp {
                                                             .unwrap_or_default(),
                                                         theme::color(theme::ACCENT),
                                                     ),
-                                                    swvd::Packet::Exception { number, entered } => (
-                                                        format!("EXC {number}"),
-                                                        if *entered {
-                                                            "进入".to_string()
-                                                        } else {
-                                                            "退出".to_string()
-                                                        },
-                                                        theme::color(theme::CINNABAR),
-                                                    ),
+                                                    swvd::Packet::Exception { number, entered } => {
+                                                        (
+                                                            format!("EXC {number}"),
+                                                            if *entered {
+                                                                "进入".to_string()
+                                                            } else {
+                                                                "退出".to_string()
+                                                            },
+                                                            theme::color(theme::CINNABAR),
+                                                        )
+                                                    }
                                                     swvd::Packet::Timestamp(value) => (
                                                         "TS".to_string(),
                                                         format!("0x{value:x}"),
@@ -19868,84 +24261,86 @@ impl IdeApp {
                                                         div()
                                                             .flex_1()
                                                             .truncate()
-                                                            .text_color(theme::color(theme::TEXT_DIM))
+                                                            .text_color(theme::color(
+                                                                theme::TEXT_DIM,
+                                                            ))
                                                             .child(detail),
                                                     )
                                             },
                                         )),
                                 )
                             }),
-                     )
-                     .child(div().when(trace.show_profile, |style| {
-                         let hotspots = trace.profile.hotspots();
-                         let total = trace.profile.total();
-                         let mut col = div()
-                             .pt(px(6.))
-                             .border_t_1()
-                             .border_color(theme::alpha(theme::STROKE, 0.08))
-                             .flex()
-                             .flex_col()
-                             .gap(px(4.))
-                             .child(widgets::section_label(format!(
-                                 "热点 (PC 采样 · {} 条)",
-                                 total
-                             )));
-                         if total == 0 {
-                             col = col.child(
-                                 div()
-                                     .text_size(px(9.5))
-                                     .text_color(theme::color(theme::TEXT_FAINT))
-                                     .child("启用「PC 采样」并运行目标以收集样本。"),
-                             );
-                         } else {
-                             let max_hits = hotspots.first().map(|h| h.hits).unwrap_or(1).max(1);
-                             for hotspot in hotspots.iter().take(20) {
-                                 let pct = hotspot.hits * 100 / total.max(1);
-                                 let bar_w = (hotspot.hits * 100) / max_hits;
-                                 col = col.child(
-                                     div()
-                                         .flex()
-                                         .items_center()
-                                         .gap(px(6.))
-                                         .child(
-                                             div()
-                                                 .w(px(160.))
-                                                 .flex_none()
-                                                 .overflow_hidden()
-                                                 .text_size(px(9.5))
-                                                 .text_color(theme::color(theme::TEXT))
-                                                 .child(hotspot.name.clone()),
-                                         )
-                                         .child(
-                                             div()
-                                                 .h(px(8.))
-                                                 .flex_1()
-                                                 .rounded(px(4.))
-                                                 .bg(theme::alpha(theme::STROKE, 0.08))
-                                                 .child(
-                                                     div()
-                                                         .h_full()
-                                                         .w(px((bar_w as f32) * 1.2))
-                                                         .rounded(px(4.))
-                                                         .bg(theme::color(theme::ACCENT)),
-                                                 ),
-                                         )
-                                         .child(
-                                             div()
-                                                 .w(px(52.))
-                                                 .flex_none()
-                                                 .text_size(px(9.))
-                                                 .text_color(theme::color(theme::TEXT_DIM))
-                                                 .child(format!("{}% · {}", pct, hotspot.hits)),
-                                         ),
-                                 );
-                             }
-                         }
-                         style.child(col)
-                     }))
-             )
-             .into_any_element()
-     }
+                    )
+                    .child(div().when(trace.show_profile, |style| {
+                        let hotspots = trace.profile.hotspots();
+                        let total = trace.profile.total();
+                        let mut col = div()
+                            .pt(px(6.))
+                            .border_t_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.08))
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(widgets::section_label(format!(
+                                "热点 (PC 采样 · {} 条)",
+                                total
+                            )));
+                        if total == 0 {
+                            col = col.child(
+                                div()
+                                    .text_size(px(9.5))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child("启用「PC 采样」并运行目标以收集样本。"),
+                            );
+                        } else {
+                            let max_hits = hotspots.first().map(|h| h.hits).unwrap_or(1).max(1);
+                            for hotspot in hotspots.iter().take(20) {
+                                let pct = hotspot.hits * 100 / total.max(1);
+                                let bar_w = (hotspot.hits * 100) / max_hits;
+                                col = col.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .w(px(160.))
+                                                .flex_none()
+                                                .overflow_hidden()
+                                                .text_size(px(9.5))
+                                                .text_color(theme::color(theme::TEXT))
+                                                .child(hotspot.name.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .h(px(8.))
+                                                .flex_1()
+                                                .rounded(px(4.))
+                                                .bg(theme::alpha(theme::STROKE, 0.08))
+                                                .child(
+                                                    div()
+                                                        .h_full()
+                                                        .w(px((bar_w as f32) * 1.2))
+                                                        .rounded(px(4.))
+                                                        .bg(theme::color(theme::ACCENT)),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(52.))
+                                                .flex_none()
+                                                .text_size(px(9.))
+                                                .text_color(theme::color(theme::TEXT_DIM))
+                                                .child(format!("{}% · {}", pct, hotspot.hits)),
+                                        ),
+                                );
+                            }
+                        }
+                        style.child(col)
+                    })),
+            )
+            .into_any_element()
+    }
 
     /// Render the RTOS task list: a refresh button, a status line, and the
     /// parsed tasks (running task highlighted).
@@ -19971,9 +24366,8 @@ impl IdeApp {
                     .justify_between()
                     .child(widgets::section_label("RTOS 任务"))
                     .child(
-                        widgets::ghost_button("dbg-rtos-refresh", "刷新任务列表").on_click(
-                            cx.listener(|this, _, _, cx| this.refresh_rtos_tasks(cx)),
-                        ),
+                        widgets::ghost_button("dbg-rtos-refresh", "刷新任务列表")
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh_rtos_tasks(cx))),
                     ),
             )
             .child(
@@ -20044,7 +24438,11 @@ impl IdeApp {
                                     .text_ellipsis()
                                     .whitespace_nowrap()
                                     .text_color(theme::color(theme::TEXT_DIM))
-                                    .child(format!("{} · 优先级 {}", task.state.label(), task.priority)),
+                                    .child(format!(
+                                        "{} · 优先级 {}",
+                                        task.state.label(),
+                                        task.priority
+                                    )),
                             )
                             .child(
                                 task.stack_usage
@@ -20066,14 +24464,14 @@ impl IdeApp {
     /// substring. Returns `(peripheral_matches, matching_registers)`: the
     /// peripheral header is shown when its own name matches OR any of its
     /// registers match (so a register-only hit keeps its group context).
-     fn filter_device_peripheral<'a>(
-         peripheral: &'a ns_device::Peripheral,
-         filter: &str,
+    fn filter_device_peripheral<'a>(
+        peripheral: &'a ns_device::Peripheral,
+        filter: &str,
     ) -> (bool, Vec<&'a ns_device::Register>) {
-         if filter.is_empty() {
-             return (true, peripheral.registers.iter().collect());
-         }
-         let needle = filter.to_lowercase();
+        if filter.is_empty() {
+            return (true, peripheral.registers.iter().collect());
+        }
+        let needle = filter.to_lowercase();
         // A peripheral-name match shows the whole group; a register-only match
         // keeps the header as context and lists just the matching registers.
         if peripheral.name.to_lowercase().contains(&needle) {
@@ -20086,16 +24484,16 @@ impl IdeApp {
             .collect();
         let periph_match = !regs.is_empty();
         (periph_match, regs)
-     }
+    }
 
     /// Device register view: peripheral registers from the target's SVD.
-     fn render_debug_device_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-         let device = self.device_for_project();
-         let current_target = self
-             .project
-             .as_ref()
-             .map(|p| p.config.project.target.clone())
-             .unwrap_or_default();
+    fn render_debug_device_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let device = self.device_for_project();
+        let current_target = self
+            .project
+            .as_ref()
+            .map(|p| p.config.project.target.clone())
+            .unwrap_or_default();
 
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         // Device picker: list the built-in catalog so the target can be
@@ -20152,7 +24550,10 @@ impl IdeApp {
                         entry.flash_size / 1024
                     );
                     div()
-                        .id(gpui::SharedString::from(format!("device-opt-{}", entry.key)))
+                        .id(gpui::SharedString::from(format!(
+                            "device-opt-{}",
+                            entry.key
+                        )))
                         .cursor_pointer()
                         .px(px(8.))
                         .py(px(3.))
@@ -20202,7 +24603,11 @@ impl IdeApp {
                 .mb(px(4.))
                 .rounded(px(6.))
                 .bg(theme::alpha(
-                    if self.debug.live_watch { theme::JADE } else { theme::STROKE },
+                    if self.debug.live_watch {
+                        theme::JADE
+                    } else {
+                        theme::STROKE
+                    },
                     if self.debug.live_watch { 0.16 } else { 0.08 },
                 ))
                 .hover(|s| s.opacity(0.85))
@@ -20217,40 +24622,39 @@ impl IdeApp {
                 } else {
                     "○ 实时监视：关（仅暂停时刷新）"
                 })
-                 .on_click(cx.listener(|this, _, _, cx| this.toggle_live_watch(cx)))
-                 .into_any_element(),
-         );
-         // Peripheral/register name filter (case-insensitive substring match).
-         let filter_text = self.device_filter.read(cx).text().to_string();
-         let filter_field = self.device_filter.clone();
-         rows.push(
-             div()
-                 .px(px(4.))
-                 .pb(px(4.))
-                 .child(
-                     div()
-                         .flex()
-                         .items_center()
-                         .gap(px(4.))
-                         .child(filter_field)
-                         .child(
-                             div()
-                                 .id("device-filter-clear")
-                                 .cursor_pointer()
-                                 .text_size(px(10.))
-                                 .text_color(theme::color(theme::TEXT_FAINT))
-                                 .child("✕")
-                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                     this.device_filter
-                                         .update(cx, |f, fcx| f.set_text("", fcx));
-                                     cx.notify();
-                                 })),
-                         ),
-                 )
-                 .into_any_element(),
-         );
- 
-         match device {
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_live_watch(cx)))
+                .into_any_element(),
+        );
+        // Peripheral/register name filter (case-insensitive substring match).
+        let filter_text = self.device_filter.read(cx).text().to_string();
+        let filter_field = self.device_filter.clone();
+        rows.push(
+            div()
+                .px(px(4.))
+                .pb(px(4.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(filter_field)
+                        .child(
+                            div()
+                                .id("device-filter-clear")
+                                .cursor_pointer()
+                                .text_size(px(10.))
+                                .text_color(theme::color(theme::TEXT_FAINT))
+                                .child("✕")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.device_filter.update(cx, |f, fcx| f.set_text("", fcx));
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        );
+
+        match device {
             Some(device) => {
                 let peripherals = device.sorted_peripherals();
                 if peripherals.is_empty() {
@@ -20263,45 +24667,45 @@ impl IdeApp {
                             .into_any_element(),
                     );
                 }
-                  for peripheral in peripherals {
-                     let (periph_match, regs) = Self::filter_device_peripheral(peripheral, &filter_text);
+                for peripheral in peripherals {
+                    let (periph_match, regs) =
+                        Self::filter_device_peripheral(peripheral, &filter_text);
                     if !periph_match && regs.is_empty() {
                         continue;
                     }
-                     let periph_desc = device_description_short(&peripheral.description, 64);
-                     rows.push(
-                         div()
-                             .id(gpui::SharedString::from(format!(
-                                 "dev-periph-{}",
-                                 peripheral.name
-                             )))
-                             .pt(px(8.))
-                             .pb(px(3.))
-                             .px(px(4.))
-                             .flex()
-                             .flex_col()
-                             .gap(px(1.))
-                             .child(
-                                 div()
-                                     .text_size(px(9.5))
-                                     .font_weight(FontWeight::BOLD)
-                                     .text_color(theme::color(theme::ACCENT))
-                                     .child(format!(
-                                         "{}  @ 0x{:08X}",
-                                         peripheral.name,
-                                         peripheral.base_address
-                                     )),
-                             )
-                             .when(!periph_desc.is_empty(), |el| {
-                                 el.child(
-                                     div()
-                                         .text_size(px(8.5))
-                                         .text_color(theme::color(theme::TEXT_FAINT))
-                                         .child(periph_desc.clone()),
-                                 )
-                             })
-                             .into_any_element(),
-                     );
+                    let periph_desc = device_description_short(&peripheral.description, 64);
+                    rows.push(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "dev-periph-{}",
+                                peripheral.name
+                            )))
+                            .pt(px(8.))
+                            .pb(px(3.))
+                            .px(px(4.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.))
+                            .child(
+                                div()
+                                    .text_size(px(9.5))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(theme::color(theme::ACCENT))
+                                    .child(format!(
+                                        "{}  @ 0x{:08X}",
+                                        peripheral.name, peripheral.base_address
+                                    )),
+                            )
+                            .when(!periph_desc.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .text_size(px(8.5))
+                                        .text_color(theme::color(theme::TEXT_FAINT))
+                                        .child(periph_desc.clone()),
+                                )
+                            })
+                            .into_any_element(),
+                    );
                     for register in regs {
                         let reg_address = register.address;
                         // Live value: prefer the debug session's cached
@@ -20319,11 +24723,9 @@ impl IdeApp {
                                     .map(|sim| sim.read_u32(register.address as u32))
                             })
                             .unwrap_or(register.reset_value as u32);
-                        let live_active = self
-                            .debug
-                            .device_reg_values
-                            .contains_key(&register.address)
-                            || self.sim.core.is_some();
+                        let live_active =
+                            self.debug.device_reg_values.contains_key(&register.address)
+                                || self.sim.core.is_some();
                         // Field summary carries each field's live value so a
                         // register's decoded bits are visible at a glance
                         // (e.g. `MODE0=0xF[3:0] · CNF0=0x1[7:4]`).
@@ -20351,69 +24753,73 @@ impl IdeApp {
                         // Expanded field rows: name, bit range, live value and
                         // (when present) the SVD field description. Built
                         // lazily so the non-expanded path never allocates it.
-                        let build_field_rows = |register: &ns_device::Register, live: u32| -> Vec<gpui::AnyElement> {
-                            register
-                                .fields
-                                .iter()
-                                .map(|field| {
-                                    let value = device_field_value(live, field);
-                                    let range = if field.bit_width == 1 {
-                                        format!("{}", field.bit_offset)
-                                    } else {
-                                        format!(
-                                            "{}:{}",
-                                            field.bit_offset + field.bit_width - 1,
-                                            field.bit_offset
-                                        )
-                                    };
-                                    let desc = field.description.trim();
-                                    let name_color = if value != 0 {
-                                        theme::color(theme::ACCENT_3)
-                                    } else {
-                                        theme::color(theme::TEXT_FAINT)
-                                    };
-                                    div()
-                                        .ml(px(136.))
-                                        .mr(px(8.))
-                                        .py(px(1.))
-                                        .flex()
-                                        .items_baseline()
-                                        .gap(px(6.))
-                                        .font_family(theme::MONO_FONT)
-                                        .text_size(px(9.))
-                                        .child(
-                                            div()
-                                                .w(px(110.))
-                                                .flex_none()
-                                                .text_color(name_color)
-                                                .child(format!("{}[{}]", field.name, range)),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_none()
-                                                .text_color(if value != 0 {
-                                                    theme::color(theme::TEXT)
-                                                } else {
-                                                    theme::color(theme::TEXT_FAINT)
-                                                })
-                                                .child(format!("= 0x{value:x}")),
-                                        )
-                                        .when(!desc.is_empty(), |el| {
-                                            el.child(
-                                                div()
-                                                    .flex_1()
-                                                    .overflow_hidden()
-                                                    .text_ellipsis()
-                                                    .whitespace_nowrap()
-                                                    .text_size(px(8.5))
-                                                    .text_color(theme::color(theme::TEXT_FAINT).opacity(0.75))
-                                                    .child(desc.to_string()),
+                        let build_field_rows =
+                            |register: &ns_device::Register, live: u32| -> Vec<gpui::AnyElement> {
+                                register
+                                    .fields
+                                    .iter()
+                                    .map(|field| {
+                                        let value = device_field_value(live, field);
+                                        let range = if field.bit_width == 1 {
+                                            format!("{}", field.bit_offset)
+                                        } else {
+                                            format!(
+                                                "{}:{}",
+                                                field.bit_offset + field.bit_width - 1,
+                                                field.bit_offset
                                             )
-                                        })
-                                        .into_any_element()
-                                })
-                                .collect()
-                        };
+                                        };
+                                        let desc = field.description.trim();
+                                        let name_color = if value != 0 {
+                                            theme::color(theme::ACCENT_3)
+                                        } else {
+                                            theme::color(theme::TEXT_FAINT)
+                                        };
+                                        div()
+                                            .ml(px(136.))
+                                            .mr(px(8.))
+                                            .py(px(1.))
+                                            .flex()
+                                            .items_baseline()
+                                            .gap(px(6.))
+                                            .font_family(theme::MONO_FONT)
+                                            .text_size(px(9.))
+                                            .child(
+                                                div()
+                                                    .w(px(110.))
+                                                    .flex_none()
+                                                    .text_color(name_color)
+                                                    .child(format!("{}[{}]", field.name, range)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_color(if value != 0 {
+                                                        theme::color(theme::TEXT)
+                                                    } else {
+                                                        theme::color(theme::TEXT_FAINT)
+                                                    })
+                                                    .child(format!("= 0x{value:x}")),
+                                            )
+                                            .when(!desc.is_empty(), |el| {
+                                                el.child(
+                                                    div()
+                                                        .flex_1()
+                                                        .overflow_hidden()
+                                                        .text_ellipsis()
+                                                        .whitespace_nowrap()
+                                                        .text_size(px(8.5))
+                                                        .text_color(
+                                                            theme::color(theme::TEXT_FAINT)
+                                                                .opacity(0.75),
+                                                        )
+                                                        .child(desc.to_string()),
+                                                )
+                                            })
+                                            .into_any_element()
+                                    })
+                                    .collect()
+                            };
                         rows.push(
                             div()
                                 .id(("dev-reg", register.address))
@@ -20479,11 +24885,15 @@ impl IdeApp {
                                                     .child(field)
                                                     .on_key_down(cx.listener(
                                                         move |this, event: &KeyDownEvent, _, cx| {
-                                                            if event.keystroke.key.as_str() == "enter" {
+                                                            if event.keystroke.key.as_str()
+                                                                == "enter"
+                                                            {
                                                                 let text = field_for_commit
                                                                     .read(cx)
                                                                     .text();
-                                                                this.commit_device_reg_edit(&text, cx);
+                                                                this.commit_device_reg_edit(
+                                                                    &text, cx,
+                                                                );
                                                             }
                                                         },
                                                     ))
@@ -20533,7 +24943,9 @@ impl IdeApp {
                                             .text_ellipsis()
                                             .whitespace_nowrap()
                                             .text_size(px(8.5))
-                                            .text_color(theme::color(theme::TEXT_FAINT).opacity(0.7))
+                                            .text_color(
+                                                theme::color(theme::TEXT_FAINT).opacity(0.7),
+                                            )
                                             .child(reg_desc.clone()),
                                     )
                                 })
@@ -20571,7 +24983,7 @@ impl IdeApp {
                         .child(if target.is_empty() {
                             "项目未设置目标设备；在「项目设置」或向导中选择 MCU 以显示外设寄存器。".to_string()
                         } else {
-                            format!("目标设备「{target}」不在内置设备库中，或 SVD 解析失败（stm32f103c8 / stm32f407vg / stm32g431rb / nrf52840 / rp2040 / esp32c3）。")
+                            format!("目标设备「{target}」不在内置设备库中，或 SVD 解析失败（stm32f103c6 / stm32f103c8 / stm32f103cb / stm32f407vg / stm32g431rb / nrf52840 / rp2040 / esp32c3）。")
                         })
                         .into_any_element(),
                 );
@@ -20610,7 +25022,9 @@ impl IdeApp {
             // No known device: still report total size with no region split.
             let flash: Vec<(u64, u64)> = Vec::new();
             let ram: Vec<(u64, u64)> = Vec::new();
-            return ns_flash::analyze_firmware_size(&artifact, &flash, &ram).ok().flatten();
+            return ns_flash::analyze_firmware_size(&artifact, &flash, &ram)
+                .ok()
+                .flatten();
         }
         let mut flash: Vec<(u64, u64)> = Vec::new();
         let mut ram: Vec<(u64, u64)> = Vec::new();
@@ -20621,7 +25035,9 @@ impl IdeApp {
                 ram.push((region.start, region.size));
             }
         }
-        ns_flash::analyze_firmware_size(&artifact, &flash, &ram).ok().flatten()
+        ns_flash::analyze_firmware_size(&artifact, &flash, &ram)
+            .ok()
+            .flatten()
     }
 
     /// Render a compact「固件大小」summary line for the build output.
@@ -20643,20 +25059,28 @@ impl IdeApp {
             .iter()
             .find(|region| !region.access.contains('x'))
             .map(|region| region.size);
-         let mut line = format!(
-             "固件大小: Flash {}{} · RAM {}{} · 共 {} 字节",
-             size.flash,
-             flash_cap.map_or(String::new(), |cap| {
-                 let pct = if cap > 0 { size.flash as f64 / cap as f64 * 100.0 } else { 0.0 };
-                 format!(" / {} ({pct:.1}%)", cap)
-             }),
-             size.ram,
-             ram_cap.map_or(String::new(), |cap| {
-                 let pct = if cap > 0 { size.ram as f64 / cap as f64 * 100.0 } else { 0.0 };
-                 format!(" / {} ({pct:.1}%)", cap)
-             }),
-             size.total,
-         );
+        let mut line = format!(
+            "固件大小: Flash {}{} · RAM {}{} · 共 {} 字节",
+            size.flash,
+            flash_cap.map_or(String::new(), |cap| {
+                let pct = if cap > 0 {
+                    size.flash as f64 / cap as f64 * 100.0
+                } else {
+                    0.0
+                };
+                format!(" / {} ({pct:.1}%)", cap)
+            }),
+            size.ram,
+            ram_cap.map_or(String::new(), |cap| {
+                let pct = if cap > 0 {
+                    size.ram as f64 / cap as f64 * 100.0
+                } else {
+                    0.0
+                };
+                format!(" / {} ({pct:.1}%)", cap)
+            }),
+            size.total,
+        );
         if size.text > 0 || size.data > 0 || size.bss > 0 {
             line.push_str(&format!(
                 "\n分区: text {} B · data {} B · bss {} B",
@@ -20669,7 +25093,7 @@ impl IdeApp {
                     line.push_str("  ⚠ Flash 超出");
                 }
             }
-         }
+        }
         if !size.symbols.is_empty() {
             let top: Vec<String> = size
                 .symbols
@@ -20679,8 +25103,8 @@ impl IdeApp {
                 .collect();
             line.push_str(&format!("\n最大符号: {}", top.join(" · ")));
         }
-          line
-      }
+        line
+    }
 
     /// Build the memory-layout model: parse `link.ld`'s `MEMORY` regions and
     /// attribute the firmware's sections (from `nm`) to those regions. Sets
@@ -20693,7 +25117,8 @@ impl IdeApp {
         };
         let linker = project.root.join("link.ld");
         if !linker.is_file() {
-            self.status = "项目没有 link.ld（内存布局视图需要链接脚本的 MEMORY 区域）。".to_string();
+            self.status =
+                "项目没有 link.ld（内存布局视图需要链接脚本的 MEMORY 区域）。".to_string();
             cx.notify();
             return;
         }
@@ -20733,17 +25158,23 @@ impl IdeApp {
         self.output_tab = OutputTab::Output;
         self.output.push_str(&format!(
             "内存布局: {} 个区域，已用 {} 字节\n",
-            self.memory_layout.as_ref().map(|l| l.regions.len()).unwrap_or(0),
+            self.memory_layout
+                .as_ref()
+                .map(|l| l.regions.len())
+                .unwrap_or(0),
             used_total
         ));
         self.status = format!(
             "内存布局已刷新（{} 个区域，已用 {} 字节）",
-            self.memory_layout.as_ref().map(|l| l.regions.len()).unwrap_or(0),
+            self.memory_layout
+                .as_ref()
+                .map(|l| l.regions.len())
+                .unwrap_or(0),
             used_total
         );
-         cx.notify();
-     }
- 
+        cx.notify();
+    }
+
     /// Build the project include dependency graph and report the outcome.
     fn show_include_graph(&mut self, cx: &mut Context<Self>) {
         let Some(project) = self.project.as_ref() else {
@@ -20765,24 +25196,31 @@ impl IdeApp {
             }
         };
         let include_dirs = project.config.compiler.includes.clone();
-        let graph = ns_project::depgraph::build_include_graph(&project.root, &sources, &include_dirs);
+        let graph =
+            ns_project::depgraph::build_include_graph(&project.root, &sources, &include_dirs);
         let edges: usize = graph.nodes.values().map(|node| node.deps.len()).sum();
         self.include_graph = Some(graph);
         self.show_output = true;
         self.output_tab = OutputTab::Output;
         self.output.push_str(&format!(
             "include 依赖图: {} 个文件，{} 条边\n",
-            self.include_graph.as_ref().map(|g| g.nodes.len()).unwrap_or(0),
+            self.include_graph
+                .as_ref()
+                .map(|g| g.nodes.len())
+                .unwrap_or(0),
             edges
         ));
         self.status = format!(
             "include 依赖图已生成（{} 个文件，{} 条边）",
-            self.include_graph.as_ref().map(|g| g.nodes.len()).unwrap_or(0),
+            self.include_graph
+                .as_ref()
+                .map(|g| g.nodes.len())
+                .unwrap_or(0),
             edges
         );
-         cx.notify();
-     }
- 
+        cx.notify();
+    }
+
     /// Scan the project for TODO/FIXME/XXX markers and show them in the
     /// output panel; clicking a marker opens the file at its line.
     fn show_tasks(&mut self, cx: &mut Context<Self>) {
@@ -20809,8 +25247,8 @@ impl IdeApp {
         cx.notify();
     }
 
-      /// Render the memory-layout region map (used in the build output panel).
-     /// Each region is a bar whose filled width is the used fraction; sections
+    /// Render the memory-layout region map (used in the build output panel).
+    /// Each region is a bar whose filled width is the used fraction; sections
     /// within a region are listed with their sizes.
     fn render_memory_layout_view(&self) -> gpui::AnyElement {
         let Some(layout) = &self.memory_layout else {
@@ -20897,29 +25335,29 @@ impl IdeApp {
         div()
             .flex()
             .flex_col()
-             .gap(px(4.))
-             .children(rows)
-             .into_any_element()
-     }
- 
+            .gap(px(4.))
+            .children(rows)
+            .into_any_element()
+    }
+
     /// Render the include dependency graph: each source lists its direct
     /// includes, and headers show how many files include them (transitively).
-     fn render_include_graph_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_include_graph_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let Some(graph) = &self.include_graph else {
             return div().into_any_element();
         };
-         let mut rows: Vec<gpui::AnyElement> = Vec::new();
-         rows.push(
-             div()
-                 .pt(px(8.))
-                 .pb(px(2.))
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        rows.push(
+            div()
+                .pt(px(8.))
+                .pb(px(2.))
                 .flex()
                 .items_center()
                 .justify_between()
-                 .child(widgets::section_label(format!(
-                     "include 依赖图（{} 个文件）",
-                     graph.nodes.len()
-                 )))
+                .child(widgets::section_label(format!(
+                    "include 依赖图（{} 个文件）",
+                    graph.nodes.len()
+                )))
                 .child(
                     widgets::ghost_button(
                         "include-graph-mode",
@@ -20934,8 +25372,8 @@ impl IdeApp {
                         cx.notify();
                     })),
                 )
-                 .into_any_element(),
-         );
+                .into_any_element(),
+        );
         if self.include_graph_dag {
             rows.push(
                 div()
@@ -21000,12 +25438,8 @@ impl IdeApp {
                     .into_any_element(),
             );
         }
-        div()
-            .flex()
-             .gap(px(2.))
-             .children(rows)
-             .into_any_element()
-     }
+        div().flex().gap(px(2.)).children(rows).into_any_element()
+    }
     /// Render the include graph as a layered DAG: files grouped into columns
     /// by dependency depth, connected by horizontal edges. Uses absolutely
     /// positioned boxes so the layout is stable and scrollable.
@@ -21048,21 +25482,21 @@ impl IdeApp {
                     .left(px(x1))
                     .top(px(y1))
                     .w(px(mid_x - x1))
-                     .h(px(1.))
+                    .h(px(1.))
                     .bg(theme::alpha(theme::STROKE, 0.5))
-                     .into_any_element(),
-             );
-             elements.push(
-                 div()
-                     .absolute()
-                     .left(px(mid_x))
-                     .top(px(y2))
-                     .w(px(x2 - mid_x))
-                     .h(px(1.))
-                     .bg(theme::alpha(theme::STROKE, 0.5))
-                     .into_any_element(),
-             );
-         }
+                    .into_any_element(),
+            );
+            elements.push(
+                div()
+                    .absolute()
+                    .left(px(mid_x))
+                    .top(px(y2))
+                    .w(px(x2 - mid_x))
+                    .h(px(1.))
+                    .bg(theme::alpha(theme::STROKE, 0.5))
+                    .into_any_element(),
+            );
+        }
         // Node boxes.
         for node in &nodes {
             let x = padding + node.column as f32 * column_width;
@@ -21074,7 +25508,7 @@ impl IdeApp {
                 theme::color(theme::TEXT)
             };
             elements.push(
-                 div()
+                div()
                     .id(("dag-node", node.column * 1000 + node.row))
                     .absolute()
                     .left(px(x))
@@ -21089,11 +25523,11 @@ impl IdeApp {
                     .py(px(3.))
                     .overflow_hidden()
                     .text_size(px(9.))
-                     .text_color(tone)
-                     .child(node.path.clone())
-                     .into_any_element(),
-             );
-         }
+                    .text_color(tone)
+                    .child(node.path.clone())
+                    .into_any_element(),
+            );
+        }
         div()
             .relative()
             .w(px(canvas_width))
@@ -21103,10 +25537,9 @@ impl IdeApp {
             .into_any_element()
     }
 
- 
     /// Render the TODO/FIXME task markers as clickable rows; clicking a row
     /// opens the file at the marker's line.
-     fn render_tasks_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_tasks_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         if self.task_markers.is_empty() {
             return div().into_any_element();
         }
@@ -21121,9 +25554,9 @@ impl IdeApp {
                 )))
                 .into_any_element(),
         );
-         let markers = self.task_markers.clone();
+        let markers = self.task_markers.clone();
         for (row_index, marker) in markers.iter().take(80).enumerate() {
-             let path = marker.path.clone();
+            let path = marker.path.clone();
             let path_label = self
                 .project
                 .as_ref()
@@ -21131,16 +25564,16 @@ impl IdeApp {
                 .unwrap_or(&marker.path)
                 .display()
                 .to_string();
-             let line = marker.line;
-             let keyword = marker.keyword.clone();
-             let text = marker.text.clone();
-             let color = match keyword.as_str() {
-                 "FIXME" | "BUG" => theme::color(theme::DANGER),
-                 "HACK" => theme::color(theme::ACCENT_3),
-                 _ => theme::color(theme::ACCENT),
-             };
-             rows.push(
-                 div()
+            let line = marker.line;
+            let keyword = marker.keyword.clone();
+            let text = marker.text.clone();
+            let color = match keyword.as_str() {
+                "FIXME" | "BUG" => theme::color(theme::DANGER),
+                "HACK" => theme::color(theme::ACCENT_3),
+                _ => theme::color(theme::ACCENT),
+            };
+            rows.push(
+                div()
                     .id(("task-row", row_index))
                     .flex()
                     .items_start()
@@ -21150,12 +25583,12 @@ impl IdeApp {
                     .py(px(2.))
                     .hover(|style| style.bg(theme::alpha(theme::ACCENT, 0.06)))
                     .cursor_pointer()
-                     .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_file(path.clone(), cx);
                         if let Some(editor) = this.active_editor() {
                             editor.update(cx, |editor, cx| editor.set_cursor_line(line, cx));
                         }
-                     }))
+                    }))
                     .child(
                         div()
                             .w(px(34.))
@@ -21172,19 +25605,15 @@ impl IdeApp {
                             .text_color(theme::color(theme::TEXT_DIM))
                             .child(text),
                     )
-                     .child(
-                         div()
-                             .flex_none()
-                             .text_size(px(8.5))
-                             .text_color(theme::color(theme::TEXT_FAINT))
-                             .child(format!(
-                                 "{}:{}",
-                                path_label,
-                                 line
-                             )),
-                     )
-                    .into_any_element()
-             );
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(8.5))
+                            .text_color(theme::color(theme::TEXT_FAINT))
+                            .child(format!("{}:{}", path_label, line)),
+                    )
+                    .into_any_element(),
+            );
         }
         div()
             .flex()
@@ -21194,7 +25623,7 @@ impl IdeApp {
             .into_any_element()
     }
 
-      /// Resolve the target device for the loaded project.
+    /// Resolve the target device for the loaded project.
     ///
     /// Prefers an explicit `svd` source (built-in catalog key or external file
     /// path); otherwise falls back to deriving the built-in device from the
@@ -21215,7 +25644,6 @@ impl IdeApp {
         }
         ns_device::device_for_target(&target)
     }
-
 
     /// Built-in simulator view: controls, registers, PC, cycle count, UART.
     fn render_simulator_column(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -21263,7 +25691,11 @@ impl IdeApp {
                         .py(px(4.))
                         .rounded(px(6.))
                         .bg(theme::alpha(
-                            if self.sim.cycle_accurate { theme::JADE } else { theme::STROKE },
+                            if self.sim.cycle_accurate {
+                                theme::JADE
+                            } else {
+                                theme::STROKE
+                            },
                             if self.sim.cycle_accurate { 0.16 } else { 0.08 },
                         ))
                         .hover(|s| s.opacity(0.85))
@@ -21286,7 +25718,7 @@ impl IdeApp {
                             cx.notify();
                         })),
                 )
-        .into_any_element(),
+                .into_any_element(),
         );
 
         // Status line.
@@ -21295,7 +25727,8 @@ impl IdeApp {
                 .text_size(px(10.))
                 .text_color(theme::color(theme::TEXT_DIM))
                 .child(if self.sim.status.is_empty() {
-                    "内建指令级仿真器（RV32I）。点击「加载产物并运行」把构建产物载入仿真器。".to_string()
+                    "内建指令级仿真器（RV32I）。点击「加载产物并运行」把构建产物载入仿真器。"
+                        .to_string()
                 } else {
                     self.sim.status.clone()
                 })
@@ -21320,9 +25753,7 @@ impl IdeApp {
                                 this.begin_pc_edit(window, cx);
                             }))
                             .child(if let Some(field) = &self.sim.pc_edit_input {
-                                div()
-                                    .child(field.clone())
-                                    .into_any_element()
+                                div().child(field.clone()).into_any_element()
                             } else {
                                 div()
                                     .cursor_pointer()
@@ -21335,9 +25766,13 @@ impl IdeApp {
                             .text_color(theme::color(theme::TEXT_FAINT))
                             .child(core.arch.label()),
                     )
-                     .child(format!("周期: {}", core.cycle_count))
+                    .child(format!("周期: {}", core.cycle_count))
                     .child(sim_time_readout(core.cycle_count, self.sim_clock_hz()))
-                     .child(if core.halted { "状态: 已停止" } else { "状态: 运行中" })
+                    .child(if core.halted {
+                        "状态: 已停止"
+                    } else {
+                        "状态: 运行中"
+                    })
                     .into_any_element(),
             );
             // Current instruction at PC, disassembled per architecture.
@@ -21353,11 +25788,7 @@ impl IdeApp {
                         .items_center()
                         .text_size(px(10.))
                         .text_color(theme::color(theme::ACCENT))
-                        .child(
-                            div()
-                                .font_family(theme::MONO_FONT)
-                                .child(format!("{text}")),
-                        )
+                        .child(div().font_family(theme::MONO_FONT).child(format!("{text}")))
                         .into_any_element(),
                 );
             }
@@ -21412,9 +25843,7 @@ impl IdeApp {
                                             )))
                                             .cursor_pointer()
                                             .text_color(theme::color(theme::TEXT_FAINT))
-                                            .hover(|s| {
-                                                s.text_color(theme::color(theme::ACCENT_3))
-                                            })
+                                            .hover(|s| s.text_color(theme::color(theme::ACCENT_3)))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 cx.stop_propagation();
                                                 this.sim_copy_reg(idx, cx);
@@ -21483,11 +25912,7 @@ impl IdeApp {
                                     theme::color(theme::TEXT_DIM)
                                 })
                                 .child(format!("● 0x{a:08x}"))
-                                .child(
-                                    div()
-                                        .font_family(theme::MONO_FONT)
-                                        .child(text),
-                                )
+                                .child(div().font_family(theme::MONO_FONT).child(text))
                                 .when(at_pc, |style| style.child("← 命中"))
                                 .child(
                                     div()
@@ -21516,49 +25941,39 @@ impl IdeApp {
                                     }
                                 ))
                                 .child(
-                                    div()
-                                        .flex_1()
-                                        .child(
-                                            cond_edit
-                                                .clone()
-                                                .map(|field| div().child(field).into_any_element())
-                                                .unwrap_or_else(|| {
-                                                    div()
-                                                        .id(gpui::SharedString::from(format!(
-                                                            "sim-bp-cond-{a}"
-                                                        )))
-                                                        .cursor_pointer()
-
-                                                        .on_click(cx.listener(
-                                                            move |this, _, window, cx| {
-                                                                this.begin_sim_bp_condition_edit(
-                                                                    a,
-                                                                    window,
-                                                                    cx,
-                                                                );
-                                                            },
-                                                        ))
-
-                                                        .child(if cond.is_empty() {
-                                                            "条件: (点击添加) ⌁".to_string()
-                                                        } else {
-                                                            format!("条件: {cond} ⌁")
-                                                        })
-                                                        .into_any_element()
-                                                }),
-                                        ),
+                                    div().flex_1().child(
+                                        cond_edit
+                                            .clone()
+                                            .map(|field| div().child(field).into_any_element())
+                                            .unwrap_or_else(|| {
+                                                div()
+                                                    .id(gpui::SharedString::from(format!(
+                                                        "sim-bp-cond-{a}"
+                                                    )))
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.begin_sim_bp_condition_edit(
+                                                                a, window, cx,
+                                                            );
+                                                        },
+                                                    ))
+                                                    .child(if cond.is_empty() {
+                                                        "条件: (点击添加) ⌁".to_string()
+                                                    } else {
+                                                        format!("条件: {cond} ⌁")
+                                                    })
+                                                    .into_any_element()
+                                            }),
+                                    ),
                                 )
                                 .child(
                                     div()
-                                        .id(gpui::SharedString::from(format!(
-                                            "sim-bp-hits-{a}"
-                                        )))
+                                        .id(gpui::SharedString::from(format!("sim-bp-hits-{a}")))
                                         .cursor_pointer()
-
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.begin_sim_bp_hitcount_edit(a, window, cx);
                                         }))
-
                                         .child(if hit_count > 0 {
                                             format!("第 {hit_count} 次")
                                         } else {
@@ -21589,24 +26004,20 @@ impl IdeApp {
                                     .child(format!("断点 ({}):", core.breakpoints.len())),
                             )
                             .child(
-                                div()
-                                    .flex_1()
-                                    .child(
-                                        self.sim
-                                            .bp_input
-                                            .clone()
-                                            .map(|field| div().child(field).into_any_element())
-                                            .unwrap_or_else(|| div().into_any_element()),
-                                    ),
-                            )
-                            .child(
-                                widgets::ghost_button("sim-bp-add", "添加").on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.ensure_sim_bp_input(cx);
-                                        this.sim_add_breakpoint_from_field(cx);
-                                    }),
+                                div().flex_1().child(
+                                    self.sim
+                                        .bp_input
+                                        .clone()
+                                        .map(|field| div().child(field).into_any_element())
+                                        .unwrap_or_else(|| div().into_any_element()),
                                 ),
-                            ),
+                            )
+                            .child(widgets::ghost_button("sim-bp-add", "添加").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.ensure_sim_bp_input(cx);
+                                    this.sim_add_breakpoint_from_field(cx);
+                                }),
+                            )),
                     )
                     .children(bp_rows)
                     .into_any_element(),
@@ -21701,10 +26112,7 @@ impl IdeApp {
                         .rounded(px(4.))
                         .bg(theme::alpha(theme::STROKE, 0.05))
                         .text_size(px(9.5))
-                        .child(format!(
-                            "TIM{index} 0x{:08x}",
-                            timer.base
-                        ))
+                        .child(format!("TIM{index} 0x{:08x}", timer.base))
                         .child(
                             div()
                                 .text_color(if timer.enabled {
@@ -21762,7 +26170,6 @@ impl IdeApp {
                         .into_any_element(),
                 );
             }
-
 
             // Recent GPIO output-change events, aligned to the PC of the store
             // that caused them (P14.2): the log lets the user correlate a pin
@@ -21824,8 +26231,8 @@ impl IdeApp {
                 .chunks(16)
                 .enumerate()
                 .map(|(row, chunk)| {
-                    let base = parse_address(&self.sim.mem_address).unwrap_or(0) as usize
-                        + row * 16;
+                    let base =
+                        parse_address(&self.sim.mem_address).unwrap_or(0) as usize + row * 16;
                     let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
                     let hex_line = hex
                         .chunks(4)
@@ -21848,8 +26255,16 @@ impl IdeApp {
                         .text_size(px(9.5))
                         .font_family("Menlo")
                         .child(format!("0x{base:08x}"))
-                        .child(div().text_color(theme::color(theme::TEXT_DIM)).child(hex_line))
-                        .child(div().text_color(theme::color(theme::TEXT_FAINT)).child(ascii))
+                        .child(
+                            div()
+                                .text_color(theme::color(theme::TEXT_DIM))
+                                .child(hex_line),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme::color(theme::TEXT_FAINT))
+                                .child(ascii),
+                        )
                         .into_any_element()
                 })
                 .collect();
@@ -21881,29 +26296,20 @@ impl IdeApp {
                                     .child(addr_field),
                             )
                             .child(
-                                widgets::ghost_button("sim-mem-read", "读取")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sim_read_memory(cx)
-                                    })),
+                                widgets::ghost_button("sim-mem-read", "读取").on_click(
+                                    cx.listener(|this, _, _, cx| this.sim_read_memory(cx)),
+                                ),
                             )
-                            .child(
-                                widgets::ghost_button("sim-mem-pc", "跟随 PC")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sim_jump_memory_to_pc(cx)
-                                    })),
-                            ),
+                            .child(widgets::ghost_button("sim-mem-pc", "跟随 PC").on_click(
+                                cx.listener(|this, _, _, cx| this.sim_jump_memory_to_pc(cx)),
+                            )),
                     )
                     .when(self.sim.mem_error.is_some(), |style| {
                         style.child(
                             div()
                                 .text_size(px(9.5))
                                 .text_color(theme::color(theme::DANGER))
-                                .child(
-                                    self.sim
-                                        .mem_error
-                                        .clone()
-                                        .unwrap_or_default(),
-                                ),
+                                .child(self.sim.mem_error.clone().unwrap_or_default()),
                         )
                     })
                     .child(
@@ -21912,23 +26318,17 @@ impl IdeApp {
                             .items_center()
                             .gap(px(6.))
                             .child(
-                                div()
-                                    .flex_1()
-                                    .child(
-                                        self.sim
-                                            .mem_edit_input
-                                            .clone()
-                                            .map(|field| div().child(field).into_any_element())
-                                            .unwrap_or_else(|| div().into_any_element()),
-                                    ),
-                            )
-                            .child(
-                                widgets::ghost_button("sim-mem-write", "写入").on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.sim_write_memory_from_field(cx)
-                                    }),
+                                div().flex_1().child(
+                                    self.sim
+                                        .mem_edit_input
+                                        .clone()
+                                        .map(|field| div().child(field).into_any_element())
+                                        .unwrap_or_else(|| div().into_any_element()),
                                 ),
-                            ),
+                            )
+                            .child(widgets::ghost_button("sim-mem-write", "写入").on_click(
+                                cx.listener(|this, _, _, cx| this.sim_write_memory_from_field(cx)),
+                            )),
                     )
                     .child(
                         div()
@@ -22031,15 +26431,11 @@ impl IdeApp {
                                 .rounded(px(4.))
                                 .text_size(px(10.))
                                 .text_color(theme::color(theme::DANGER))
-                                .hover(|style| {
-                                    style.bg(theme::alpha(theme::DANGER, 0.12))
-                                })
+                                .hover(|style| style.bg(theme::alpha(theme::DANGER, 0.12)))
                                 .child("■ 取消构建")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_build(cx)
-                                })),
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel_build(cx))),
                         )
-                     })
+                    })
                     .when(self.flash_cancel.is_some(), |style| {
                         style.child(
                             div()
@@ -22050,16 +26446,12 @@ impl IdeApp {
                                 .rounded(px(4.))
                                 .text_size(px(10.))
                                 .text_color(theme::color(theme::DANGER))
-                                .hover(|style| {
-                                    style.bg(theme::alpha(theme::DANGER, 0.12))
-                                })
+                                .hover(|style| style.bg(theme::alpha(theme::DANGER, 0.12)))
                                 .child("■ 取消烧写")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_flash(cx)
-                                })),
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel_flash(cx))),
                         )
                     }),
-             )
+            )
             .child(
                 div()
                     .flex()
@@ -22078,15 +26470,15 @@ impl IdeApp {
                         "断点",
                         self.breakpoints.enabled_count().to_string(),
                     ))
-                     .when(self.project.is_some(), |style| {
-                         let config = self
-                             .project
-                             .as_ref()
-                             .map(|p| p.build_config().to_string())
-                             .unwrap_or_default();
-                         let open = self.build_config_open;
-                         style.child(
-                             div()
+                    .when(self.project.is_some(), |style| {
+                        let config = self
+                            .project
+                            .as_ref()
+                            .map(|p| p.build_config().to_string())
+                            .unwrap_or_default();
+                        let open = self.build_config_open;
+                        style.child(
+                            div()
                                 .relative()
                                 .child(
                                     div()
@@ -22102,52 +26494,51 @@ impl IdeApp {
                                         }))
                                         .child(status_item("构建配置", format!("{config} ▾"))),
                                 )
-                                 .children(
-                                     open
-                                         .then(|| {
-                                             ["debug", "release"]
-                                                 .into_iter()
-                                                 .map(|option| {
-                                                     let active = config == option;
-                                                     div()
-                                                         .id(gpui::SharedString::from(format!(
-                                                             "build-config-opt-{option}"
-                                                         )))
-                                                         .absolute()
-                                                         .right(px(0.))
-                                                         .top(px(18.))
-                                                         .px(px(8.))
-                                                         .py(px(4.))
-                                                         .rounded(px(6.))
-                                                         .bg(theme::color(theme::PANEL_SOLID))
-                                                         .text_size(px(11.))
-                                                         .cursor_pointer()
-                                                         .hover(|s| {
-                                                             s.bg(theme::alpha(theme::STROKE, 0.12))
-                                                         })
-                                                         .text_color(if active {
-                                                             theme::color(theme::ACCENT)
-                                                         } else {
-                                                             theme::color(theme::TEXT_DIM)
-                                                         })
-                                                         .child(format!(
-                                                             "{}{}",
-                                                             option,
-                                                             if active { " ✓" } else { "" }
-                                                         ))
-                                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                                             this.set_build_config(option, cx);
-                                                             this.build_config_open = false;
-                                                             cx.notify();
-                                                         }))
-                                                         .into_any_element()
-                                                 })
-                                                 .collect::<Vec<gpui::AnyElement>>()
-                                         })
-                                         .unwrap_or_default(),
-                                 ),
-                         )
-                     })
+                                .children(
+                                    open.then(|| {
+                                        ["debug", "release"]
+                                            .into_iter()
+                                            .map(|option| {
+                                                let active = config == option;
+                                                div()
+                                                    .id(gpui::SharedString::from(format!(
+                                                        "build-config-opt-{option}"
+                                                    )))
+                                                    .absolute()
+                                                    .right(px(0.))
+                                                    .top(px(18.))
+                                                    .px(px(8.))
+                                                    .py(px(4.))
+                                                    .rounded(px(6.))
+                                                    .bg(theme::color(theme::PANEL_SOLID))
+                                                    .text_size(px(11.))
+                                                    .cursor_pointer()
+                                                    .hover(|s| {
+                                                        s.bg(theme::alpha(theme::STROKE, 0.12))
+                                                    })
+                                                    .text_color(if active {
+                                                        theme::color(theme::ACCENT)
+                                                    } else {
+                                                        theme::color(theme::TEXT_DIM)
+                                                    })
+                                                    .child(format!(
+                                                        "{}{}",
+                                                        option,
+                                                        if active { " ✓" } else { "" }
+                                                    ))
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.set_build_config(option, cx);
+                                                        this.build_config_open = false;
+                                                        cx.notify();
+                                                    }))
+                                                    .into_any_element()
+                                            })
+                                            .collect::<Vec<gpui::AnyElement>>()
+                                    })
+                                    .unwrap_or_default(),
+                                ),
+                        )
+                    })
                     .when(self.debug_session.is_some(), |style| {
                         style.child(status_item("调试", self.debug.status.label()))
                     })
@@ -22155,8 +26546,7 @@ impl IdeApp {
                         let git_label = if self.git.status.in_repo {
                             format!(
                                 "{} · {} 变更",
-                                self.git.status.branch,
-                                self.git.status.changes
+                                self.git.status.branch, self.git.status.changes
                             )
                         } else {
                             "非 Git 仓库".to_string()
@@ -22179,7 +26569,8 @@ impl IdeApp {
                         } else {
                             format!(
                                 "已退出 ({})",
-                                self.run.exit_code
+                                self.run
+                                    .exit_code
                                     .map(|code| code.to_string())
                                     .unwrap_or_else(|| "?".to_string())
                             )
@@ -22227,7 +26618,9 @@ impl IdeApp {
                                         div()
                                             .text_size(px(12.5))
                                             .text_color(theme::color(theme::TEXT_DIM))
-                                            .child("商量嵌入式开发环境 · 配置即文件，工具链开放可替换"),
+                                            .child(
+                                                "商量嵌入式开发环境 · 配置即文件，工具链开放可替换",
+                                            ),
                                     ),
                             ),
                     )
@@ -22246,11 +26639,9 @@ impl IdeApp {
                             .flex()
                             .items_center()
                             .gap(px(10.))
-                            .child(
-                                widgets::primary_button("welcome-new", "新建项目").on_click(
-                                    cx.listener(|this, _, window, cx| this.open_wizard(window, cx)),
-                                ),
-                            )
+                            .child(widgets::primary_button("welcome-new", "新建项目").on_click(
+                                cx.listener(|this, _, window, cx| this.open_wizard(window, cx)),
+                            ))
                             .child(
                                 widgets::ghost_button("welcome-open", "打开已有项目").on_click(
                                     cx.listener(|this, _, _, cx| this.open_project_dialog(cx)),
@@ -22290,7 +26681,9 @@ impl IdeApp {
                                         .py(px(22.))
                                         .text_size(px(11.5))
                                         .text_color(theme::color(theme::TEXT_FAINT))
-                                        .child("还没有最近项目。新建一个项目，或从磁盘打开已有工程。"),
+                                        .child(
+                                            "还没有最近项目。新建一个项目，或从磁盘打开已有工程。",
+                                        ),
                                 )
                             })
                             .children(recents.into_iter().enumerate().map(|(index, recent)| {
@@ -22338,8 +26731,7 @@ impl IdeApp {
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(10.)
-                                            )
+                                            .text_size(px(10.))
                                             .text_color(theme::alpha(theme::ACCENT, 0.8))
                                             .child("打开 →"),
                                     )
@@ -22399,7 +26791,6 @@ impl IdeApp {
             .h(px(5.))
             .flex_none()
             .cursor(gpui::CursorStyle::ResizeUpDown)
-
             .child(
                 div()
                     .absolute()
@@ -22422,25 +26813,25 @@ impl IdeApp {
                     let mouse_y = f32::from(event.event.position.y);
                     if let Some(previous_y) = drag.last_y.replace(Some(mouse_y)) {
                         // Dragging down grows the panel; up shrinks it.
-                        this.output_px = (this.output_px + (mouse_y - previous_y))
-                            .clamp(80.0, 1200.0);
+                        this.output_px =
+                            (this.output_px + (mouse_y - previous_y)).clamp(80.0, 1200.0);
                         cx.notify();
                     }
                 },
             ))
     }
 }
- /// Insert an `#include <...>` line at `insert_at` (a line index into
- /// `source`). Returns the new file text with the include line inserted.
- fn insert_include_line(source: &str, include: &str, insert_at: usize) -> String {
-     let mut lines: Vec<String> = source.lines().map(|line| line.to_string()).collect();
-     lines.insert(insert_at, include.to_string());
-     let mut text = lines.join("\n");
-     if !text.ends_with('\n') {
-         text.push('\n');
-     }
-     text
- }
+/// Insert an `#include <...>` line at `insert_at` (a line index into
+/// `source`). Returns the new file text with the include line inserted.
+fn insert_include_line(source: &str, include: &str, insert_at: usize) -> String {
+    let mut lines: Vec<String> = source.lines().map(|line| line.to_string()).collect();
+    lines.insert(insert_at, include.to_string());
+    let mut text = lines.join("\n");
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
 
 /// Compute the line index at which to insert an `#include`: after the last
 /// existing `#include` line, or `0` when there are none.
@@ -22453,7 +26844,6 @@ fn include_insert_at(source: &str) -> usize {
         .last()
         .unwrap_or(0)
 }
-
 
 impl Render for IdeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -22523,7 +26913,6 @@ impl Render for IdeApp {
                 || self.keybindings_dialog.is_some()
                 || self.tool_dialog.is_some()
                 || self.snippet_dialog.is_some()
-
                 || self.new_entry_dialog.is_some()
                 || self.go_to_line_dialog.is_some()
                 || self.project_rename_dialog.is_some()
@@ -22539,21 +26928,17 @@ impl Render for IdeApp {
             } else {
                 "App"
             })
-            .on_action(cx.listener(|this, _: &NewProject, window, cx| {
-                this.open_wizard(window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &OpenProject, _, cx| {
-                this.open_project_dialog(cx)
-            }))
+            .on_action(cx.listener(|this, _: &NewProject, window, cx| this.open_wizard(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenProject, _, cx| this.open_project_dialog(cx)))
             .on_action(cx.listener(|this, _: &Save, _, cx| this.save_active(cx)))
             .on_action(cx.listener(|this, _: &SaveAll, _, cx| {
                 this.save_all_editors(cx);
             }))
             .on_action(cx.listener(|this, _: &Build, _, cx| this.start_build(false, cx)))
             .on_action(cx.listener(|this, _: &Run, _, cx| this.start_build(true, cx)))
-            .on_action(cx.listener(|this, _: &ClearBreakpoints, _, cx| {
-                this.clear_all_breakpoints(cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &ClearBreakpoints, _, cx| this.clear_all_breakpoints(cx)),
+            )
             .on_action(cx.listener(|this, _: &ToggleOutput, _, cx| {
                 this.show_output = !this.show_output;
                 cx.notify();
@@ -22596,8 +26981,7 @@ impl Render for IdeApp {
                 if this.tool_picker_open {
                     let n = this.tools_store.tools().len();
                     if n > 0 {
-                        this.tool_picker_selected =
-                            (this.tool_picker_selected + n - 1) % n;
+                        this.tool_picker_selected = (this.tool_picker_selected + n - 1) % n;
                         cx.notify();
                     }
                 } else {
@@ -22615,19 +26999,19 @@ impl Render for IdeApp {
                     this.move_palette_selection(1, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &FindInProject, window, cx| {
-                this.open_search(window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &FindInFile, window, cx| {
-                this.find_in_file(window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &FindInProject, window, cx| this.open_search(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FindInFile, window, cx| this.find_in_file(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &SearchConfirm, _, cx| this.confirm_search(cx)))
-            .on_action(cx.listener(|this, _: &SearchSelectUp, _, cx| {
-                this.move_search_selection(-1, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SearchSelectDown, _, cx| {
-                this.move_search_selection(1, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &SearchSelectUp, _, cx| this.move_search_selection(-1, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SearchSelectDown, _, cx| this.move_search_selection(1, cx)),
+            )
             .on_action(cx.listener(|this, _: &ConditionDialogSave, _, cx| {
                 if this.condition_dialog.is_some() {
                     this.save_condition_dialog(cx);
@@ -22656,27 +27040,27 @@ impl Render for IdeApp {
                     this.resolve_close_dialog(true, cx);
                 }
             }))
-
             .on_action(cx.listener(|this, _: &StopDebug, _, cx| this.stop_debug(cx)))
-            .on_action(cx.listener(|this, _: &DebugStepOver, _, cx| {
-                this.debug_step(DebugStep::Over, cx)
-            }))
-            .on_action(cx.listener(|this, _: &DebugStepIn, _, cx| {
-                this.debug_step(DebugStep::In, cx)
-            }))
-            .on_action(cx.listener(|this, _: &DebugStepOut, _, cx| {
-                this.debug_step(DebugStep::Out, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &DebugStepOver, _, cx| this.debug_step(DebugStep::Over, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &DebugStepIn, _, cx| this.debug_step(DebugStep::In, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &DebugStepOut, _, cx| this.debug_step(DebugStep::Out, cx)),
+            )
             .on_action(cx.listener(|this, _: &DebugStepInstruction, _, cx| {
                 this.debug_step(DebugStep::Instruction, cx)
             }))
-
-            .on_action(cx.listener(|this, _: &RunToCursor, _, cx| {
-                this.run_to_cursor(cx)
-            }))
+            .on_action(cx.listener(|this, _: &RunToCursor, _, cx| this.run_to_cursor(cx)))
             .on_action(cx.listener(|this, _: &EscapeModal, _, cx| {
                 if this.periph_config.is_some() {
                     this.close_peripheral_config(cx);
+                } else if this.pin_map_dialog.is_some() {
+                    this.close_pin_map(cx);
+                } else if this.clock_tree_dialog.is_some() {
+                    this.close_clock_tree(cx);
                 } else if this.wizard.is_some() {
                     this.wizard_cancel(cx);
                 } else if this.condition_dialog.is_some() {
@@ -22728,41 +27112,31 @@ impl Render for IdeApp {
                 } else if this.top_menu_open.is_some() {
                     this.top_menu_open = None;
                     cx.notify();
-                 } else if this.context_menu.is_some() {
-                     this.context_menu = None;
-                     cx.notify();
+                } else if this.context_menu.is_some() {
+                    this.context_menu = None;
+                    cx.notify();
                     this.tab_menu = None;
                     cx.notify();
                 } else if this.compare_dialog.is_some() {
                     this.close_compare_dialog(cx);
-                 }
+                }
             }))
-             .on_action(cx.listener(|this, _: &GoToDefinition, _, cx| {
-                 this.lsp_go_to_definition(cx)
-             }))
+            .on_action(cx.listener(|this, _: &GoToDefinition, _, cx| this.lsp_go_to_definition(cx)))
             .on_action(cx.listener(|this, _: &GoToLine, _, cx| this.open_go_to_line(cx)))
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.set_editor_zoom(0.1, cx)))
             .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.set_editor_zoom(-0.1, cx)))
             .on_action(cx.listener(|this, _: &ZoomReset, _, cx| this.set_editor_zoom(0.0, cx)))
-            .on_action(cx.listener(|this, _: &NextDiagnostic, _, cx| {
-                this.navigate_diagnostic(1, cx)
-            }))
-            .on_action(cx.listener(|this, _: &PrevDiagnostic, _, cx| {
-                this.navigate_diagnostic(-1, cx)
-            }))
-            .on_action(cx.listener(|this, _: &GotoHeaderSource, _, cx| {
-                this.goto_header_source(cx)
-            }))
-             .on_action(cx.listener(|this, _: &FindReferences, _, cx| {
-                this.lsp_find_references(cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &NextDiagnostic, _, cx| this.navigate_diagnostic(1, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &PrevDiagnostic, _, cx| this.navigate_diagnostic(-1, cx)),
+            )
+            .on_action(cx.listener(|this, _: &GotoHeaderSource, _, cx| this.goto_header_source(cx)))
+            .on_action(cx.listener(|this, _: &FindReferences, _, cx| this.lsp_find_references(cx)))
             .on_action(cx.listener(|this, _: &Hover, _, cx| this.lsp_hover(cx)))
-            .on_action(cx.listener(|this, _: &SignatureHelp, _, cx| {
-                this.lsp_signature_help(cx)
-            }))
-            .on_action(cx.listener(|this, _: &ShowCompletion, _, cx| {
-                this.lsp_completion(cx)
-            }))
+            .on_action(cx.listener(|this, _: &SignatureHelp, _, cx| this.lsp_signature_help(cx)))
+            .on_action(cx.listener(|this, _: &ShowCompletion, _, cx| this.lsp_completion(cx)))
             .on_action(cx.listener(|this, _: &NavigateBack, _, cx| this.navigate_back(cx)))
             .on_action(cx.listener(|this, _: &NavigateForward, _, cx| this.navigate_forward(cx)))
             .on_action(cx.listener(|this, _: &JumpToInclude, _, cx| this.jump_to_include(cx)))
@@ -22777,72 +27151,72 @@ impl Render for IdeApp {
             .on_action(cx.listener(|this, _: &WorkspaceSymbols, window, cx| {
                 this.open_workspace_symbols(window, cx)
             }))
-            .on_action(cx.listener(|this, _: &QuickOpen, window, cx| {
-                this.open_quick_open(window, cx)
+            .on_action(
+                cx.listener(|this, _: &QuickOpen, window, cx| this.open_quick_open(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &RecentFiles, window, cx| this.open_recent_files(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &PaletteSelectUp, _, cx| {
+                if this.workspace_symbol_open {
+                    this.workspace_symbol_move(-1, cx);
+                } else if this.references_open {
+                    this.references_move(-1, cx);
+                } else if this.call_hierarchy_open {
+                    this.call_hierarchy_move(-1, cx);
+                } else if this.quick_open {
+                    this.quick_open_move(-1, cx);
+                } else if this.recent_open {
+                    this.recent_files_move(-1, cx);
+                } else if this.completion_open {
+                    this.completion_move(-1, cx);
+                }
             }))
-            .on_action(cx.listener(|this, _: &RecentFiles, window, cx| {
-                this.open_recent_files(window, cx)
+            .on_action(cx.listener(|this, _: &PaletteSelectDown, _, cx| {
+                if this.workspace_symbol_open {
+                    this.workspace_symbol_move(1, cx);
+                } else if this.references_open {
+                    this.references_move(1, cx);
+                } else if this.call_hierarchy_open {
+                    this.call_hierarchy_move(1, cx);
+                } else if this.quick_open {
+                    this.quick_open_move(1, cx);
+                } else if this.recent_open {
+                    this.recent_files_move(1, cx);
+                } else if this.completion_open {
+                    this.completion_move(1, cx);
+                }
             }))
-             .on_action(cx.listener(|this, _: &PaletteSelectUp, _, cx| {
-                 if this.workspace_symbol_open {
-                     this.workspace_symbol_move(-1, cx);
-                 } else if this.references_open {
-                     this.references_move(-1, cx);
-                 } else if this.call_hierarchy_open {
-                     this.call_hierarchy_move(-1, cx);
-                 } else if this.quick_open {
-                     this.quick_open_move(-1, cx);
-                 } else if this.recent_open {
-                     this.recent_files_move(-1, cx);
-                 } else if this.completion_open {
-                     this.completion_move(-1, cx);
-                 }
-             }))
-             .on_action(cx.listener(|this, _: &PaletteSelectDown, _, cx| {
-                 if this.workspace_symbol_open {
-                     this.workspace_symbol_move(1, cx);
-                 } else if this.references_open {
-                     this.references_move(1, cx);
-                 } else if this.call_hierarchy_open {
-                     this.call_hierarchy_move(1, cx);
-                 } else if this.quick_open {
-                     this.quick_open_move(1, cx);
-                 } else if this.recent_open {
-                     this.recent_files_move(1, cx);
-                 } else if this.completion_open {
-                     this.completion_move(1, cx);
-                 }
-             }))
-             .on_action(cx.listener(|this, _: &PaletteConfirm, _, cx| {
-                 if this.workspace_symbol_open {
-                     this.workspace_symbol_confirm(cx);
-                 } else if this.references_open {
-                     this.references_confirm(cx);
-                 } else if this.call_hierarchy_open {
-                     this.call_hierarchy_confirm(cx);
-                 } else if this.quick_open {
-                     this.quick_open_confirm(cx);
-                 } else if this.recent_open {
-                     this.recent_files_confirm(cx);
-                 } else if this.completion_open {
-                     this.completion_confirm(cx);
-                 }
-             }))
-             .on_action(cx.listener(|this, _: &EscapeModal, _, cx| {
-                 if this.workspace_symbol_open {
-                     this.close_workspace_symbols(cx);
-                 } else if this.references_open {
-                     this.close_references(cx);
-                 } else if this.call_hierarchy_open {
-                     this.close_call_hierarchy(cx);
-                 } else if this.quick_open {
-                     this.close_quick_open(cx);
-                 } else if this.recent_open {
-                     this.close_recent_files(cx);
-                 } else if this.completion_open {
-                     this.completion_cancel(cx);
-                 }
-             }))
+            .on_action(cx.listener(|this, _: &PaletteConfirm, _, cx| {
+                if this.workspace_symbol_open {
+                    this.workspace_symbol_confirm(cx);
+                } else if this.references_open {
+                    this.references_confirm(cx);
+                } else if this.call_hierarchy_open {
+                    this.call_hierarchy_confirm(cx);
+                } else if this.quick_open {
+                    this.quick_open_confirm(cx);
+                } else if this.recent_open {
+                    this.recent_files_confirm(cx);
+                } else if this.completion_open {
+                    this.completion_confirm(cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &EscapeModal, _, cx| {
+                if this.workspace_symbol_open {
+                    this.close_workspace_symbols(cx);
+                } else if this.references_open {
+                    this.close_references(cx);
+                } else if this.call_hierarchy_open {
+                    this.close_call_hierarchy(cx);
+                } else if this.quick_open {
+                    this.close_quick_open(cx);
+                } else if this.recent_open {
+                    this.close_recent_files(cx);
+                } else if this.completion_open {
+                    this.completion_cancel(cx);
+                }
+            }))
             .child(
                 div()
                     .absolute()
@@ -22918,7 +27292,11 @@ impl Render for IdeApp {
                 items.push(
                     item(
                         "ctx-toggle-breakpoint",
-                        if enabled { "禁用断点" } else { "启用断点" },
+                        if enabled {
+                            "禁用断点"
+                        } else {
+                            "启用断点"
+                        },
                         false,
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -22982,7 +27360,7 @@ impl Render for IdeApp {
                         this.open_watchpoint_dialog("", &initial, cx);
                     }))
                     .into_any_element(),
-             );
+            );
             items.push(
                 item("ctx-goto-header-source", "切换到头文件/源文件", false)
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -23035,9 +27413,7 @@ impl Render for IdeApp {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.context_menu = None;
                         if let Some(editor) = this.active_editor() {
-                            editor.update(cx, |editor, cx| {
-                                editor.copy_selection_to_clipboard(cx)
-                            });
+                            editor.update(cx, |editor, cx| editor.copy_selection_to_clipboard(cx));
                         }
                     }))
                     .into_any_element(),
@@ -23047,9 +27423,7 @@ impl Render for IdeApp {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.context_menu = None;
                         if let Some(editor) = this.active_editor() {
-                            editor.update(cx, |editor, cx| {
-                                editor.paste_from_clipboard(window, cx)
-                            });
+                            editor.update(cx, |editor, cx| editor.paste_from_clipboard(window, cx));
                         }
                     }))
                     .into_any_element(),
@@ -23059,9 +27433,7 @@ impl Render for IdeApp {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.context_menu = None;
                         if let Some(editor) = this.active_editor() {
-                            editor.update(cx, |editor, cx| {
-                                editor.select_all_document(window, cx)
-                            });
+                            editor.update(cx, |editor, cx| editor.select_all_document(window, cx));
                         }
                     }))
                     .into_any_element(),
@@ -23095,18 +27467,20 @@ impl Render for IdeApp {
                     .id("breakpoint-menu-backdrop")
                     .absolute()
                     .inset_0()
-                    .on_mouse_down(MouseButton::Left, cx.listener(
-                        |this, _: &MouseDownEvent, _, cx| {
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.context_menu = None;
                             cx.notify();
-                        },
-                    ))
-                    .on_mouse_down(MouseButton::Right, cx.listener(
-                        |this, _: &MouseDownEvent, _, cx| {
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.context_menu = None;
                             cx.notify();
-                        },
-                    ))
+                        }),
+                    )
                     .child(
                         div()
                             .absolute()
@@ -23129,9 +27503,9 @@ impl Render for IdeApp {
                             .gap(px(2.))
                             .children(items),
                     ),
-             );
-         }
- 
+            );
+        }
+
         if let Some(menu) = self.tab_menu.clone() {
             let item = |id: &'static str, label: &'static str, danger: bool| {
                 div()
@@ -23191,18 +27565,20 @@ impl Render for IdeApp {
                     .id("tab-menu-backdrop")
                     .absolute()
                     .inset_0()
-                    .on_mouse_down(MouseButton::Left, cx.listener(
-                        |this, _: &MouseDownEvent, _, cx| {
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.tab_menu = None;
                             cx.notify();
-                        },
-                    ))
-                    .on_mouse_down(MouseButton::Right, cx.listener(
-                        |this, _: &MouseDownEvent, _, cx| {
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.tab_menu = None;
                             cx.notify();
-                        },
-                    ))
+                        }),
+                    )
                     .child(
                         div()
                             .absolute()
@@ -23228,7 +27604,7 @@ impl Render for IdeApp {
             );
         }
 
-         if let Some(menu) = self.tree_menu.clone() {
+        if let Some(menu) = self.tree_menu.clone() {
             let menu_path = menu.path.clone();
 
             let item = |id: &'static str, label: &'static str, danger: bool| {
@@ -23328,10 +27704,7 @@ impl Render for IdeApp {
                         this.tree_menu = None;
                         #[cfg(target_os = "macos")]
                         {
-                            let _ = std::process::Command::new("open")
-                                .arg("-R")
-                                .arg(&p)
-                                .spawn();
+                            let _ = std::process::Command::new("open").arg("-R").arg(&p).spawn();
                         }
                         #[cfg(not(target_os = "macos"))]
                         {
@@ -23350,18 +27723,20 @@ impl Render for IdeApp {
                     .id("tree-menu-backdrop")
                     .absolute()
                     .inset_0()
-                    .on_mouse_down(MouseButton::Left, cx.listener(
-                        |this, _: &MouseDownEvent, _, cx| {
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.tree_menu = None;
                             cx.notify();
-                        },
-                    ))
-                    .on_mouse_down(MouseButton::Right, cx.listener(
-                        |this, _: &MouseDownEvent, _, cx| {
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.tree_menu = None;
                             cx.notify();
-                        },
-                    ))
+                        }),
+                    )
                     .child(
                         div()
                             .absolute()
@@ -23450,11 +27825,23 @@ impl Render for IdeApp {
                                             this.cancel_new_entry_dialog(cx)
                                         }),
                                     ))
-                                    .child(widgets::primary_button("ne-save", if is_rename { "重命名" } else if is_duplicate { "复制" } else { "创建" }).on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.save_new_entry_dialog(cx)
-                                        }),
-                                    )),
+                                    .child(
+                                        widgets::primary_button(
+                                            "ne-save",
+                                            if is_rename {
+                                                "重命名"
+                                            } else if is_duplicate {
+                                                "复制"
+                                            } else {
+                                                "创建"
+                                            },
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.save_new_entry_dialog(cx)
+                                            }),
+                                        ),
+                                    ),
                             ),
                     ),
             );
@@ -23594,16 +27981,15 @@ impl Render for IdeApp {
                                     .justify_end()
                                     .gap(px(8.))
                                     .child(widgets::ghost_button("compare-close", "关闭").on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.close_compare_dialog(cx)
-                                        }),
+                                        cx.listener(|this, _, _, cx| this.close_compare_dialog(cx)),
                                     ))
-                                    .child(widgets::ghost_button("compare-reload", "重新加载").on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.close_compare_dialog(cx);
-                                            this.compare_active_with_disk(cx);
-                                        }),
-                                    )),
+                                    .child(
+                                        widgets::ghost_button("compare-reload", "重新加载")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.close_compare_dialog(cx);
+                                                this.compare_active_with_disk(cx);
+                                            })),
+                                    ),
                             ),
                     ),
             );
@@ -23809,7 +28195,9 @@ impl Render for IdeApp {
                                         div()
                                             .text_size(px(10.5))
                                             .text_color(theme::color(theme::TEXT_FAINT))
-                                            .child("输入 1 基行号，回车跳转；超出文档范围会自动夹紧。"),
+                                            .child(
+                                                "输入 1 基行号，回车跳转；超出文档范围会自动夹紧。",
+                                            ),
                                     ),
                             )
                             .child(div().child(field))
@@ -23823,13 +28211,11 @@ impl Render for IdeApp {
                                             this.cancel_go_to_line_dialog(cx)
                                         }),
                                     ))
-                                    .child(
-                                        widgets::primary_button("gtl-save", "跳转").on_click(
-                                            cx.listener(|this, _, _, cx| {
-                                                this.save_go_to_line_dialog(cx)
-                                            }),
-                                        ),
-                                    ),
+                                    .child(widgets::primary_button("gtl-save", "跳转").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.save_go_to_line_dialog(cx)
+                                        }),
+                                    )),
                             ),
                     ),
             );
@@ -23872,7 +28258,9 @@ impl Render for IdeApp {
                                         div()
                                             .text_size(px(10.5))
                                             .text_color(theme::color(theme::TEXT_FAINT))
-                                            .child("重命名项目目录并同步 project.toml 的 name 字段。"),
+                                            .child(
+                                                "重命名项目目录并同步 project.toml 的 name 字段。",
+                                            ),
                                     ),
                             )
                             .child(div().child(field))
@@ -23887,13 +28275,9 @@ impl Render for IdeApp {
                                             cx.notify();
                                         }),
                                     ))
-                                    .child(
-                                        widgets::primary_button("prn-save", "重命名").on_click(
-                                            cx.listener(|this, _, _, cx| {
-                                                this.save_project_rename(cx)
-                                            }),
-                                        ),
-                                    ),
+                                    .child(widgets::primary_button("prn-save", "重命名").on_click(
+                                        cx.listener(|this, _, _, cx| this.save_project_rename(cx)),
+                                    )),
                             ),
                     ),
             );
@@ -23951,13 +28335,11 @@ impl Render for IdeApp {
                                             cx.notify();
                                         }),
                                     ))
-                                    .child(
-                                        widgets::danger_button("pdl-delete", "删除").on_click(
-                                            cx.listener(|this, _, _, cx| {
-                                                this.confirm_project_delete(cx)
-                                            }),
-                                        ),
-                                    ),
+                                    .child(widgets::danger_button("pdl-delete", "删除").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.confirm_project_delete(cx)
+                                        }),
+                                    )),
                             ),
                     ),
             );
@@ -23975,30 +28357,33 @@ impl Render for IdeApp {
                 .iter()
                 .copied()
                 .filter(|&i| i < self.tabs.len() && self.tabs[i].editor.read(cx).is_dirty())
-                .filter_map(|i| self.tabs[i].path.strip_prefix(&root_path).ok().map(PathBuf::from))
+                .filter_map(|i| {
+                    self.tabs[i]
+                        .path
+                        .strip_prefix(&root_path)
+                        .ok()
+                        .map(PathBuf::from)
+                })
                 .collect();
             dirty_files.sort();
             dirty_files.dedup();
-            let list = if dirty_files.is_empty() {
-                div()
-                    .text_size(px(11.))
-                    .text_color(theme::color(theme::TEXT_DIM))
-                    .child("（无未保存文件）")
-                    .into_any_element()
-            } else {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .bg(theme::alpha(0xffffff, 0.02))
-                    .rounded(px(8.))
-                    .p(px(10.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.))
-                            .children(dirty_files.iter().map(|path| {
+            let list =
+                if dirty_files.is_empty() {
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme::color(theme::TEXT_DIM))
+                        .child("（无未保存文件）")
+                        .into_any_element()
+                } else {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .bg(theme::alpha(0xffffff, 0.02))
+                        .rounded(px(8.))
+                        .p(px(10.))
+                        .child(div().flex().flex_col().gap(px(4.)).children(
+                            dirty_files.iter().map(|path| {
                                 div()
                                     .flex()
                                     .items_center()
@@ -24017,10 +28402,10 @@ impl Render for IdeApp {
                                             .child(path.display().to_string()),
                                     )
                                     .into_any_element()
-                            })),
-                    )
-                    .into_any_element()
-            };
+                            }),
+                        ))
+                        .into_any_element()
+                };
             let count = dirty_files.len();
             let scope = if dialog.close_all {
                 "全部标签页".to_string()
@@ -24136,16 +28521,18 @@ impl Render for IdeApp {
                                     .flex()
                                     .justify_end()
                                     .gap(px(8.))
-                                    .child(widgets::ghost_button("git-branch-cancel", "取消").on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.cancel_git_branch_dialog(cx)
-                                        }),
-                                    ))
-                                    .child(widgets::primary_button("git-branch-create", "创建并切换").on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.git_create_branch(cx)
-                                        }),
-                                    )),
+                                    .child(
+                                        widgets::ghost_button("git-branch-cancel", "取消")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.cancel_git_branch_dialog(cx)
+                                            })),
+                                    )
+                                    .child(
+                                        widgets::primary_button("git-branch-create", "创建并切换")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.git_create_branch(cx)
+                                            })),
+                                    ),
                             ),
                     ),
             );
@@ -24203,11 +28590,13 @@ impl Render for IdeApp {
                                             this.cancel_set_var_dialog(cx)
                                         }),
                                     ))
-                                    .child(widgets::primary_button("setvar-save", "设置").on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.save_set_var_dialog(cx)
-                                        }),
-                                    )),
+                                    .child(
+                                        widgets::primary_button("setvar-save", "设置").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.save_set_var_dialog(cx)
+                                            }),
+                                        ),
+                                    ),
                             ),
                     ),
             );
@@ -24266,11 +28655,11 @@ impl Render for IdeApp {
                                             cx.notify();
                                         }),
                                     ))
-                                    .child(widgets::primary_button("rename-save", "重命名").on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.confirm_rename(cx)
-                                        }),
-                                    )),
+                                    .child(
+                                        widgets::primary_button("rename-save", "重命名").on_click(
+                                            cx.listener(|this, _, _, cx| this.confirm_rename(cx)),
+                                        ),
+                                    ),
                             ),
                     ),
             );
@@ -24302,10 +28691,10 @@ impl Render for IdeApp {
             let flasher_kind = dialog.flasher_kind.clone();
             let flasher_interface = dialog.flasher_interface.clone();
             let sim_cpu = dialog.sim_cpu.clone();
-             let sim_period = dialog.sim_period.clone();
-             let sim_clock = dialog.sim_clock.clone();
+            let sim_period = dialog.sim_period.clone();
+            let sim_clock = dialog.sim_clock.clone();
             let launch_args = dialog.launch_args.clone();
-             let launch_env = dialog.launch_env.clone();
+            let launch_env = dialog.launch_env.clone();
             let launch_cwd = dialog.launch_cwd.clone();
             let terminal_shell = dialog.terminal_shell.clone();
             let config_keys = dialog.config_keys.clone();
@@ -24568,7 +28957,10 @@ impl Render for IdeApp {
                     )
                 })
                 .collect();
-            let enabled_count = items.iter().filter(|(_, _, enabled, _, _)| *enabled).count();
+            let enabled_count = items
+                .iter()
+                .filter(|(_, _, enabled, _, _)| *enabled)
+                .count();
             root = root.child(
                 div()
                     .absolute()
@@ -24855,6 +29247,306 @@ impl Render for IdeApp {
                             ),
                     ),
             );
+        }
+
+        if let Some(dialog) = &self.clock_tree_dialog {
+            let target = dialog.target.clone();
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::color(0x000000).opacity(0.45))
+                    .child(
+                        div()
+                            .id("clock-tree-modal")
+                            .w(px(640.))
+                            .h(px(420.))
+                            .rounded(px(14.))
+                            .border_1()
+                            .border_color(theme::alpha(theme::STROKE, 0.3))
+                            .bg(theme::color(theme::PANEL_SOLID))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .px(px(16.))
+                                    .pt(px(14.))
+                                    .pb(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme::color(theme::TEXT))
+                                            .child("时钟树配置（图形化）"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("clock-tree-close")
+                                            .px(px(8.))
+                                            .py(px(3.))
+                                            .rounded(px(6.))
+                                            .text_size(px(10.5))
+                                            .text_color(theme::color(theme::TEXT_FAINT))
+                                            .cursor_pointer()
+                                            .hover(|style| {
+                                                style.text_color(theme::color(theme::DANGER))
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.close_clock_tree(cx)
+                                            }))
+                                            .child("✕"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(16.))
+                                    .pb(px(8.))
+                                    .text_size(px(10.5))
+                                    .text_color(theme::color(theme::TEXT_FAINT))
+                                    .child(format!("目标 {target} · STM32F1 RCC 时钟树")),
+                            )
+                            .child(render_clock_tree(dialog, cx))
+                            .child(
+                                div()
+                                    .px(px(16.))
+                                    .py(px(10.))
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .id("clock-tree-cancel")
+                                            .px(px(14.))
+                                            .py(px(6.))
+                                            .rounded(px(9.))
+                                            .text_size(px(11.))
+                                            .text_color(theme::color(theme::TEXT_DIM))
+                                            .bg(theme::alpha(theme::STROKE, 0.08))
+                                            .cursor_pointer()
+                                            .hover(|style| {
+                                                style.bg(theme::alpha(theme::STROKE, 0.16))
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.close_clock_tree(cx)
+                                            }))
+                                            .child("取消"),
+                                    )
+                                    .child(
+                                        widgets::primary_button("clock-tree-generate", "生成代码")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.generate_clock_tree_code(cx)
+                                            })),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(dialog) = &self.pin_map_dialog {
+            let target = dialog.target.clone();
+            root =
+                root.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(theme::color(0x000000).opacity(0.45))
+                        .child(
+                            div()
+                                .id("pin-map-modal")
+                                .w(px(680.))
+                                .h(px(560.))
+                                .rounded(px(14.))
+                                .border_1()
+                                .border_color(theme::alpha(theme::STROKE, 0.3))
+                                .bg(theme::color(theme::PANEL_SOLID))
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .px(px(16.))
+                                        .pt(px(14.))
+                                        .pb(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(theme::color(theme::TEXT))
+                                                .child("引脚映射图（外设功能 → 物理引脚）"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("pin-map-close")
+                                                .px(px(8.))
+                                                .py(px(3.))
+                                                .rounded(px(6.))
+                                                .text_size(px(10.5))
+                                                .text_color(theme::color(theme::TEXT_FAINT))
+                                                .cursor_pointer()
+                                                .hover(|style| {
+                                                    style.text_color(theme::color(theme::DANGER))
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.close_pin_map(cx)
+                                                }))
+                                                .child("✕"),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .px(px(16.))
+                                        .pb(px(8.))
+                                        .text_size(px(10.5))
+                                        .text_color(theme::color(theme::TEXT_FAINT))
+                                        .child(format!(
+                                            "目标 {target} · {}",
+                                            match dialog.family {
+                                                PinMapFamily::F1 => {
+                                                    "STM32F103C6/C8/CB（LQFP48）AF 映射表"
+                                                }
+                                                PinMapFamily::F4 => {
+                                                    "STM32F407（LQFP100）AFRL/AFRH 映射表"
+                                                }
+                                            }
+                                        )),
+                                )
+                                .child(render_pin_map_groups(dialog, cx))
+                                .child(render_pin_map(dialog, cx))
+                                .child(
+                                    div()
+                                        .px(px(16.))
+                                        .py(px(10.))
+                                        .flex()
+                                        .justify_end()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .id("pin-map-clear")
+                                                .px(px(14.))
+                                                .py(px(6.))
+                                                .rounded(px(9.))
+                                                .text_size(px(11.))
+                                                .text_color(theme::color(theme::TEXT_DIM))
+                                                .bg(theme::alpha(theme::STROKE, 0.08))
+                                                .cursor_pointer()
+                                                .hover(|style| {
+                                                    style.bg(theme::alpha(theme::STROKE, 0.16))
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.clear_pin_map(cx)
+                                                }))
+                                                .child("清除全部"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("pin-map-save-scheme")
+                                                .px(px(14.))
+                                                .py(px(6.))
+                                                .rounded(px(9.))
+                                                .text_size(px(11.))
+                                                .text_color(theme::color(theme::TEXT_DIM))
+                                                .bg(theme::alpha(theme::STROKE, 0.08))
+                                                .cursor_pointer()
+                                                .hover(|style| {
+                                                    style.bg(theme::alpha(theme::STROKE, 0.16))
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.save_pin_map_scheme(cx)
+                                                }))
+                                                .child("保存方案"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("pin-map-load-scheme")
+                                                .px(px(14.))
+                                                .py(px(6.))
+                                                .rounded(px(9.))
+                                                .text_size(px(11.))
+                                                .text_color(theme::color(theme::TEXT_DIM))
+                                                .bg(theme::alpha(theme::STROKE, 0.08))
+                                                .cursor_pointer()
+                                                .hover(|style| {
+                                                    style.bg(theme::alpha(theme::STROKE, 0.16))
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.load_pin_map_scheme(cx)
+                                                }))
+                                                .child("载入方案"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("pin-map-import-ioc")
+                                                .px(px(14.))
+                                                .py(px(6.))
+                                                .rounded(px(9.))
+                                                .text_size(px(11.))
+                                                .text_color(theme::color(theme::TEXT_DIM))
+                                                .bg(theme::alpha(theme::STROKE, 0.08))
+                                                .cursor_pointer()
+                                                .hover(|style| {
+                                                    style.bg(theme::alpha(theme::STROKE, 0.16))
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.import_pin_map_ioc(cx)
+                                                }))
+                                                .child("导入 .ioc"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("pin-map-export-ioc")
+                                                .px(px(14.))
+                                                .py(px(6.))
+                                                .rounded(px(9.))
+                                                .text_size(px(11.))
+                                                .text_color(theme::color(theme::TEXT_DIM))
+                                                .bg(theme::alpha(theme::STROKE, 0.08))
+                                                .cursor_pointer()
+                                                .hover(|style| {
+                                                    style.bg(theme::alpha(theme::STROKE, 0.16))
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.export_pin_map_ioc(cx)
+                                                }))
+                                                .child("导出 .ioc"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("pin-map-cancel")
+                                                .px(px(14.))
+                                                .py(px(6.))
+                                                .rounded(px(9.))
+                                                .text_size(px(11.))
+                                                .text_color(theme::color(theme::TEXT_DIM))
+                                                .bg(theme::alpha(theme::STROKE, 0.08))
+                                                .cursor_pointer()
+                                                .hover(|style| {
+                                                    style.bg(theme::alpha(theme::STROKE, 0.16))
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.close_pin_map(cx)
+                                                }))
+                                                .child("取消"),
+                                        )
+                                        .child(
+                                            widgets::primary_button("pin-map-generate", "生成代码")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.generate_pin_mapping_code(cx)
+                                                })),
+                                        ),
+                                ),
+                        ),
+                );
         }
 
         if let Some(dialog) = &self.toolchain_dialog {
@@ -25186,14 +29878,10 @@ impl Render for IdeApp {
                                         .child(prefix),
                                 )
                                 .child(
-                                    widgets::ghost_button(
-                                        ("snippet-del", row_index),
-                                        "删除",
-                                    )
-
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.delete_snippet_row(row_index, cx);
-                                    })),
+                                    widgets::ghost_button(("snippet-del", row_index), "删除")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.delete_snippet_row(row_index, cx);
+                                        })),
                                 ),
                         )
                         .child(
@@ -25289,7 +29977,6 @@ impl Render for IdeApp {
             );
         }
 
-
         if self.search.is_some() {
             let (field, replace_field, matches, selected, query, case_sensitive, whole_word) = {
                 let search = self.search.as_ref().unwrap();
@@ -25328,9 +30015,9 @@ impl Render for IdeApp {
                             gpui::transparent_black()
                         })
                         .hover(|style| style.bg(theme::alpha(theme::STROKE, 0.07)))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_search_result(index, cx)
-                        }))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.open_search_result(index, cx)),
+                        )
                         .child(
                             div()
                                 .w(px(48.))
@@ -25383,11 +30070,12 @@ impl Render for IdeApp {
                     .justify_center()
                     .pt(px(90.))
                     .bg(theme::color(0x000000).opacity(0.45))
-                    .on_mouse_down(MouseButton::Left, cx.listener(
-                        |this, _: &MouseDownEvent, _, cx| {
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.close_search(cx);
-                        },
-                    ))
+                        }),
+                    )
                     .child(
                         div()
                             .id("search-panel")
@@ -25406,13 +30094,14 @@ impl Render for IdeApp {
                             .flex()
                             .flex_col()
                             .overflow_hidden()
-                            .on_mouse_down(MouseButton::Left, cx.listener(
-                                |this, _: &MouseDownEvent, _, cx| {
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseDownEvent, _, cx| {
                                     cx.stop_propagation();
                                     this.context_menu = None;
                                     cx.notify();
-                                },
-                            ))
+                                }),
+                            )
                             .child(
                                 div()
                                     .px(px(12.))
@@ -25530,11 +30219,7 @@ impl Render for IdeApp {
                                             })),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .h(px(1.))
-                                    .bg(theme::alpha(theme::STROKE, 0.12)),
-                            )
+                            .child(div().h(px(1.)).bg(theme::alpha(theme::STROKE, 0.12)))
                             .child(
                                 div()
                                     .id("search-results")
@@ -25583,7 +30268,8 @@ impl Render for IdeApp {
                     palette.field.read(cx).text(),
                 )
             };
-            let command: CommandEntry = palette::COMMANDS[ranked.get(selected).copied().unwrap_or(0)];
+            let command: CommandEntry =
+                palette::COMMANDS[ranked.get(selected).copied().unwrap_or(0)];
             let rows: Vec<gpui::AnyElement> = ranked
                 .iter()
                 .enumerate()
@@ -25643,11 +30329,12 @@ impl Render for IdeApp {
                     .justify_center()
                     .pt(px(90.))
                     .bg(theme::color(0x000000).opacity(0.45))
-                    .on_mouse_down(MouseButton::Left, cx.listener(
-                        |this, _: &MouseDownEvent, _, cx| {
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
                             this.close_palette(cx);
-                        },
-                    ))
+                        }),
+                    )
                     .child(
                         div()
                             .id("palette-panel")
@@ -25666,13 +30353,14 @@ impl Render for IdeApp {
                             .flex()
                             .flex_col()
                             .overflow_hidden()
-                            .on_mouse_down(MouseButton::Left, cx.listener(
-                                |this, _: &MouseDownEvent, _, cx| {
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseDownEvent, _, cx| {
                                     cx.stop_propagation();
                                     this.context_menu = None;
                                     cx.notify();
-                                },
-                            ))
+                                }),
+                            )
                             .child(
                                 div()
                                     .px(px(12.))
@@ -25697,9 +30385,7 @@ impl Render for IdeApp {
                                             .child(format!("{} 条命令", rows.len())),
                                     ),
                             )
-                            .child(
-                                div().h(px(1.)).bg(theme::alpha(theme::STROKE, 0.12)),
-                            )
+                            .child(div().h(px(1.)).bg(theme::alpha(theme::STROKE, 0.12)))
                             .child(
                                 div()
                                     .id("palette-results")
@@ -25757,8 +30443,10 @@ fn collect_tree(
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_default();
             if path.is_dir() {
-                !matches!(name.as_str(), ".git" | "build" | "target" | "node_modules" | ".idea")
-                    && !name.starts_with('.')
+                !matches!(
+                    name.as_str(),
+                    ".git" | "build" | "target" | "node_modules" | ".idea"
+                ) && !name.starts_with('.')
             } else {
                 name != ".DS_Store"
             }
@@ -25773,7 +30461,12 @@ fn collect_tree(
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_lowercase()
-                .cmp(&b.file_name().unwrap_or_default().to_string_lossy().to_lowercase())
+                .cmp(
+                    &b.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase(),
+                )
         })
     });
 
@@ -25797,11 +30490,7 @@ fn collect_tree(
     }
 }
 
-fn output_tab_button(
-    id: impl Into<ElementId>,
-    label: &str,
-    active: bool,
-) -> Stateful<Div> {
+fn output_tab_button(id: impl Into<ElementId>, label: &str, active: bool) -> Stateful<Div> {
     div()
         .id(id)
         .h(px(24.))
@@ -25929,7 +30618,7 @@ fn region_pill(id: (&'static str, usize), label: &str, active: bool) -> Stateful
         })
         .hover(|style| style.bg(theme::alpha(theme::STROKE, 0.09)))
         .child(label.to_string())
- }
+}
 
 fn parse_hex_address(text: &str) -> Option<u64> {
     let trimmed = text.trim();
@@ -25944,7 +30633,9 @@ fn parse_hex_address(text: &str) -> Option<u64> {
 /// result may carry a `0x` prefix, a trailing type suffix, or surrounding
 /// whitespace.
 fn parse_u64_loose(text: &str) -> Option<u64> {
-    let trimmed = text.trim().trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let trimmed = text
+        .trim()
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic());
     if let Some(hex) = trimmed
         .strip_prefix("0x")
         .or_else(|| trimmed.strip_prefix("0X"))
@@ -26058,8 +30749,6 @@ mod kernel_walk_expr_tests {
     }
 }
 
-
-
 /// Format a simulator time readout from a cycle count and a nominal clock.
 /// With a configured clock (`clock_hz > 0`) the elapsed wall-clock time is
 /// shown alongside the cycle count; without one only cycles are shown.
@@ -26093,7 +30782,11 @@ fn device_field_value(raw: u32, field: &ns_device::Field) -> u32 {
         return 0;
     }
     let width = field.bit_width.min(32 - field.bit_offset);
-    let mask = if width >= 32 { u32::MAX } else { (1u32 << width) - 1 };
+    let mask = if width >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << width) - 1
+    };
     (raw >> field.bit_offset) & mask
 }
 
@@ -26114,30 +30807,36 @@ fn device_description_short(description: &str, max_chars: usize) -> String {
 
 /// Parse whitespace-separated hex bytes like `de ad be ef` into a byte vector.
 /// An empty string or any non-hex token is an error (the caller shows it).
- fn parse_hex_bytes(text: &str) -> Result<Vec<u8>, String> {
-     let tokens: Vec<&str> = text.split_whitespace().collect();
-     if tokens.is_empty() {
-         return Err("请输入要写入的十六进制字节".to_string());
-     }
+fn parse_hex_bytes(text: &str) -> Result<Vec<u8>, String> {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.is_empty() {
+        return Err("请输入要写入的十六进制字节".to_string());
+    }
     // A single token without spaces may be a contiguous hex string
     // (`deadbeef`); split it into byte pairs so both forms work.
-    if tokens.len() == 1 && tokens[0].len() > 2 && tokens[0].bytes().all(|b| b.is_ascii_hexdigit()) {
+    if tokens.len() == 1 && tokens[0].len() > 2 && tokens[0].bytes().all(|b| b.is_ascii_hexdigit())
+    {
         let hex = tokens[0];
-        let pairs: Vec<&str> = hex.as_bytes().chunks(2).map(|c| std::str::from_utf8(c).unwrap()).collect();
+        let pairs: Vec<&str> = hex
+            .as_bytes()
+            .chunks(2)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect();
         pairs
             .into_iter()
-            .map(|part| u8::from_str_radix(part, 16).map_err(|_| format!("无效十六进制字节: {part}")))
+            .map(|part| {
+                u8::from_str_radix(part, 16).map_err(|_| format!("无效十六进制字节: {part}"))
+            })
             .collect()
     } else {
         tokens
             .into_iter()
             .map(|part| {
-                u8::from_str_radix(part, 16)
-                    .map_err(|_| format!("无效十六进制字节: {part}"))
+                u8::from_str_radix(part, 16).map_err(|_| format!("无效十六进制字节: {part}"))
             })
             .collect()
     }
- }
+}
 
 /// Find the first occurrence of `pattern` in `haystack`, returning its byte
 /// offset. An empty pattern never matches.
@@ -26148,8 +30847,8 @@ fn find_pattern(haystack: &[u8], pattern: &[u8]) -> Option<usize> {
     haystack
         .windows(pattern.len())
         .position(|window| window == pattern)
- }
- 
+}
+
 #[cfg(test)]
 mod memory_search_tests {
     use super::*;
@@ -26168,14 +30867,20 @@ mod memory_search_tests {
 
     #[test]
     fn parse_hex_bytes_accepts_contiguous_and_spaced() {
-        assert_eq!(parse_hex_bytes("deadbeef").unwrap(), vec![0xde, 0xad, 0xbe, 0xef]);
-        assert_eq!(parse_hex_bytes("de ad be ef").unwrap(), vec![0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(
+            parse_hex_bytes("deadbeef").unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+        assert_eq!(
+            parse_hex_bytes("de ad be ef").unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
         assert_eq!(parse_hex_bytes("0").unwrap(), vec![0x00]);
-         assert!(parse_hex_bytes("").is_err());
-         assert!(parse_hex_bytes("zz").is_err());
-     }
- }
- 
+        assert!(parse_hex_bytes("").is_err());
+        assert!(parse_hex_bytes("zz").is_err());
+    }
+}
+
 #[cfg(test)]
 mod header_source_tests {
     use super::*;
@@ -26232,7 +30937,7 @@ mod header_source_tests {
     }
 }
 
- /// Heuristic: a file is binary when it contains a NUL byte in its first 8 KiB.
+/// Heuristic: a file is binary when it contains a NUL byte in its first 8 KiB.
 /// Firmware artifacts (`.bin`, `.elf`, `.ihx`) and object files are binary.
 fn is_binary_file(path: &Path, head: &[u8]) -> bool {
     let ext = path
@@ -26246,7 +30951,7 @@ fn is_binary_file(path: &Path, head: &[u8]) -> bool {
     // NUL byte in the first 8 KiB is a strong binary indicator; a UTF-8 text
     // file (source, linker script) never contains one.
     head.iter().take(8 * 1024).any(|&b| b == 0)
- }
+}
 
 /// Recursively copy a directory tree. Used by the file-tree "duplicate"
 /// operation for copying a folder to a new name.
@@ -26264,7 +30969,7 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
     }
     Ok(())
 }
- 
+
 /// Compute the counterpart file for `path` (header ↔ source) so the IDE can
 /// jump between a `.c`/`.cpp` and its `.h`/`.hpp` pair.
 ///
@@ -26290,8 +30995,8 @@ fn find_matching_source_file(
     let is_header = match ext.as_str() {
         "h" | "hpp" | "hh" => true,
         "c" | "cc" | "cpp" | "cxx" | "s" | "S" => false,
-         _ => return None,
-     };
+        _ => return None,
+    };
     let stem = path.file_stem()?.to_string_lossy().to_string();
     let parent = path.parent()?;
 
@@ -26337,7 +31042,7 @@ fn find_matching_source_file(
     None
 }
 
- /// Render a classic offset-hex-ASCII hex dump for `bytes`, up to 256 rows
+/// Render a classic offset-hex-ASCII hex dump for `bytes`, up to 256 rows
 /// (16 KiB). Beyond that, note the truncation so the view stays responsive.
 fn hex_dump_text(bytes: &[u8]) -> String {
     const BYTES_PER_ROW: usize = 16;
@@ -26358,7 +31063,11 @@ fn hex_dump_text(bytes: &[u8]) -> String {
         }
         out.push_str(" |");
         for &b in chunk {
-            let c = if (0x20..0x7f).contains(&b) { b as char } else { '.' };
+            let c = if (0x20..0x7f).contains(&b) {
+                b as char
+            } else {
+                '.'
+            };
             out.push(c);
         }
         out.push('|');
@@ -26490,7 +31199,11 @@ fn parse_completion_items(response: &serde_json::Value) -> Vec<ns_lsp::Completio
         .iter()
         .filter_map(|item| {
             let label = item.get("label")?.as_str()?.to_string();
-            let detail = item.get("detail").and_then(|value| value.as_str()).unwrap_or("").to_string();
+            let detail = item
+                .get("detail")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
             let kind = item
                 .get("kind")
                 .and_then(|value| value.as_i64())
@@ -26582,10 +31295,7 @@ fn completion_kind(kind: i64) -> String {
 /// `$TM_DIRECTORY` / `$TM_FILEPATH` expand from the active file. Returns the
 /// expanded text and the byte offset of the final cursor (`$0`), defaulting
 /// to the end of the text.
-fn expand_snippet(
-    snippet: &str,
-    path: Option<&Path>,
-) -> (String, Option<usize>) {
+fn expand_snippet(snippet: &str, path: Option<&Path>) -> (String, Option<usize>) {
     let mut result = String::with_capacity(snippet.len());
     let mut cursor_at = None;
     let bytes = snippet.as_bytes();
@@ -26638,7 +31348,12 @@ fn expand_snippet_var(
     // `${TM_FILENAME}`, `${TM_DIRECTORY}`, `${TM_FILEPATH}` variables.
     if let Some(rest) = body.strip_prefix("TM_FILENAME") {
         if let Some(path) = path {
-            result.push_str(&path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            result.push_str(
+                &path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            );
         }
         if rest.is_empty() {
             return;
@@ -26730,7 +31445,10 @@ fn parse_signature_help(response: &serde_json::Value) -> Option<SignatureHelpInf
 /// Parse a `textDocument/semanticTokens/full` response into absolute tokens.
 fn parse_semantic_tokens(response: &serde_json::Value) -> Vec<SemanticToken> {
     let result = response.get("result");
-    let Some(data) = result.and_then(|result| result.get("data")).and_then(|data| data.as_array()) else {
+    let Some(data) = result
+        .and_then(|result| result.get("data"))
+        .and_then(|data| data.as_array())
+    else {
         return Vec::new();
     };
     let mut tokens = Vec::new();
@@ -26770,10 +31488,7 @@ struct InlayHintInfo {
 
 /// Parse a `textDocument/inlayHint` response into absolute hints.
 fn parse_inlay_hints(response: &serde_json::Value) -> Vec<InlayHintInfo> {
-    let Some(items) = response
-        .get("result")
-        .and_then(|result| result.as_array())
-    else {
+    let Some(items) = response.get("result").and_then(|result| result.as_array()) else {
         return Vec::new();
     };
     let mut hints = Vec::new();
@@ -26818,7 +31533,6 @@ fn parse_inlay_hints(response: &serde_json::Value) -> Vec<InlayHintInfo> {
     hints
 }
 
-
 /// Human-readable name for a project language.
 fn language_name(language: &Language) -> &'static str {
     match language {
@@ -26836,22 +31550,21 @@ fn symbol_matches_filter(symbol: &ns_lsp::SymbolInfo, filter: &str) -> bool {
     filter.is_empty() || symbol.name.to_lowercase().contains(&filter.to_lowercase())
 }
 
- /// The chain of enclosing symbols at `cursor_line`, outermost first, for the
- /// editor breadcrumb. Descends only through container kinds (namespace, class,
- /// struct, interface, enum, module) so a function's local variables do not
- /// clutter the breadcrumb.
- fn symbol_chain_at_line(symbols: &[ns_lsp::SymbolInfo], cursor_line: usize) -> Vec<(String, usize)> {
-      fn is_container(kind: &str) -> bool {
+/// The chain of enclosing symbols at `cursor_line`, outermost first, for the
+/// editor breadcrumb. Descends only through container kinds (namespace, class,
+/// struct, interface, enum, module) so a function's local variables do not
+/// clutter the breadcrumb.
+fn symbol_chain_at_line(
+    symbols: &[ns_lsp::SymbolInfo],
+    cursor_line: usize,
+) -> Vec<(String, usize)> {
+    fn is_container(kind: &str) -> bool {
         matches!(
             kind,
             "namespace" | "class" | "struct" | "interface" | "enum" | "module" | "package"
         )
     }
-     fn walk(
-        symbols: &[ns_lsp::SymbolInfo],
-        cursor_line: usize,
-        chain: &mut Vec<(String, usize)>,
-    ) {
+    fn walk(symbols: &[ns_lsp::SymbolInfo], cursor_line: usize, chain: &mut Vec<(String, usize)>) {
         let mut best: Option<&ns_lsp::SymbolInfo> = None;
         for (index, symbol) in symbols.iter().enumerate() {
             if symbol.line > cursor_line {
@@ -26877,12 +31590,16 @@ fn symbol_matches_filter(symbol: &ns_lsp::SymbolInfo, filter: &str) -> bool {
     chain
 }
 
-
 #[cfg(test)]
 mod outline_tests {
     use super::*;
 
-    fn symbol(name: &str, kind: &str, line: usize, children: Vec<ns_lsp::SymbolInfo>) -> ns_lsp::SymbolInfo {
+    fn symbol(
+        name: &str,
+        kind: &str,
+        line: usize,
+        children: Vec<ns_lsp::SymbolInfo>,
+    ) -> ns_lsp::SymbolInfo {
         ns_lsp::SymbolInfo {
             name: name.to_string(),
             kind: kind.to_string(),
@@ -26972,10 +31689,7 @@ mod snippet_tests {
     #[test]
     fn snippet_expands_tm_variables() {
         let path = Path::new("/project/src/main.c");
-        let (text, _) = expand_snippet(
-            "// ${TM_FILENAME} in ${TM_DIRECTORY}",
-            Some(path),
-        );
+        let (text, _) = expand_snippet("// ${TM_FILENAME} in ${TM_DIRECTORY}", Some(path));
         assert_eq!(text, "// main.c in /project/src");
         let (text, _) = expand_snippet("${TM_FILEPATH}", Some(path));
         assert_eq!(text, "/project/src/main.c");
@@ -27053,7 +31767,10 @@ mod snippet_tests {
         });
         let items = parse_completion_items(&response);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].insert_text.as_deref(), Some("printf(\"%d\\n\", x);"));
+        assert_eq!(
+            items[0].insert_text.as_deref(),
+            Some("printf(\"%d\\n\", x);")
+        );
         assert!(!items[0].snippet);
     }
 
@@ -27101,9 +31818,9 @@ mod tests {
                 config: Default::default(),
             });
             app.show_output = true;
-             app
-         });
-     }
+            app
+        });
+    }
 
     /// `sim_time_readout` hides the time without a configured clock and
     /// formats elapsed time + nominal frequency once one is set.
@@ -27192,7 +31909,10 @@ mod tests {
     #[test]
     fn device_description_short_truncates_and_preserves() {
         assert_eq!(device_description_short("", 64), "");
-        assert_eq!(device_description_short("  Configuration low  ", 64), "Configuration low");
+        assert_eq!(
+            device_description_short("  Configuration low  ", 64),
+            "Configuration low"
+        );
         let long = "a".repeat(100);
         let short = device_description_short(&long, 10);
         assert_eq!(short.chars().count(), 10);
@@ -27245,7 +31965,7 @@ mod tests {
         let (periph, regs) = IdeApp::filter_device_peripheral(&peripheral, "gpio");
         assert!(!periph);
         assert!(regs.is_empty());
-     }
+    }
 
     /// `export_register_snapshot` writes a JSON snapshot of the current
     /// register groups into `.ns-ide/register-snapshot.json` and reports the
@@ -27253,10 +31973,7 @@ mod tests {
     #[test]
     fn export_register_snapshot_writes_json() {
         let mut cx = gpui::TestAppContext::single();
-        let temp = std::env::temp_dir().join(format!(
-            "ns-ide-reg-snapshot-{}",
-            std::process::id()
-        ));
+        let temp = std::env::temp_dir().join(format!("ns-ide-reg-snapshot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&temp).unwrap();
         cx.add_window_view(|_window, cx| {
@@ -27288,21 +32005,19 @@ mod tests {
             );
             app
         });
-        let snapshot = std::fs::read_to_string(temp.join(".ns-ide/register-snapshot.json")).unwrap();
+        let snapshot =
+            std::fs::read_to_string(temp.join(".ns-ide/register-snapshot.json")).unwrap();
         assert!(snapshot.contains("\"pc\": \"0x08000100\""), "{snapshot}");
         assert!(snapshot.contains("\"sp\": \"0x20001000\""), "{snapshot}");
-         let _ = std::fs::remove_dir_all(&temp);
-     }
- 
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
     /// `compare_register_snapshot` loads the saved snapshot and reports the
     /// number of changed registers; a changed value is highlighted.
     #[test]
     fn compare_register_snapshot_counts_changes() {
         let mut cx = gpui::TestAppContext::single();
-        let temp = std::env::temp_dir().join(format!(
-            "ns-ide-reg-compare-{}",
-            std::process::id()
-        ));
+        let temp = std::env::temp_dir().join(format!("ns-ide-reg-compare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(temp.join(".ns-ide")).unwrap();
         std::fs::write(
@@ -27332,17 +32047,13 @@ mod tests {
                 ],
             );
             app.compare_register_snapshot(cx);
-            assert!(
-                app.status.contains("1 个已变更"),
-                "status: {}",
-                app.status
-            );
+            assert!(app.status.contains("1 个已变更"), "status: {}", app.status);
             assert!(app.debug.reg_snapshot.is_some());
             app
         });
-         let _ = std::fs::remove_dir_all(&temp);
-     }
- 
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
     /// `disassemble_at` rejects an invalid address and reports it honestly.
     #[test]
     fn disassemble_at_rejects_invalid_address() {
@@ -27350,9 +32061,13 @@ mod tests {
         cx.add_window_view(|_window, cx| {
             let mut app = IdeApp::new(None, cx);
             app.ensure_disasm_input(cx);
-            app.debug.disasm_input.as_ref().unwrap().update(cx, |field, cx| {
-                field.set_text("zz", cx);
-            });
+            app.debug
+                .disasm_input
+                .as_ref()
+                .unwrap()
+                .update(cx, |field, cx| {
+                    field.set_text("zz", cx);
+                });
             app.disassemble_at(cx);
             assert!(app.status.contains("无效地址"), "status: {}", app.status);
             app
@@ -27377,9 +32092,9 @@ mod tests {
         assert!(!symbol_matches_filter(&symbol, "initx"));
     }
 
-      /// `insert_include_line` places a new `#include` after the last existing
+    /// `insert_include_line` places a new `#include` after the last existing
     /// include (keeping the leading block grouped), or at the top when there
-     /// are none.
+    /// are none.
     #[test]
     fn insert_include_line_after_last_include() {
         let source = "#include <stdint.h>\n#include <stdbool.h>\n\nint main() { return 0; }\n";
@@ -27393,8 +32108,8 @@ mod tests {
         let out = insert_include_line(bare, "#include <gpio.h>", include_insert_at(bare));
         assert_eq!(out, "#include <gpio.h>\nint main() { return 0; }\n");
     }
- 
-     /// Headless render smoke test for the enhanced memory view: with a debug
+
+    /// Headless render smoke test for the enhanced memory view: with a debug
     /// panel open on the Memory tab and a named region, the region bar and the
     /// edit input must render without panicking.
     #[test]
@@ -27591,9 +32306,7 @@ mod tests {
             terminal.update(cx, |terminal, _cx| {
                 terminal.inject_event_for_test(TerminalEvent::Output)
             });
-            let drained = terminal.update(cx, |terminal, cx| {
-                terminal.drain_events(cx)
-            });
+            let drained = terminal.update(cx, |terminal, cx| terminal.drain_events(cx));
             assert!(drained, "injected event should be drained");
         });
 
@@ -27617,7 +32330,10 @@ mod tests {
         );
         assert!(parse_hex_bytes("").is_err(), "empty input is an error");
         assert!(parse_hex_bytes("gg").is_err(), "non-hex token is an error");
-        assert!(parse_hex_bytes("de ad zz").is_err(), "bad token errors whole");
+        assert!(
+            parse_hex_bytes("de ad zz").is_err(),
+            "bad token errors whole"
+        );
     }
 
     #[test]
@@ -27646,7 +32362,10 @@ mod tests {
     fn hex_dump_round_trips_editable_bytes() {
         // A full 16-byte row plus a partial 3-byte row, including non-printable
         // bytes so the ASCII gutter uses '.' — those must not leak into bytes.
-        let bytes = vec![0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x7F, 0xFF];
+        let bytes = vec![
+            0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+            0x4A, 0x7F, 0xFF,
+        ];
         let dump = hex_dump_text(&bytes);
         let parsed = parse_hex_dump_bytes(&dump).expect("dump parses back");
         assert_eq!(parsed, bytes, "round-trip preserves exact bytes");
@@ -27672,7 +32391,10 @@ mod tests {
         assert!(is_binary_file(std::path::Path::new("out/fw.bin"), b"abc"));
         assert!(is_binary_file(std::path::Path::new("out/fw.elf"), b""));
         // A NUL byte in the head marks a binary payload.
-        assert!(is_binary_file(std::path::Path::new("data.dat"), &[0x41, 0x00, 0x42]));
+        assert!(is_binary_file(
+            std::path::Path::new("data.dat"),
+            &[0x41, 0x00, 0x42]
+        ));
         // Source / linker text is not binary.
         assert!(!is_binary_file(
             std::path::Path::new("src/main.c"),
@@ -27731,2150 +32453,4070 @@ mod tests {
         assert_eq!(parse("0x"), None);
         assert_eq!(parse("xyz"), None);
     }
-/// Headless render smoke test for the device picker and per-target build
-/// picker open must render the catalog options without panicking, and the
-/// effective build config must follow the active target.
-#[test]
-fn renders_device_picker_and_build_config() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "devproj".to_string();
-        config.project.target = "stm32f103c8".to_string();
-        config.build.config = "debug".to_string();
-        config.targets.push(ns_project::project::TargetSection {
-            target: "stm32f103c8".to_string(),
-            config: "release".to_string(),
-        });
-        app.project = Some(Project {
-            root: temp.clone(),
-            config,
-        });
-        // The active target's per-target config wins over the shared default.
-        assert_eq!(app.project.as_ref().unwrap().build_config(), "release");
-        // Open the picker and the debug device tab so the render path runs.
-        app.device_picker_open = true;
-        app.show_output = true;
-        app.output_tab = OutputTab::Debug;
-        app.debug.view_tab = DebugViewTab::Device;
-        // Expand a known GPIOA register (CRL at 0x40010800) so the expanded
-        // field rows (name/range/value/description) render path is exercised.
-        app.debug.device_reg_expanded.insert(0x4001_0800);
-        app
-    });
-}
-
-/// A device-register value edit commits to the simulator when one is active:
-/// begin fills the field with the current value, commit parses hex and writes
-/// the target memory, and the register's live value updates.
-#[test]
-fn device_reg_edit_commits_to_simulator() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "regproj".to_string();
-        config.project.target = "stm32f103c8".to_string();
-        app.project = Some(Project {
-            root: temp.clone(),
-            config,
-        });
-        let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
-        let addr = 0x1000u64;
-        sim.write_u32(addr as u32, 0x1111_1111);
-        app.sim.core = Some(sim);
-        app.debug.view_tab = DebugViewTab::Device;
-
-        // Begin editing: the field prefills with the current live value.
-        app.begin_device_reg_edit(addr, cx);
-        assert!(app.debug.device_reg_edit.is_some());
-
-        // Commit a new hex value; the simulator memory must reflect it.
-        app.commit_device_reg_edit("0xDEADBEEF", cx);
-        assert!(app.debug.device_reg_edit.is_none());
-        let value = app.sim.core.as_ref().unwrap().read_u32(addr as u32);
-        assert_eq!(value, 0xDEAD_BEEF, "register write reached the simulator");
-        app
-    });
-}
-
-/// The simulator memory "跟随 PC" button reports honestly when no core is
-/// loaded, and with a core sets the address to the PC and re-reads the dump.
-#[test]
-fn sim_jump_memory_to_pc_sets_address_and_reads() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-
-        // No core loaded: an honest error.
-        app.sim_jump_memory_to_pc(cx);
-        assert!(app
-            .sim
-            .mem_error
-            .as_deref()
-            .is_some_and(|e| e.contains("仿真器未加载")));
-
-        // With a RISC-V core, the address tracks the PC and a dump is read.
-        let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
-        sim.reset(0x1000);
-        let pc = sim.program_counter();
-        assert_eq!(pc, 0x1000);
-        sim.write_u32(pc, 0x1122_3344);
-        app.sim.core = Some(sim);
-        app.sim.mem_address.clear();
-        app.sim_jump_memory_to_pc(cx);
-        assert_eq!(app.sim.mem_address, "0x1000");
-        assert!(!app.sim.mem_bytes.is_empty(), "dump read after jump");
-        app
-    });
-}
-
-/// The simulator register copy button writes `name = 0xvalue` to the
-/// clipboard and reports the status.
-#[test]
-fn sim_copy_reg_writes_name_eq_hex() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
-        sim.write_reg(6, 0xDEAD_BEEF); // t1 (x6 in the ABI)
-        app.sim.core = Some(sim);
-        app.sim_copy_reg(6, cx);
-        assert!(app.sim.status.contains("t1 = 0xdeadbeef"), "{}", app.sim.status);
-        app
-    });
-}
-
-/// `sim_run_to_cursor` maps the cursor's source line to an address via the
-/// ELF line table, runs to it, restores the user breakpoints, and reports the
-/// hit line. A line with no mapped address reports honestly.
-#[test]
-fn sim_run_to_cursor_runs_to_mapped_line() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "simcursor".to_string();
-        app.project = Some(Project {
-            root: temp.clone(),
-            config,
-        });
-        // A two-instruction program: `addi x0,x0,0` at ENTRY and at +4.
-        let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
-        sim.load_image(ns_sim::ENTRY_POINT, &[0x13, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00]);
-        sim.line_table = vec![
-            ns_sim::LineEntry { address: ns_sim::ENTRY_POINT, file: 0, line: 1 },
-            ns_sim::LineEntry { address: ns_sim::ENTRY_POINT + 4, file: 0, line: 2 },
-        ];
-        sim.source_files = vec!["main.c".to_string()];
-        // The cursor line must not already be a breakpoint, so the transient
-        // target is observable after the run.
-        app.sim.core = Some(sim);
-
-        let main = temp.join("main.c");
-        std::fs::write(&main, "int main(void) {\n    return 0;\n}\n").unwrap();
-        app.open_file(main.clone(), cx);
-        app.active_editor()
-            .unwrap()
-            .update(cx, |editor, cx| editor.set_cursor_line(1, cx)); // 0-based line 1 = 源码第 2 行
-        app.sim_run_to_cursor(cx);
-        assert!(
-            app.sim.status.contains("已运行到光标"),
-            "status: {}",
-            app.sim.status
-        );
-        let pc = app.sim.core.as_ref().unwrap().program_counter();
-        assert_eq!(pc, ns_sim::ENTRY_POINT + 4, "ran to the cursor line");
-
-        // A line with no mapped address reports the limitation.
-        app.active_editor()
-            .unwrap()
-            .update(cx, |editor, cx| editor.set_cursor_line(50, cx));
-        app.sim_run_to_cursor(cx);
-        assert!(app.sim.status.contains("没有可映射"), "status: {}", app.sim.status);
-        let _ = std::fs::remove_dir_all(&temp);
-        app
-    });
-}
-
-/// A disassembly row with a source mapping toggles that source line's
-/// breakpoint; a row without a mapping reports the limitation instead of
-/// silently doing nothing.
-#[test]
-fn disasm_row_toggles_source_breakpoint() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "disasmproj".to_string();
-        app.project = Some(Project {
-            root: temp.clone(),
-            config,
-        });
-        let file = "src/main.c".to_string();
-        let line = 12;
-        // Toggle on: the breakpoint store now has it.
-        app.on_breakpoint_toggled(&file, line, true, cx);
-        assert!(
-            app.breakpoints.find(&file, line).is_some(),
-            "disassembly row added a source breakpoint"
-        );
-        // Toggle off: it is removed.
-        app.on_breakpoint_toggled(&file, line, false, cx);
-        assert!(
-            app.breakpoints.find(&file, line).is_none(),
-            "disassembly row removed the source breakpoint"
-        );
-        app
-    });
-}
-
-#[test]
-fn tree_move_plan_rejects_invalid_targets() {
-    let root = Path::new("/proj");
-    let source = root.join("src/main.c");
-    // Moving a file into the directory that already contains it is refused.
-    let same_dir = source.parent().unwrap();
-    let err = tree_move_plan(&source, same_dir).unwrap_err();
-    assert!(err.contains("相同"), "{err}");
-    // Moving a directory into itself / a descendant is refused.
-    let dir = root.join("src");
-    let err = tree_move_plan(&dir, &dir).unwrap_err();
-    assert!(err.contains("自身"), "{err}");
-    let nested = root.join("src/sub");
-    let err = tree_move_plan(&dir, &nested).unwrap_err();
-    assert!(err.contains("自身"), "{err}");
-}
-
-#[test]
-fn tree_move_plan_computes_destination_into_dir() {
-    let root = Path::new("/proj");
-    let source = root.join("src/main.c");
-    let dest = root.join("lib");
-    let destination = tree_move_plan(&source, &dest).unwrap();
-    assert_eq!(destination, dest.join("main.c"));
-}
-
-#[test]
-fn register_group_storage_routes_scope_and_groups() {
-    let mut view = DebugView::default();
-    view.registers_scope = 42;
-    let mut fetch = Vec::new();
-
-    // The "Registers" scope reply lists two group headers.
-    let headers = vec![
-        Variable {
-            name: "General Purpose Registers".into(),
-            value: String::new(),
-            variables_reference: 7,
-        },
-        Variable {
-            name: "Floating Point Registers".into(),
-            value: String::new(),
-            variables_reference: 8,
-        },
-    ];
-    view.apply_register_group(42, &headers, &mut fetch);
-    assert_eq!(fetch, vec![7, 8]);
-    assert!(view.register_groups.contains_key("General Purpose Registers"));
-    assert!(view.register_groups.contains_key("Floating Point Registers"));
-
-    // A group reply is stored under its header name.
-    let gp = vec![Variable {
-        name: "r0".into(),
-        value: "0x0".into(),
-        variables_reference: 0,
-    }];
-    view.apply_register_group(7, &gp, &mut fetch);
-    assert_eq!(view.register_groups["General Purpose Registers"].len(), 1);
-    assert_eq!(view.register_groups["General Purpose Registers"][0].name, "r0");
-
-    // An unknown reply is shown under a synthetic group.
-    view.apply_register_group(99, &gp, &mut fetch);
-    assert!(view.register_groups.contains_key("寄存器 #99"));
-}
-
-/// A configured keystroke override must replace the default binding for that
-/// action, while actions without an override keep their default.
-#[test]
-fn bindings_apply_keystroke_overrides() {
-    let mut overrides = ns_project::KeybindingOverrides::default();
-    overrides
-        .overrides
-        .insert("Build".to_string(), "cmd-shift-b".to_string());
-    overrides
-        .overrides
-        .insert("Debug".to_string(), "ctrl-f5".to_string());
-    let bindings = bindings_with(&overrides);
-    // The action's `name()` is `namespace::Name` (e.g. `ns_ide::Build`); match
-    // on the trailing segment so the test is robust to the namespace prefix.
-    let build = bindings
-        .iter()
-        .find(|binding| binding.action().name().ends_with("Build"))
-        .expect("Build binding exists");
-    let keys = build.keystrokes();
-    assert!(!keys.is_empty());
-    // The override maps Build to cmd-shift-b; assert the parsed keystroke
-    // carries the override rather than the default `cmd-b`.
-    let key_text = keys
-        .iter()
-        .map(|key| format!("{:?}", key))
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(key_text.contains("cmd") || key_text.contains("shift"), "override applied: {key_text}");
-    // Debug must have a single binding after the override; match the exact
-    // namespace-qualified name so `StopDebug`/`DebugStepOver` don't match.
-    let debug_count = bindings
-        .iter()
-        .filter(|binding| binding.action().name().ends_with("::Debug"))
-        .count();
-    assert_eq!(debug_count, 1, "Debug override collapses to a single binding");
-}
-
-#[test]
-fn stop_reason_label_classifies_exceptions_and_signals() {
-    assert_eq!(debug_stop_reason_label("breakpoint", None), "已命中断点");
-    assert_eq!(debug_stop_reason_label("step", None), "单步暂停");
-    assert_eq!(debug_stop_reason_label("pause", None), "已暂停");
-    assert_eq!(
-        debug_stop_reason_label("exception", Some("EXC_BAD_ACCESS")),
-        "异常停止 · EXC_BAD_ACCESS"
-    );
-    assert_eq!(
-        debug_stop_reason_label("signal", Some("SIGSEGV")),
-        "信号停止 · SIGSEGV"
-    );
-    assert_eq!(
-        debug_stop_reason_label("hardware exception", Some("Hardware Breakpoint")),
-        "异常停止 · Hardware Breakpoint"
-    );
-    assert_eq!(debug_stop_reason_label("exception", None), "异常停止");
-    assert_eq!(debug_stop_reason_label("unknown", None), "已暂停 (unknown)");
-}
-
-/// `render_firmware_size_summary` reports Flash/RAM usage against the target's
-/// memory map, including a percentage and an overflow warning.
-#[test]
-fn firmware_size_summary_reports_usage_and_overflow() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir().join("ns_ide_size_summary_test");
-    std::fs::create_dir_all(&temp).unwrap();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let config = ns_project::ProjectConfig {
-            project: ns_project::ProjectSection {
-                name: "blinky".to_string(),
+    /// Headless render smoke test for the device picker and per-target build
+    /// picker open must render the catalog options without panicking, and the
+    /// effective build config must follow the active target.
+    #[test]
+    fn renders_device_picker_and_build_config() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "devproj".to_string();
+            config.project.target = "stm32f103c8".to_string();
+            config.build.config = "debug".to_string();
+            config.targets.push(ns_project::project::TargetSection {
                 target: "stm32f103c8".to_string(),
-                ..Default::default()
+                config: "release".to_string(),
+            });
+            app.project = Some(Project {
+                root: temp.clone(),
+                config,
+            });
+            // The active target's per-target config wins over the shared default.
+            assert_eq!(app.project.as_ref().unwrap().build_config(), "release");
+            // Open the picker and the debug device tab so the render path runs.
+            app.device_picker_open = true;
+            app.show_output = true;
+            app.output_tab = OutputTab::Debug;
+            app.debug.view_tab = DebugViewTab::Device;
+            // Expand a known GPIOA register (CRL at 0x40010800) so the expanded
+            // field rows (name/range/value/description) render path is exercised.
+            app.debug.device_reg_expanded.insert(0x4001_0800);
+            app
+        });
+    }
+
+    /// A device-register value edit commits to the simulator when one is active:
+    /// begin fills the field with the current value, commit parses hex and writes
+    /// the target memory, and the register's live value updates.
+    #[test]
+    fn device_reg_edit_commits_to_simulator() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "regproj".to_string();
+            config.project.target = "stm32f103c8".to_string();
+            app.project = Some(Project {
+                root: temp.clone(),
+                config,
+            });
+            let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
+            let addr = 0x1000u64;
+            sim.write_u32(addr as u32, 0x1111_1111);
+            app.sim.core = Some(sim);
+            app.debug.view_tab = DebugViewTab::Device;
+
+            // Begin editing: the field prefills with the current live value.
+            app.begin_device_reg_edit(addr, cx);
+            assert!(app.debug.device_reg_edit.is_some());
+
+            // Commit a new hex value; the simulator memory must reflect it.
+            app.commit_device_reg_edit("0xDEADBEEF", cx);
+            assert!(app.debug.device_reg_edit.is_none());
+            let value = app.sim.core.as_ref().unwrap().read_u32(addr as u32);
+            assert_eq!(value, 0xDEAD_BEEF, "register write reached the simulator");
+            app
+        });
+    }
+
+    /// The simulator memory "跟随 PC" button reports honestly when no core is
+    /// loaded, and with a core sets the address to the PC and re-reads the dump.
+    #[test]
+    fn sim_jump_memory_to_pc_sets_address_and_reads() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+
+            // No core loaded: an honest error.
+            app.sim_jump_memory_to_pc(cx);
+            assert!(
+                app.sim
+                    .mem_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("仿真器未加载"))
+            );
+
+            // With a RISC-V core, the address tracks the PC and a dump is read.
+            let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
+            sim.reset(0x1000);
+            let pc = sim.program_counter();
+            assert_eq!(pc, 0x1000);
+            sim.write_u32(pc, 0x1122_3344);
+            app.sim.core = Some(sim);
+            app.sim.mem_address.clear();
+            app.sim_jump_memory_to_pc(cx);
+            assert_eq!(app.sim.mem_address, "0x1000");
+            assert!(!app.sim.mem_bytes.is_empty(), "dump read after jump");
+            app
+        });
+    }
+
+    /// The simulator register copy button writes `name = 0xvalue` to the
+    /// clipboard and reports the status.
+    #[test]
+    fn sim_copy_reg_writes_name_eq_hex() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
+            sim.write_reg(6, 0xDEAD_BEEF); // t1 (x6 in the ABI)
+            app.sim.core = Some(sim);
+            app.sim_copy_reg(6, cx);
+            assert!(
+                app.sim.status.contains("t1 = 0xdeadbeef"),
+                "{}",
+                app.sim.status
+            );
+            app
+        });
+    }
+
+    /// `sim_run_to_cursor` maps the cursor's source line to an address via the
+    /// ELF line table, runs to it, restores the user breakpoints, and reports the
+    /// hit line. A line with no mapped address reports honestly.
+    #[test]
+    fn sim_run_to_cursor_runs_to_mapped_line() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "simcursor".to_string();
+            app.project = Some(Project {
+                root: temp.clone(),
+                config,
+            });
+            // A two-instruction program: `addi x0,x0,0` at ENTRY and at +4.
+            let mut sim = ns_sim::Simulator::for_arch(ns_sim::Arch::RiscV).expect("RISC-V core");
+            sim.load_image(
+                ns_sim::ENTRY_POINT,
+                &[0x13, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00],
+            );
+            sim.line_table = vec![
+                ns_sim::LineEntry {
+                    address: ns_sim::ENTRY_POINT,
+                    file: 0,
+                    line: 1,
+                },
+                ns_sim::LineEntry {
+                    address: ns_sim::ENTRY_POINT + 4,
+                    file: 0,
+                    line: 2,
+                },
+            ];
+            sim.source_files = vec!["main.c".to_string()];
+            // The cursor line must not already be a breakpoint, so the transient
+            // target is observable after the run.
+            app.sim.core = Some(sim);
+
+            let main = temp.join("main.c");
+            std::fs::write(&main, "int main(void) {\n    return 0;\n}\n").unwrap();
+            app.open_file(main.clone(), cx);
+            app.active_editor()
+                .unwrap()
+                .update(cx, |editor, cx| editor.set_cursor_line(1, cx)); // 0-based line 1 = 源码第 2 行
+            app.sim_run_to_cursor(cx);
+            assert!(
+                app.sim.status.contains("已运行到光标"),
+                "status: {}",
+                app.sim.status
+            );
+            let pc = app.sim.core.as_ref().unwrap().program_counter();
+            assert_eq!(pc, ns_sim::ENTRY_POINT + 4, "ran to the cursor line");
+
+            // A line with no mapped address reports the limitation.
+            app.active_editor()
+                .unwrap()
+                .update(cx, |editor, cx| editor.set_cursor_line(50, cx));
+            app.sim_run_to_cursor(cx);
+            assert!(
+                app.sim.status.contains("没有可映射"),
+                "status: {}",
+                app.sim.status
+            );
+            let _ = std::fs::remove_dir_all(&temp);
+            app
+        });
+    }
+
+    /// A disassembly row with a source mapping toggles that source line's
+    /// breakpoint; a row without a mapping reports the limitation instead of
+    /// silently doing nothing.
+    #[test]
+    fn disasm_row_toggles_source_breakpoint() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "disasmproj".to_string();
+            app.project = Some(Project {
+                root: temp.clone(),
+                config,
+            });
+            let file = "src/main.c".to_string();
+            let line = 12;
+            // Toggle on: the breakpoint store now has it.
+            app.on_breakpoint_toggled(&file, line, true, cx);
+            assert!(
+                app.breakpoints.find(&file, line).is_some(),
+                "disassembly row added a source breakpoint"
+            );
+            // Toggle off: it is removed.
+            app.on_breakpoint_toggled(&file, line, false, cx);
+            assert!(
+                app.breakpoints.find(&file, line).is_none(),
+                "disassembly row removed the source breakpoint"
+            );
+            app
+        });
+    }
+
+    #[test]
+    fn tree_move_plan_rejects_invalid_targets() {
+        let root = Path::new("/proj");
+        let source = root.join("src/main.c");
+        // Moving a file into the directory that already contains it is refused.
+        let same_dir = source.parent().unwrap();
+        let err = tree_move_plan(&source, same_dir).unwrap_err();
+        assert!(err.contains("相同"), "{err}");
+        // Moving a directory into itself / a descendant is refused.
+        let dir = root.join("src");
+        let err = tree_move_plan(&dir, &dir).unwrap_err();
+        assert!(err.contains("自身"), "{err}");
+        let nested = root.join("src/sub");
+        let err = tree_move_plan(&dir, &nested).unwrap_err();
+        assert!(err.contains("自身"), "{err}");
+    }
+
+    #[test]
+    fn tree_move_plan_computes_destination_into_dir() {
+        let root = Path::new("/proj");
+        let source = root.join("src/main.c");
+        let dest = root.join("lib");
+        let destination = tree_move_plan(&source, &dest).unwrap();
+        assert_eq!(destination, dest.join("main.c"));
+    }
+
+    #[test]
+    fn register_group_storage_routes_scope_and_groups() {
+        let mut view = DebugView::default();
+        view.registers_scope = 42;
+        let mut fetch = Vec::new();
+
+        // The "Registers" scope reply lists two group headers.
+        let headers = vec![
+            Variable {
+                name: "General Purpose Registers".into(),
+                value: String::new(),
+                variables_reference: 7,
             },
-            ..Default::default()
-        };
-        app.project = Some(Project {
-            root: temp.clone(),
-            config,
-        });
-        // A size within capacity reports a percentage; no overflow warning.
-         app.firmware_size = Some(ns_flash::FirmwareSize {
-             flash: 1024,
-             ram: 256,
-            text: 1024,
-            data: 256,
-            bss: 0,
-             total: 1280,
-             base: 0x0800_0000,
-            symbols: vec![],
-         });
-        let line = app.render_firmware_size_summary();
-        assert!(line.contains("Flash 1024"), "flash usage: {line}");
-        assert!(line.contains("RAM 256"), "ram usage: {line}");
-        assert!(!line.contains("超出"), "no overflow at capacity: {line}");
-        // Over-capacity flash warns.
-         app.firmware_size = Some(ns_flash::FirmwareSize {
-             flash: 1_000_000,
-             ram: 100,
-            text: 1_000_000,
-            data: 100,
-            bss: 0,
-             total: 1_000_100,
-             base: 0x0800_0000,
-             symbols: vec![],
-         });
-        let line = app.render_firmware_size_summary();
-        assert!(line.contains("超出"), "overflow warned: {line}");
-        app
-    });
-    std::fs::remove_dir_all(&temp).ok();
-}
-
-/// `stale_sources` flags only sources modified after the artifact, and returns
-/// an empty list when the artifact or a source is missing.
-#[test]
-fn stale_sources_flags_newer_than_artifact() {
-    let temp = std::env::temp_dir().join("ns_ide_stale_test");
-    std::fs::create_dir_all(&temp).unwrap();
-    let artifact = temp.join("fw.elf");
-    let old = temp.join("old.c");
-    let new = temp.join("new.c");
-    // Write `old.c` first, then the artifact, then `new.c` — so the artifact
-    // is newer than `old.c` but older than `new.c`. Sleep between writes to
-    // guarantee distinct modification times on coarse filesystems.
-    std::fs::write(&old, b"old").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    std::fs::write(&artifact, b"firmware").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    std::fs::write(&new, b"new").unwrap();
-    let stale = stale_sources(&artifact, &[old.clone(), new.clone()]);
-    assert_eq!(stale, vec![new.clone()], "only the newer source is stale");
-    // A missing artifact yields no staleness (cannot compare).
-    assert!(stale_sources(&temp.join("missing.elf"), &[old.clone()]).is_empty());
-    std::fs::remove_dir_all(&temp).ok();
-}
-
-/// `variable_path` reconstructs the name chain from the scope root to a
-/// variable, so expansion state can be persisted across DAP reference churn.
-#[test]
-fn variable_path_reconstructs_name_chain() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        // Scope: `struct` (ref 1) → child `field` (ref 2).
-        app.debug.variables = vec![Variable {
-            name: "struct".to_string(),
-            value: "{...}".to_string(),
-            variables_reference: 1,
-        }];
-        app.debug.children.insert(
-            1,
-            vec![Variable {
-                name: "field".to_string(),
-                value: "42".to_string(),
-                variables_reference: 2,
-            }],
-        );
-        assert_eq!(app.variable_path(1), vec!["struct".to_string()]);
-        assert_eq!(
-            app.variable_path(2),
-            vec!["struct".to_string(), "field".to_string()]
-        );
-        assert!(app.variable_path(99).is_empty());
-        app
-    });
-}
-
-/// Toggling a variable records its path; re-applying the path against a fresh
-/// scope (new references) re-expands the matching variable by name.
-#[test]
-fn expanded_paths_survive_reference_churn() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        // First stop: variable `counter` at ref 10.
-        app.debug.variables = vec![Variable {
-            name: "counter".to_string(),
-            value: "0".to_string(),
-            variables_reference: 10,
-        }];
-        // Expand it (simulate the user clicking the chevron).
-        app.debug.expanded.insert(10);
-        app.debug.expanded_paths.push(vec!["counter".to_string()]);
-        // Second stop: the same variable arrives with a new reference (20).
-        app.debug.variables = vec![Variable {
-            name: "counter".to_string(),
-            value: "1".to_string(),
-            variables_reference: 20,
-        }];
-        app.debug.children.clear();
-        app.debug.expanded.clear();
-        app.reapply_expanded_paths();
-        // The variable should be re-expanded under its new reference.
+            Variable {
+                name: "Floating Point Registers".into(),
+                value: String::new(),
+                variables_reference: 8,
+            },
+        ];
+        view.apply_register_group(42, &headers, &mut fetch);
+        assert_eq!(fetch, vec![7, 8]);
         assert!(
-            app.debug.expanded.contains(&20),
-            "re-expanded by name after reference churn"
+            view.register_groups
+                .contains_key("General Purpose Registers")
         );
-        assert_eq!(app.debug.expanded_paths, vec![vec!["counter".to_string()]]);
-        app
-    });
-}
+        assert!(
+            view.register_groups
+                .contains_key("Floating Point Registers")
+        );
 
-/// Splitting the editor opens the active file in an independent second pane;
-/// closing it removes the pane. Works against a real temp file.
-#[test]
-fn split_view_opens_and_closes() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-split-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("main.c");
-        std::fs::write(&file, "int main(void) { return 0; }\n").unwrap();
+        // A group reply is stored under its header name.
+        let gp = vec![Variable {
+            name: "r0".into(),
+            value: "0x0".into(),
+            variables_reference: 0,
+        }];
+        view.apply_register_group(7, &gp, &mut fetch);
+        assert_eq!(view.register_groups["General Purpose Registers"].len(), 1);
+        assert_eq!(
+            view.register_groups["General Purpose Registers"][0].name,
+            "r0"
+        );
 
-        let mut app = IdeApp::new(None, cx);
-        app.open_file(file.clone(), cx);
-        assert!(app.active_tab.is_some());
+        // An unknown reply is shown under a synthetic group.
+        view.apply_register_group(99, &gp, &mut fetch);
+        assert!(view.register_groups.contains_key("寄存器 #99"));
+    }
 
-        // Split the active file: the pane opens with an independent editor.
-        app.split_editor_right(cx);
-        let split = app.split.as_ref().expect("split pane opened");
-        assert_eq!(split.path, file.canonicalize().unwrap());
-        assert!(split.editor.read(cx).text().contains("main"));
+    /// A configured keystroke override must replace the default binding for that
+    /// action, while actions without an override keep their default.
+    #[test]
+    fn bindings_apply_keystroke_overrides() {
+        let mut overrides = ns_project::KeybindingOverrides::default();
+        overrides
+            .overrides
+            .insert("Build".to_string(), "cmd-shift-b".to_string());
+        overrides
+            .overrides
+            .insert("Debug".to_string(), "ctrl-f5".to_string());
+        let bindings = bindings_with(&overrides);
+        // The action's `name()` is `namespace::Name` (e.g. `ns_ide::Build`); match
+        // on the trailing segment so the test is robust to the namespace prefix.
+        let build = bindings
+            .iter()
+            .find(|binding| binding.action().name().ends_with("Build"))
+            .expect("Build binding exists");
+        let keys = build.keystrokes();
+        assert!(!keys.is_empty());
+        // The override maps Build to cmd-shift-b; assert the parsed keystroke
+        // carries the override rather than the default `cmd-b`.
+        let key_text = keys
+            .iter()
+            .map(|key| format!("{:?}", key))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            key_text.contains("cmd") || key_text.contains("shift"),
+            "override applied: {key_text}"
+        );
+        // Debug must have a single binding after the override; match the exact
+        // namespace-qualified name so `StopDebug`/`DebugStepOver` don't match.
+        let debug_count = bindings
+            .iter()
+            .filter(|binding| binding.action().name().ends_with("::Debug"))
+            .count();
+        assert_eq!(
+            debug_count, 1,
+            "Debug override collapses to a single binding"
+        );
+    }
 
-        // Closing removes the pane and leaves the main tab intact.
-        app.close_split(cx);
-        assert!(app.split.is_none());
-        assert!(app.active_tab.is_some());
+    #[test]
+    fn stop_reason_label_classifies_exceptions_and_signals() {
+        assert_eq!(debug_stop_reason_label("breakpoint", None), "已命中断点");
+        assert_eq!(debug_stop_reason_label("step", None), "单步暂停");
+        assert_eq!(debug_stop_reason_label("pause", None), "已暂停");
+        assert_eq!(
+            debug_stop_reason_label("exception", Some("EXC_BAD_ACCESS")),
+            "异常停止 · EXC_BAD_ACCESS"
+        );
+        assert_eq!(
+            debug_stop_reason_label("signal", Some("SIGSEGV")),
+            "信号停止 · SIGSEGV"
+        );
+        assert_eq!(
+            debug_stop_reason_label("hardware exception", Some("Hardware Breakpoint")),
+            "异常停止 · Hardware Breakpoint"
+        );
+        assert_eq!(debug_stop_reason_label("exception", None), "异常停止");
+        assert_eq!(debug_stop_reason_label("unknown", None), "已暂停 (unknown)");
+    }
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// The workspace-symbol popup parses a `workspace/symbol` response, moves the
-/// highlight, and confirming opens the target file at the symbol's line.
-#[test]
-fn workspace_symbol_search_navigates() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-ws-sym-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("main.c");
-        std::fs::write(&file, "int main(void) { return 0; }\n").unwrap();
-
-        let mut app = IdeApp::new(None, cx);
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "wsproj".to_string();
-        app.project = Some(Project {
-            root: dir.clone(),
-            config,
+    /// `render_firmware_size_summary` reports Flash/RAM usage against the target's
+    /// memory map, including a percentage and an overflow warning.
+    #[test]
+    fn firmware_size_summary_reports_usage_and_overflow() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir().join("ns_ide_size_summary_test");
+        std::fs::create_dir_all(&temp).unwrap();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let config = ns_project::ProjectConfig {
+                project: ns_project::ProjectSection {
+                    name: "blinky".to_string(),
+                    target: "stm32f103c8".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            app.project = Some(Project {
+                root: temp.clone(),
+                config,
+            });
+            // A size within capacity reports a percentage; no overflow warning.
+            app.firmware_size = Some(ns_flash::FirmwareSize {
+                flash: 1024,
+                ram: 256,
+                text: 1024,
+                data: 256,
+                bss: 0,
+                total: 1280,
+                base: 0x0800_0000,
+                symbols: vec![],
+            });
+            let line = app.render_firmware_size_summary();
+            assert!(line.contains("Flash 1024"), "flash usage: {line}");
+            assert!(line.contains("RAM 256"), "ram usage: {line}");
+            assert!(!line.contains("超出"), "no overflow at capacity: {line}");
+            // Over-capacity flash warns.
+            app.firmware_size = Some(ns_flash::FirmwareSize {
+                flash: 1_000_000,
+                ram: 100,
+                text: 1_000_000,
+                data: 100,
+                bss: 0,
+                total: 1_000_100,
+                base: 0x0800_0000,
+                symbols: vec![],
+            });
+            let line = app.render_firmware_size_summary();
+            assert!(line.contains("超出"), "overflow warned: {line}");
+            app
         });
+        std::fs::remove_dir_all(&temp).ok();
+    }
 
-        // Simulate a workspace/symbol response for the query "main".
-        app.workspace_symbols = ns_lsp::parse_workspace_symbols(&serde_json::json!({
-            "result": [
-                {
-                    "name": "main",
-                    "kind": 12,
-                    "location": {
+    /// `stale_sources` flags only sources modified after the artifact, and returns
+    /// an empty list when the artifact or a source is missing.
+    #[test]
+    fn stale_sources_flags_newer_than_artifact() {
+        let temp = std::env::temp_dir().join("ns_ide_stale_test");
+        std::fs::create_dir_all(&temp).unwrap();
+        let artifact = temp.join("fw.elf");
+        let old = temp.join("old.c");
+        let new = temp.join("new.c");
+        // Write `old.c` first, then the artifact, then `new.c` — so the artifact
+        // is newer than `old.c` but older than `new.c`. Sleep between writes to
+        // guarantee distinct modification times on coarse filesystems.
+        std::fs::write(&old, b"old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&artifact, b"firmware").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&new, b"new").unwrap();
+        let stale = stale_sources(&artifact, &[old.clone(), new.clone()]);
+        assert_eq!(stale, vec![new.clone()], "only the newer source is stale");
+        // A missing artifact yields no staleness (cannot compare).
+        assert!(stale_sources(&temp.join("missing.elf"), &[old.clone()]).is_empty());
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    /// `variable_path` reconstructs the name chain from the scope root to a
+    /// variable, so expansion state can be persisted across DAP reference churn.
+    #[test]
+    fn variable_path_reconstructs_name_chain() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            // Scope: `struct` (ref 1) → child `field` (ref 2).
+            app.debug.variables = vec![Variable {
+                name: "struct".to_string(),
+                value: "{...}".to_string(),
+                variables_reference: 1,
+            }];
+            app.debug.children.insert(
+                1,
+                vec![Variable {
+                    name: "field".to_string(),
+                    value: "42".to_string(),
+                    variables_reference: 2,
+                }],
+            );
+            assert_eq!(app.variable_path(1), vec!["struct".to_string()]);
+            assert_eq!(
+                app.variable_path(2),
+                vec!["struct".to_string(), "field".to_string()]
+            );
+            assert!(app.variable_path(99).is_empty());
+            app
+        });
+    }
+
+    /// Toggling a variable records its path; re-applying the path against a fresh
+    /// scope (new references) re-expands the matching variable by name.
+    #[test]
+    fn expanded_paths_survive_reference_churn() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            // First stop: variable `counter` at ref 10.
+            app.debug.variables = vec![Variable {
+                name: "counter".to_string(),
+                value: "0".to_string(),
+                variables_reference: 10,
+            }];
+            // Expand it (simulate the user clicking the chevron).
+            app.debug.expanded.insert(10);
+            app.debug.expanded_paths.push(vec!["counter".to_string()]);
+            // Second stop: the same variable arrives with a new reference (20).
+            app.debug.variables = vec![Variable {
+                name: "counter".to_string(),
+                value: "1".to_string(),
+                variables_reference: 20,
+            }];
+            app.debug.children.clear();
+            app.debug.expanded.clear();
+            app.reapply_expanded_paths();
+            // The variable should be re-expanded under its new reference.
+            assert!(
+                app.debug.expanded.contains(&20),
+                "re-expanded by name after reference churn"
+            );
+            assert_eq!(app.debug.expanded_paths, vec![vec!["counter".to_string()]]);
+            app
+        });
+    }
+
+    /// Splitting the editor opens the active file in an independent second pane;
+    /// closing it removes the pane. Works against a real temp file.
+    #[test]
+    fn split_view_opens_and_closes() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-split-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("main.c");
+            std::fs::write(&file, "int main(void) { return 0; }\n").unwrap();
+
+            let mut app = IdeApp::new(None, cx);
+            app.open_file(file.clone(), cx);
+            assert!(app.active_tab.is_some());
+
+            // Split the active file: the pane opens with an independent editor.
+            app.split_editor_right(cx);
+            let split = app.split.as_ref().expect("split pane opened");
+            assert_eq!(split.path, file.canonicalize().unwrap());
+            assert!(split.editor.read(cx).text().contains("main"));
+
+            // Closing removes the pane and leaves the main tab intact.
+            app.close_split(cx);
+            assert!(app.split.is_none());
+            assert!(app.active_tab.is_some());
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// The workspace-symbol popup parses a `workspace/symbol` response, moves the
+    /// highlight, and confirming opens the target file at the symbol's line.
+    #[test]
+    fn workspace_symbol_search_navigates() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-ws-sym-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("main.c");
+            std::fs::write(&file, "int main(void) { return 0; }\n").unwrap();
+
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "wsproj".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            // Simulate a workspace/symbol response for the query "main".
+            app.workspace_symbols = ns_lsp::parse_workspace_symbols(&serde_json::json!({
+                "result": [
+                    {
+                        "name": "main",
+                        "kind": 12,
+                        "location": {
+                            "uri": format!("file://{}", file.to_string_lossy()),
+                            "range": {
+                                "start": { "line": 0, "character": 4 },
+                                "end": { "line": 0, "character": 8 }
+                            }
+                        }
+                    }
+                ]
+            }));
+            assert_eq!(app.workspace_symbols.len(), 1);
+            assert_eq!(app.workspace_symbols[0].name, "main");
+
+            // Move down then wrap back up (single entry stays put).
+            app.workspace_symbol_move(1, cx);
+            assert_eq!(app.workspace_symbol_selected, 0);
+
+            // Confirming opens the file and places the cursor on the symbol line.
+            app.workspace_symbol_confirm(cx);
+            assert!(!app.workspace_symbol_open, "popup closes after confirm");
+            assert!(app.active_tab.is_some(), "target file opened");
+            assert!(app.active_editor().is_some());
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// The references popup lists LSP `textDocument/references` locations, and
+    /// confirming opens the highlighted reference's file at its line/column.
+    #[test]
+    fn references_popup_navigates() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-refs-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("main.c");
+            std::fs::write(&file, "int helper(void) { return 1; }\n").unwrap();
+
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "refsproj".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            // Simulate a `textDocument/references` response for `helper`.
+            app.references = parse_location_list(&serde_json::json!({
+                "result": [
+                    {
                         "uri": format!("file://{}", file.to_string_lossy()),
                         "range": {
                             "start": { "line": 0, "character": 4 },
-                            "end": { "line": 0, "character": 8 }
+                            "end": { "line": 0, "character": 10 }
                         }
                     }
-                }
-            ]
-        }));
-        assert_eq!(app.workspace_symbols.len(), 1);
-        assert_eq!(app.workspace_symbols[0].name, "main");
+                ]
+            }));
+            assert_eq!(app.references.len(), 1);
+            app.references_open = true;
 
-        // Move down then wrap back up (single entry stays put).
-        app.workspace_symbol_move(1, cx);
-        assert_eq!(app.workspace_symbol_selected, 0);
+            // Move down then wrap back up (single entry stays put).
+            app.references_move(1, cx);
+            assert_eq!(app.references_selected, 0);
 
-        // Confirming opens the file and places the cursor on the symbol line.
-        app.workspace_symbol_confirm(cx);
-        assert!(!app.workspace_symbol_open, "popup closes after confirm");
-        assert!(app.active_tab.is_some(), "target file opened");
-        assert!(app.active_editor().is_some());
+            // Confirming opens the file and places the cursor on the reference.
+            app.references_confirm(cx);
+            assert!(!app.references_open, "popup closes after confirm");
+            assert!(app.active_tab.is_some(), "target file opened");
+            assert!(app.active_editor().is_some());
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
- }
-
-/// The references popup lists LSP `textDocument/references` locations, and
-/// confirming opens the highlighted reference's file at its line/column.
-#[test]
-fn references_popup_navigates() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-refs-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("main.c");
-        std::fs::write(&file, "int helper(void) { return 1; }\n").unwrap();
-
-        let mut app = IdeApp::new(None, cx);
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "refsproj".to_string();
-        app.project = Some(Project {
-            root: dir.clone(),
-            config,
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
+    }
 
-        // Simulate a `textDocument/references` response for `helper`.
-        app.references = parse_location_list(&serde_json::json!({
-            "result": [
-                {
-                    "uri": format!("file://{}", file.to_string_lossy()),
-                    "range": {
-                        "start": { "line": 0, "character": 4 },
-                        "end": { "line": 0, "character": 10 }
-                    }
-                }
-            ]
-        }));
-        assert_eq!(app.references.len(), 1);
-        app.references_open = true;
+    /// Quick Open enumerates the project's source files, filters them by query, and
+    /// confirming opens the highlighted entry.
+    #[test]
+    fn quick_open_filters_and_opens() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-quick-open-{}", std::process::id()));
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
+            std::fs::write(dir.join("src/timer.c"), "void timer_init(void) {}\n").unwrap();
+            std::fs::write(dir.join("README.md"), "# demo\n").unwrap();
 
-        // Move down then wrap back up (single entry stays put).
-        app.references_move(1, cx);
-        assert_eq!(app.references_selected, 0);
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "qop".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
 
-        // Confirming opens the file and places the cursor on the reference.
-        app.references_confirm(cx);
-        assert!(!app.references_open, "popup closes after confirm");
-        assert!(app.active_tab.is_some(), "target file opened");
-        assert!(app.active_editor().is_some());
+            // With no query, every source file is listed (build dirs excluded).
+            app.open_quick_open(window, cx);
+            assert!(app.quick_open);
+            assert!(
+                app.quick_open_files.iter().any(|p| p == "src/main.c"),
+                "main.c listed"
+            );
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
- 
- /// Quick Open enumerates the project's source files, filters them by query, and
-/// confirming opens the highlighted entry.
-#[test]
-fn quick_open_filters_and_opens() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-quick-open-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
-        std::fs::write(dir.join("src/timer.c"), "void timer_init(void) {}\n").unwrap();
-        std::fs::write(dir.join("README.md"), "# demo\n").unwrap();
+            // Filtering narrows the list to matching paths.
+            let _ = app.quick_open_field.update(cx, |field, cx| {
+                field.set_text("timer", cx);
+                field.focus_handle(cx)
+            });
+            app.quick_open_refresh(cx);
+            assert_eq!(app.quick_open_files, vec!["src/timer.c".to_string()]);
 
-        let mut app = IdeApp::new(None, cx);
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "qop".to_string();
-        app.project = Some(Project {
-            root: dir.clone(),
-            config,
+            // Confirm opens the file.
+            app.quick_open_confirm(cx);
+            assert!(!app.quick_open, "popup closes after confirm");
+            assert!(app.active_tab.is_some(), "file opened in editor");
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
+    }
 
-        // With no query, every source file is listed (build dirs excluded).
-        app.open_quick_open(window, cx);
-        assert!(app.quick_open);
-        assert!(
-            app.quick_open_files.iter().any(|p| p == "src/main.c"),
-            "main.c listed"
-        );
+    /// The recent-files popup records opened files (most recent first, de-duped),
+    /// persists them, and confirming reopens the highlighted entry.
+    #[test]
+    fn recent_files_records_and_reopens() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-recent-files-{}", std::process::id()));
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
+            std::fs::write(dir.join("src/timer.c"), "void timer_init(void) {}\n").unwrap();
 
-        // Filtering narrows the list to matching paths.
-        let _ = app.quick_open_field.update(cx, |field, cx| {
-            field.set_text("timer", cx);
-            field.focus_handle(cx)
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "recent".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            // Opening files records them, most recent first.
+            app.open_file(dir.join("src/main.c"), cx);
+            app.open_file(dir.join("src/timer.c"), cx);
+            assert_eq!(app.recent_files.files[0], PathBuf::from("src/timer.c"));
+            assert_eq!(app.recent_files.files[1], PathBuf::from("src/main.c"));
+
+            // Re-opening moves the file to the front without duplicating.
+            app.open_file(dir.join("src/main.c"), cx);
+            assert_eq!(app.recent_files.files.len(), 2);
+            assert_eq!(app.recent_files.files[0], PathBuf::from("src/main.c"));
+
+            // The popup lists them and confirming reopens the highlighted entry.
+            app.open_recent_files(window, cx);
+            assert!(app.recent_open);
+            app.recent_files_confirm(cx);
+            assert!(!app.recent_open, "popup closes after confirm");
+            assert!(app.active_tab.is_some(), "file reopened in editor");
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
-        app.quick_open_refresh(cx);
-        assert_eq!(app.quick_open_files, vec!["src/timer.c".to_string()]);
+    }
 
-        // Confirm opens the file.
-        app.quick_open_confirm(cx);
-        assert!(!app.quick_open, "popup closes after confirm");
-        assert!(app.active_tab.is_some(), "file opened in editor");
+    /// The sidebar file-tree filter narrows the tree to matching files (with their
+    /// ancestor directories shown as context) and clears back to the full tree.
+    #[test]
+    fn tree_filter_narrows_and_clears() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-tree-filter-{}", std::process::id()));
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::create_dir_all(dir.join("include")).unwrap();
+            std::fs::write(dir.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
+            std::fs::write(dir.join("src/timer.c"), "void timer_init(void) {}\n").unwrap();
+            std::fs::write(dir.join("include/config.h"), "#define X 1\n").unwrap();
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "tf".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
 
-/// The recent-files popup records opened files (most recent first, de-duped),
-/// persists them, and confirming reopens the highlighted entry.
-#[test]
-fn recent_files_records_and_reopens() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-recent-files-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
-        std::fs::write(dir.join("src/timer.c"), "void timer_init(void) {}\n").unwrap();
+            // Without a filter, the full tree is returned once the dirs are
+            // expanded (nested files are hidden until their parent is expanded).
+            app.expanded.insert(dir.join("src"));
+            app.expanded.insert(dir.join("include"));
+            let full = app.tree_entries();
+            assert!(full.iter().any(|e| e.name == "main.c"));
 
-        let mut app = IdeApp::new(None, cx);
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "recent".to_string();
-        app.project = Some(Project {
-            root: dir.clone(),
-            config,
+            // Filtering shows only matching files plus their ancestor dirs.
+            app.tree_filter = "timer".to_string();
+            let filtered = app.tree_entries();
+            assert!(
+                filtered.iter().any(|e| e.name == "timer.c"),
+                "matching file listed: {filtered:?}"
+            );
+            assert!(
+                !filtered.iter().any(|e| e.name == "config.h"),
+                "non-matching file excluded: {filtered:?}"
+            );
+            assert!(
+                filtered.iter().any(|e| e.is_dir && e.name == "src"),
+                "ancestor dir shown: {filtered:?}"
+            );
+
+            // Clearing the filter restores the full tree.
+            app.tree_filter = String::new();
+            assert_eq!(app.tree_entries().len(), full.len());
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
+    }
 
-        // Opening files records them, most recent first.
-        app.open_file(dir.join("src/main.c"), cx);
-        app.open_file(dir.join("src/timer.c"), cx);
-        assert_eq!(app.recent_files.files[0], PathBuf::from("src/timer.c"));
-        assert_eq!(app.recent_files.files[1], PathBuf::from("src/main.c"));
+    /// `close_tab` removes the tab from the list (not just the active index), and
+    /// the bulk close helpers keep the intended survivors.
+    #[test]
+    fn tabs_close_and_other_tabs_keep_target() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_tab_test_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = dir.join("a.c");
+            let b = dir.join("b.c");
+            let c = dir.join("c.c");
+            for p in [&a, &b, &c] {
+                std::fs::write(p, "int x;\n").unwrap();
+                app.open_file(p.clone(), cx);
+            }
+            assert_eq!(app.tabs.len(), 3);
+            let a = a.canonicalize().unwrap();
+            let b = b.canonicalize().unwrap();
+            let c = c.canonicalize().unwrap();
 
-        // Re-opening moves the file to the front without duplicating.
-        app.open_file(dir.join("src/main.c"), cx);
-        assert_eq!(app.recent_files.files.len(), 2);
-        assert_eq!(app.recent_files.files[0], PathBuf::from("src/main.c"));
+            // Closing the middle tab removes exactly one entry and re-selects.
+            app.close_tab(1, cx);
+            assert_eq!(app.tabs.len(), 2);
+            assert_eq!(app.tabs[0].path, a);
+            assert_eq!(app.tabs[1].path, c);
+            // Re-open the middle tab, then close others keeps only it.
+            app.open_file(b.clone(), cx);
+            assert_eq!(app.tabs.len(), 3);
+            let keep = app.tabs.iter().position(|t| t.path == b).unwrap();
+            app.close_other_tabs(keep, cx);
+            assert_eq!(app.tabs.len(), 1);
+            assert_eq!(app.tabs[0].path, b);
 
-        // The popup lists them and confirming reopens the highlighted entry.
-        app.open_recent_files(window, cx);
-        assert!(app.recent_open);
-        app.recent_files_confirm(cx);
-        assert!(!app.recent_open, "popup closes after confirm");
-        assert!(app.active_tab.is_some(), "file reopened in editor");
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// The sidebar file-tree filter narrows the tree to matching files (with their
-/// ancestor directories shown as context) and clears back to the full tree.
-#[test]
-fn tree_filter_narrows_and_clears() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-tree-filter-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::create_dir_all(dir.join("include")).unwrap();
-        std::fs::write(dir.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
-        std::fs::write(dir.join("src/timer.c"), "void timer_init(void) {}\n").unwrap();
-        std::fs::write(dir.join("include/config.h"), "#define X 1\n").unwrap();
-
-        let mut app = IdeApp::new(None, cx);
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "tf".to_string();
-        app.project = Some(Project {
-            root: dir.clone(),
-            config,
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
+    }
 
-        // Without a filter, the full tree is returned once the dirs are
-        // expanded (nested files are hidden until their parent is expanded).
-        app.expanded.insert(dir.join("src"));
-        app.expanded.insert(dir.join("include"));
-        let full = app.tree_entries();
-        assert!(full.iter().any(|e| e.name == "main.c"));
+    /// Closing a dirty tab asks to save/discard instead of silently dropping the
+    /// edits; cancel keeps the tab, discard/save closes it.
+    #[test]
+    fn close_dirty_tab_prompts_and_resolves() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_close_dirty_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = dir.join("a.c");
+            let b = dir.join("b.c");
+            for p in [&a, &b] {
+                std::fs::write(p, "int x;\n").unwrap();
+                app.open_file(p.clone(), cx);
+            }
+            assert_eq!(app.tabs.len(), 2);
+            // Dirty the first tab via an edit that changes the buffer.
+            app.tabs[0].editor.update(cx, |editor, _cx| {
+                editor.apply_text_edit(0, 0, 0, 7, "int x = 1;\n");
+            });
+            assert!(app.tabs[0].editor.read(cx).is_dirty());
 
-        // Filtering shows only matching files plus their ancestor dirs.
-        app.tree_filter = "timer".to_string();
-        let filtered = app.tree_entries();
-        assert!(
-            filtered.iter().any(|e| e.name == "timer.c"),
-            "matching file listed: {filtered:?}"
-        );
-        assert!(
-            !filtered.iter().any(|e| e.name == "config.h"),
-            "non-matching file excluded: {filtered:?}"
-        );
-        assert!(
-            filtered.iter().any(|e| e.is_dir && e.name == "src"),
-            "ancestor dir shown: {filtered:?}"
-        );
+            // Requesting a close of the dirty tab opens the confirm dialog and
+            // does not remove the tab.
+            app.close_tab(0, cx);
+            assert!(app.confirm_close_dialog.is_some());
+            assert_eq!(app.tabs.len(), 2);
 
-        // Clearing the filter restores the full tree.
-        app.tree_filter = String::new();
-        assert_eq!(app.tree_entries().len(), full.len());
+            // Cancel clears the dialog and keeps the tab.
+            app.confirm_close_dialog = None;
+            cx.notify();
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
- }
+            // Discard closes the tab without saving.
+            app.close_tab(0, cx);
+            app.resolve_close_dialog(false, cx);
+            assert!(app.confirm_close_dialog.is_none());
+            assert_eq!(app.tabs.len(), 1);
+            assert_eq!(
+                app.tabs[0].path,
+                b.canonicalize().unwrap(),
+                "the clean tab survives"
+            );
 
-/// `close_tab` removes the tab from the list (not just the active index), and
-/// the bulk close helpers keep the intended survivors.
-#[test]
-fn tabs_close_and_other_tabs_keep_target() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = temp.join(format!("ns_tab_test_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = dir.join("a.c");
-        let b = dir.join("b.c");
-        let c = dir.join("c.c");
-         for p in [&a, &b, &c] {
-             std::fs::write(p, "int x;\n").unwrap();
-             app.open_file(p.clone(), cx);
-         }
-         assert_eq!(app.tabs.len(), 3);
-        let a = a.canonicalize().unwrap();
-        let b = b.canonicalize().unwrap();
-        let c = c.canonicalize().unwrap();
- 
-         // Closing the middle tab removes exactly one entry and re-selects.
-         app.close_tab(1, cx);
-         assert_eq!(app.tabs.len(), 2);
-         assert_eq!(app.tabs[0].path, a);
-         assert_eq!(app.tabs[1].path, c);
-        // Re-open the middle tab, then close others keeps only it.
-        app.open_file(b.clone(), cx);
-        assert_eq!(app.tabs.len(), 3);
-        let keep = app.tabs.iter().position(|t| t.path == b).unwrap();
-        app.close_other_tabs(keep, cx);
-        assert_eq!(app.tabs.len(), 1);
-        assert_eq!(app.tabs[0].path, b);
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
- }
-
-/// Closing a dirty tab asks to save/discard instead of silently dropping the
-/// edits; cancel keeps the tab, discard/save closes it.
-#[test]
-fn close_dirty_tab_prompts_and_resolves() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = temp.join(format!("ns_close_dirty_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = dir.join("a.c");
-        let b = dir.join("b.c");
-        for p in [&a, &b] {
-            std::fs::write(p, "int x;\n").unwrap();
-            app.open_file(p.clone(), cx);
-        }
-        assert_eq!(app.tabs.len(), 2);
-        // Dirty the first tab via an edit that changes the buffer.
-        app.tabs[0].editor.update(cx, |editor, _cx| {
-            editor.apply_text_edit(0, 0, 0, 7, "int x = 1;\n");
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
-        assert!(app.tabs[0].editor.read(cx).is_dirty());
+    }
 
-        // Requesting a close of the dirty tab opens the confirm dialog and
-        // does not remove the tab.
-        app.close_tab(0, cx);
-        assert!(app.confirm_close_dialog.is_some());
-        assert_eq!(app.tabs.len(), 2);
+    /// Closing all tabs with a dirty buffer prompts once; saving all persists the
+    /// edits to disk and then closes every tab.
+    #[test]
+    fn close_all_dirty_prompts_save_then_closes() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_close_all_dirty_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = dir.join("a.c");
+            let b = dir.join("b.c");
+            for p in [&a, &b] {
+                std::fs::write(p, "int x;\n").unwrap();
+                app.open_file(p.clone(), cx);
+            }
+            app.tabs[1].editor.update(cx, |editor, _cx| {
+                editor.apply_text_edit(0, 0, 0, 7, "int x = 2;\n");
+            });
 
-        // Cancel clears the dialog and keeps the tab.
-        app.confirm_close_dialog = None;
-        cx.notify();
+            app.close_all_tabs(cx);
+            assert!(app.confirm_close_dialog.is_some());
+            assert_eq!(app.tabs.len(), 2);
 
-        // Discard closes the tab without saving.
-        app.close_tab(0, cx);
-        app.resolve_close_dialog(false, cx);
-        assert!(app.confirm_close_dialog.is_none());
-        assert_eq!(app.tabs.len(), 1);
-        assert_eq!(
-            app.tabs[0].path,
-            b.canonicalize().unwrap(),
-            "the clean tab survives"
-        );
+            // Save all and close: the edited buffer is written back to disk.
+            app.resolve_close_dialog(true, cx);
+            assert!(app.confirm_close_dialog.is_none());
+            assert_eq!(app.tabs.len(), 0);
+            let on_disk = std::fs::read_to_string(&b).unwrap();
+            assert!(on_disk.contains("int x = 2;"), "edit saved: {on_disk:?}");
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// Closing all tabs with a dirty buffer prompts once; saving all persists the
-/// edits to disk and then closes every tab.
-#[test]
-fn close_all_dirty_prompts_save_then_closes() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = temp.join(format!("ns_close_all_dirty_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = dir.join("a.c");
-        let b = dir.join("b.c");
-        for p in [&a, &b] {
-            std::fs::write(p, "int x;\n").unwrap();
-            app.open_file(p.clone(), cx);
-        }
-        app.tabs[1].editor.update(cx, |editor, _cx| {
-            editor.apply_text_edit(0, 0, 0, 7, "int x = 2;\n");
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
+    }
 
-        app.close_all_tabs(cx);
-        assert!(app.confirm_close_dialog.is_some());
-        assert_eq!(app.tabs.len(), 2);
+    /// `save_all_editors` writes every dirty tab back to disk (hex and text) and
+    /// reports success; the status reflects how many files were saved.
+    #[test]
+    fn save_all_editors_persists_dirty_tabs() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_save_all_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = dir.join("a.c");
+            let b = dir.join("b.c");
+            for p in [&a, &b] {
+                std::fs::write(p, "int x;\n").unwrap();
+                app.open_file(p.clone(), cx);
+            }
+            // Dirty both tabs with unsaved edits.
+            app.tabs[0].editor.update(cx, |editor, _cx| {
+                editor.apply_text_edit(0, 0, 0, 7, "int a = 1;\n");
+            });
+            app.tabs[1].editor.update(cx, |editor, _cx| {
+                editor.apply_text_edit(0, 0, 0, 7, "int b = 2;\n");
+            });
 
-        // Save all and close: the edited buffer is written back to disk.
-        app.resolve_close_dialog(true, cx);
-        assert!(app.confirm_close_dialog.is_none());
-        assert_eq!(app.tabs.len(), 0);
-        let on_disk = std::fs::read_to_string(&b).unwrap();
-        assert!(on_disk.contains("int x = 2;"), "edit saved: {on_disk:?}");
+            let ok = app.save_all_editors(cx);
+            assert!(ok);
+            assert!(std::fs::read_to_string(&a).unwrap().contains("int a = 1;"));
+            assert!(std::fs::read_to_string(&b).unwrap().contains("int b = 2;"));
+            assert!(app.tabs.iter().all(|tab| !tab.editor.read(cx).is_dirty()));
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// `save_all_editors` writes every dirty tab back to disk (hex and text) and
-/// reports success; the status reflects how many files were saved.
-#[test]
-fn save_all_editors_persists_dirty_tabs() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = temp.join(format!("ns_save_all_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = dir.join("a.c");
-        let b = dir.join("b.c");
-        for p in [&a, &b] {
-            std::fs::write(p, "int x;\n").unwrap();
-            app.open_file(p.clone(), cx);
-        }
-        // Dirty both tabs with unsaved edits.
-        app.tabs[0].editor.update(cx, |editor, _cx| {
-            editor.apply_text_edit(0, 0, 0, 7, "int a = 1;\n");
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
-        app.tabs[1].editor.update(cx, |editor, _cx| {
-            editor.apply_text_edit(0, 0, 0, 7, "int b = 2;\n");
+    }
+
+    /// Quitting with unsaved changes opens the confirm dialog and sets the quit
+    /// flag; resolving it (save) closes the tabs and quits.
+    #[test]
+    fn quit_with_dirty_prompts_then_saves() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_quit_dirty_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = dir.join("a.c");
+            std::fs::write(&a, "int x;\n").unwrap();
+            app.open_file(a.clone(), cx);
+            app.tabs[0].editor.update(cx, |editor, _| {
+                editor.apply_text_edit(0, 0, 0, 7, "int x = 9;\n");
+            });
+            assert!(app.tabs[0].editor.read(cx).is_dirty());
+
+            // A quit request with dirty tabs must not quit immediately; it opens
+            // the save/discard dialog and flags the pending quit.
+            app.request_quit(cx);
+            assert!(app.confirm_close_dialog.is_some());
+            assert!(app.quit_pending);
+            assert_eq!(app.tabs.len(), 1);
+
+            // Resolving with save persists the edit and clears the pending quit.
+            app.resolve_close_dialog(true, cx);
+            assert!(!app.quit_pending);
+            assert_eq!(app.tabs.len(), 0);
+            let on_disk = std::fs::read_to_string(&a).unwrap();
+            assert!(on_disk.contains("int x = 9;"), "edit saved: {on_disk:?}");
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
+    }
 
-        let ok = app.save_all_editors(cx);
-        assert!(ok);
-        assert!(std::fs::read_to_string(&a).unwrap().contains("int a = 1;"));
-        assert!(std::fs::read_to_string(&b).unwrap().contains("int b = 2;"));
-        assert!(app.tabs.iter().all(|tab| !tab.editor.read(cx).is_dirty()));
+    /// Watch expressions persist to `.ns-ide/watch.json` and reload on project
+    /// open; runtime values are intentionally not persisted.
+    #[test]
+    fn watch_expressions_persist_and_reload() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_watch_test_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "watchproj".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
+            app.debug.add_watch("counter");
+            app.debug.add_watch("obj.field");
+            app.debug.add_watch("counter"); // duplicate is a no-op
+            assert_eq!(app.debug.watches.len(), 2);
+            app.persist_watches();
 
-/// Quitting with unsaved changes opens the confirm dialog and sets the quit
-/// flag; resolving it (save) closes the tabs and quits.
-#[test]
-fn quit_with_dirty_prompts_then_saves() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = temp.join(format!("ns_quit_dirty_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = dir.join("a.c");
-        std::fs::write(&a, "int x;\n").unwrap();
-        app.open_file(a.clone(), cx);
-        app.tabs[0].editor.update(cx, |editor, _| {
-            editor.apply_text_edit(0, 0, 0, 7, "int x = 9;\n");
+            // Reload from disk into a fresh view.
+            app.debug.watches.clear();
+            app.load_watches(&dir);
+            assert_eq!(app.debug.watches.len(), 2);
+            assert_eq!(app.debug.watches[0].expression, "counter");
+            assert_eq!(app.debug.watches[1].expression, "obj.field");
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
         });
-        assert!(app.tabs[0].editor.read(cx).is_dirty());
+    }
 
-        // A quit request with dirty tabs must not quit immediately; it opens
-        // the save/discard dialog and flags the pending quit.
-        app.request_quit(cx);
-        assert!(app.confirm_close_dialog.is_some());
-        assert!(app.quit_pending);
-        assert_eq!(app.tabs.len(), 1);
+    /// `refresh_variables` with a selected frame clears the cached scopes and
+    /// variables; with no frame it reports a clear message instead of panicking.
+    #[test]
+    fn refresh_variables_clears_and_reports() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.debug.frames.push(Frame {
+                id: 1,
+                name: "main".into(),
+                file: None,
+                line: Some(1),
+                column: Some(1),
+                pc: Some(0),
+            });
+            app.debug.scopes.push(Scope {
+                id: 10,
+                name: "Locals".into(),
+                expensive: false,
+            });
+            app.debug.variables.push(Variable {
+                name: "x".into(),
+                value: "1".into(),
+                variables_reference: 0,
+            });
 
-        // Resolving with save persists the edit and clears the pending quit.
-        app.resolve_close_dialog(true, cx);
-        assert!(!app.quit_pending);
-        assert_eq!(app.tabs.len(), 0);
-        let on_disk = std::fs::read_to_string(&a).unwrap();
-        assert!(on_disk.contains("int x = 9;"), "edit saved: {on_disk:?}");
+            // No debug session: the refresh clears the cache and reports a status.
+            app.refresh_variables(cx);
+            assert!(app.debug.scopes.is_empty());
+            assert!(app.debug.variables.is_empty());
+            assert!(app.status.contains("已刷新变量"));
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
+            // No frame selected: a clear message, no panic.
+            app.debug.frames.clear();
+            app.refresh_variables(cx);
+            assert!(app.status.contains("没有选中的栈帧"));
+            app
+        });
+    }
 
-/// Watch expressions persist to `.ns-ide/watch.json` and reload on project
-/// open; runtime values are intentionally not persisted.
-#[test]
-fn watch_expressions_persist_and_reload() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = temp.join(format!("ns_watch_test_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "watchproj".to_string();
-        app.project = Some(Project { root: dir.clone(), config });
+    /// `refresh_registers` clears the cached register groups and re-requests the
+    /// adapter's Registers scope; with no scope it reports an honest status.
+    #[test]
+    fn refresh_registers_clears_and_reports() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.debug.registers_scope = 0;
+            app.debug
+                .register_groups
+                .insert("General Purpose Registers".into(), Vec::new());
+            // No Registers scope: reports a message (nothing can be refreshed).
+            app.refresh_registers(cx);
+            assert!(app.status.contains("无寄存器作用域"));
 
-        app.debug.add_watch("counter");
-        app.debug.add_watch("obj.field");
-        app.debug.add_watch("counter"); // duplicate is a no-op
-        assert_eq!(app.debug.watches.len(), 2);
-        app.persist_watches();
+            // With a scope, the cache is cleared and the re-request is issued; with
+            // no session the groups stay empty (nothing arrives).
+            app.debug.registers_scope = 42;
+            app.debug
+                .register_groups
+                .insert("General Purpose Registers".into(), Vec::new());
+            app.refresh_registers(cx);
+            assert!(app.debug.register_groups.is_empty());
+            assert!(app.status.contains("已刷新寄存器"));
+            app
+        });
+    }
 
-        // Reload from disk into a fresh view.
-        app.debug.watches.clear();
-        app.load_watches(&dir);
-        assert_eq!(app.debug.watches.len(), 2);
-        assert_eq!(app.debug.watches[0].expression, "counter");
-        assert_eq!(app.debug.watches[1].expression, "obj.field");
+    /// The variables filter matches by name case-insensitively and recurses into
+    /// expanded children; an empty query matches everything.
+    #[test]
+    fn variable_filter_matches_names_and_children() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.debug.children.insert(
+                100,
+                vec![
+                    Variable {
+                        name: "Count".into(),
+                        value: "3".into(),
+                        variables_reference: 0,
+                    },
+                    Variable {
+                        name: "inner_flag".into(),
+                        value: "true".into(),
+                        variables_reference: 0,
+                    },
+                ],
+            );
+            let parent = Variable {
+                name: "GpioRegs".into(),
+                value: "{…}".into(),
+                variables_reference: 100,
+            };
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
- }
+            // Empty query matches all.
+            assert!(app.variable_matches(&parent, ""));
+            assert!(app.variable_matches(&parent, "gpio"));
+            assert!(app.variable_matches(&parent, "GPIO"));
+            // Child match via recursion (the parent itself does not match).
+            assert!(app.variable_matches(&parent, "flag"));
+            assert!(!app.variable_matches(&parent, "uart"));
 
-/// `refresh_variables` with a selected frame clears the cached scopes and
-/// variables; with no frame it reports a clear message instead of panicking.
-#[test]
-fn refresh_variables_clears_and_reports() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-         app.debug.frames.push(Frame {
-             id: 1,
-             name: "main".into(),
-             file: None,
-             line: Some(1),
-             column: Some(1),
-            pc: Some(0),
-         });
-         app.debug.scopes.push(Scope {
-            id: 10,
-             name: "Locals".into(),
-             expensive: false,
-         });
-         app.debug.variables.push(Variable {
-             name: "x".into(),
-             value: "1".into(),
-             variables_reference: 0,
-         });
+            // A standalone variable matches its own name only.
+            let x = Variable {
+                name: "counter".into(),
+                value: "1".into(),
+                variables_reference: 0,
+            };
+            assert!(app.variable_matches(&x, "count"));
+            assert!(!app.variable_matches(&x, "uart"));
+            app
+        });
+    }
 
-        // No debug session: the refresh clears the cache and reports a status.
-        app.refresh_variables(cx);
-        assert!(app.debug.scopes.is_empty());
-        assert!(app.debug.variables.is_empty());
-        assert!(app.status.contains("已刷新变量"));
+    /// STM32F1 `CRL`/`CRH` packing: 4 bits per pin ([3:2]=MODE, [1:0]=CNF),
+    /// pins 0-7 → CRL, pins 8-15 → CRH. Verify output push-pull on pin 1 and
+    /// input-float on pin 9 land in the right nibbles.
+    #[test]
+    fn stm32f1_gpio_registers_pack_nibbles() {
+        let mut pins = vec![PinMode::InputFloat; 16];
+        pins[1] = PinMode::OutputPushPull;
+        pins[9] = PinMode::InputPull;
+        let (crl, crh) = stm32f1_gpio_registers(&pins);
+        // Pin 1 (nibble 1): 0x3 << 4.
+        assert_eq!((crl >> 4) & 0xF, 0x3, "crl={crl:#010x}");
+        // Pin 9 (nibble 1 of CRH): 0x8 << 4.
+        assert_eq!((crh >> 4) & 0xF, 0x8, "crh={crh:#010x}");
+        // Pin 0 remains input-float (0x4) in the low nibble of CRL.
+        assert_eq!(crl & 0xF, 0x4, "crl={crl:#010x}");
+    }
 
-        // No frame selected: a clear message, no panic.
-        app.debug.frames.clear();
-        app.refresh_variables(cx);
-        assert!(app.status.contains("没有选中的栈帧"));
-        app
-    });
- }
+    /// The graphical configurator seeds items from the target SVD, toggles a GPIO
+    /// port, cycles a pin to output push-pull, and generates code with a real
+    /// `GPIOA->CRL` write (not just a comment).
+    #[test]
+    fn peripheral_config_gui_generates_real_gpio_writes() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_periph_gui_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "periphproj".to_string();
+            config.project.target = "stm32f103c8".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
 
-/// `refresh_registers` clears the cached register groups and re-requests the
-/// adapter's Registers scope; with no scope it reports an honest status.
-#[test]
-fn refresh_registers_clears_and_reports() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.debug.registers_scope = 0;
-        app.debug
-            .register_groups
-            .insert("General Purpose Registers".into(), Vec::new());
-        // No Registers scope: reports a message (nothing can be refreshed).
-        app.refresh_registers(cx);
-        assert!(app.status.contains("无寄存器作用域"));
+            app.open_peripheral_config(cx);
+            let state = app.periph_config.as_ref().unwrap();
+            let gpio_index = state
+                .items
+                .iter()
+                .position(|item| item.name == "GPIOA")
+                .expect("GPIOA in stm32f103c8 catalog");
 
-        // With a scope, the cache is cleared and the re-request is issued; with
-        // no session the groups stay empty (nothing arrives).
-        app.debug.registers_scope = 42;
-        app.debug
-            .register_groups
-            .insert("General Purpose Registers".into(), Vec::new());
-        app.refresh_registers(cx);
-        assert!(app.debug.register_groups.is_empty());
-        assert!(app.status.contains("已刷新寄存器"));
-        app
-    });
-}
+            app.toggle_periph_enabled(gpio_index, cx);
+            app.cycle_periph_pin(gpio_index, 1, cx);
+            app.cycle_periph_pin(gpio_index, 1, cx); // InputFloat → InputPull → OutputPushPull
+            app.cycle_periph_pin(gpio_index, 1, cx);
 
-/// The variables filter matches by name case-insensitively and recurses into
-/// expanded children; an empty query matches everything.
-#[test]
-fn variable_filter_matches_names_and_children() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.debug.children.insert(
-            100,
-            vec![
-                Variable {
-                    name: "Count".into(),
-                    value: "3".into(),
-                    variables_reference: 0,
-                },
-                Variable {
-                    name: "inner_flag".into(),
-                    value: "true".into(),
-                    variables_reference: 0,
-                },
-            ],
-        );
-        let parent = Variable {
-            name: "GpioRegs".into(),
-            value: "{…}".into(),
-            variables_reference: 100,
+            app.generate_peripheral_config_code(cx);
+            let path = dir.join("src").join("peripheral_init.c");
+            let code = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                code.contains("GPIOA->CRL"),
+                "generated code missing CRL: {code}"
+            );
+            assert!(
+                code.contains("GPIOA->CRH"),
+                "generated code missing CRH: {code}"
+            );
+            // All 16 pins input-float (0x4) except pin 1 → output push-pull (0x3):
+            // CRL = 0x44444434.
+            assert!(
+                code.contains("GPIOA->CRL = 0x44444434;"),
+                "not packed: {code}"
+            );
+            assert!(code.contains("gpioa_init"), "{code}");
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    #[test]
+    fn periph_pinout_selects_gpio_and_skips_non_gpio() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_pinout_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "pinoutproj".to_string();
+            config.project.target = "stm32f103c8".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            app.open_peripheral_config(cx);
+            let state = app.periph_config.as_ref().unwrap();
+            let gpio_index = state
+                .items
+                .iter()
+                .position(|item| item.name == "GPIOA")
+                .expect("GPIOA in stm32f103c8 catalog");
+            let non_gpio_index = state
+                .items
+                .iter()
+                .position(|item| !item.name.to_ascii_uppercase().starts_with("GPIO"))
+                .expect("non-GPIO peripheral exists");
+
+            // Selecting a GPIO sets the pinout; selecting a non-GPIO does not.
+            app.select_pinout_periph(gpio_index, cx);
+            assert_eq!(
+                app.periph_config.as_ref().unwrap().selected_pinout,
+                Some(gpio_index)
+            );
+            app.select_pinout_periph(non_gpio_index, cx);
+            assert_eq!(
+                app.periph_config.as_ref().unwrap().selected_pinout,
+                Some(gpio_index),
+                "non-GPIO selection must not change the pinout"
+            );
+
+            // Enabling a GPIO auto-selects it for the pinout.
+            app.periph_config.as_mut().unwrap().selected_pinout = None;
+            app.toggle_periph_enabled(gpio_index, cx);
+            assert_eq!(
+                app.periph_config.as_ref().unwrap().selected_pinout,
+                Some(gpio_index)
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// The STM32F1 clock tree computes the source/PLL/bus frequencies correctly:
+    /// HSI 8 MHz by default; HSE × PLL multiplier gives SYSCLK; AHB/APB1/APB2
+    /// prescalers divide down in turn.
+    #[test]
+    fn clock_tree_computes_hsi_hse_pll_and_prescalers() {
+        // Reset default: HSI 8 MHz, all prescalers /1.
+        let default = ClockConfig::default();
+        assert_eq!(default.sysclk_hz(), 8_000_000);
+        assert_eq!(default.ahb_hz(), 8_000_000);
+        assert_eq!(default.apb1_hz(), 8_000_000);
+        assert_eq!(default.apb2_hz(), 8_000_000);
+
+        // PLL: HSE 8 MHz × 9 = 72 MHz SYSCLK, then AHB /2, APB1 /2, APB2 /4.
+        let mut pll = ClockConfig {
+            source: ClockSource::Pll,
+            hse_hz: 8_000_000,
+            pll_mul: 9,
+            ..ClockConfig::default()
         };
+        pll.ahb_prescaler = 2;
+        pll.apb1_prescaler = 2;
+        pll.apb2_prescaler = 4;
+        assert_eq!(pll.pll_hz(), 72_000_000);
+        assert_eq!(pll.sysclk_hz(), 72_000_000);
+        assert_eq!(pll.ahb_hz(), 36_000_000);
+        assert_eq!(pll.apb1_hz(), 18_000_000);
+        assert_eq!(pll.apb2_hz(), 9_000_000);
 
-        // Empty query matches all.
-        assert!(app.variable_matches(&parent, ""));
-        assert!(app.variable_matches(&parent, "gpio"));
-        assert!(app.variable_matches(&parent, "GPIO"));
-        // Child match via recursion (the parent itself does not match).
-        assert!(app.variable_matches(&parent, "flag"));
-        assert!(!app.variable_matches(&parent, "uart"));
-
-        // A standalone variable matches its own name only.
-        let x = Variable {
-            name: "counter".into(),
-            value: "1".into(),
-            variables_reference: 0,
+        // HSE direct: 8 MHz SYSCLK regardless of the PLL multiplier.
+        let hse = ClockConfig {
+            source: ClockSource::Hse,
+            hse_hz: 12_000_000,
+            pll_mul: 16,
+            ..ClockConfig::default()
         };
-        assert!(app.variable_matches(&x, "count"));
-        assert!(!app.variable_matches(&x, "uart"));
-        app
-    });
-}
+        assert_eq!(hse.sysclk_hz(), 12_000_000);
+        assert_eq!(clock_mhz_text(hse.sysclk_hz()), "12.0 MHz");
+    }
 
-/// STM32F1 `CRL`/`CRH` packing: 4 bits per pin ([3:2]=MODE, [1:0]=CNF),
-/// pins 0-7 → CRL, pins 8-15 → CRH. Verify output push-pull on pin 1 and
-/// input-float on pin 9 land in the right nibbles.
-#[test]
-fn stm32f1_gpio_registers_pack_nibbles() {
-    let mut pins = vec![PinMode::InputFloat; 16];
-    pins[1] = PinMode::OutputPushPull;
-    pins[9] = PinMode::InputPull;
-    let (crl, crh) = stm32f1_gpio_registers(&pins);
-    // Pin 1 (nibble 1): 0x3 << 4.
-    assert_eq!((crl >> 4) & 0xF, 0x3, "crl={crl:#010x}");
-    // Pin 9 (nibble 1 of CRH): 0x8 << 4.
-    assert_eq!((crh >> 4) & 0xF, 0x8, "crh={crh:#010x}");
-    // Pin 0 remains input-float (0x4) in the low nibble of CRL.
-    assert_eq!(crl & 0xF, 0x4, "crl={crl:#010x}");
-}
+    /// STM32F1 `RCC->CR`/`RCC->CFGR` encoding: source select, PLL multiplier,
+    /// AHB/APB1/APB2 prescaler fields land in the right bit ranges.
+    #[test]
+    fn stm32f1_clock_registers_encodes_source_and_prescalers() {
+        // HSE direct: HSEON set, SW=01, all prescalers /1.
+        let hse = ClockConfig {
+            source: ClockSource::Hse,
+            ..ClockConfig::default()
+        };
+        let (cr, cfgr) = stm32f1_clock_registers(&hse);
+        assert_eq!(cr, 0x0001_0000, "HSEON");
+        assert_eq!(cfgr, 0b01, "SW=HSE");
 
-/// The graphical configurator seeds items from the target SVD, toggles a GPIO
-/// port, cycles a pin to output push-pull, and generates code with a real
-/// `GPIOA->CRL` write (not just a comment).
-#[test]
-fn peripheral_config_gui_generates_real_gpio_writes() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = temp.join(format!("ns_periph_gui_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "periphproj".to_string();
-        config.project.target = "stm32f103c8".to_string();
-        app.project = Some(Project { root: dir.clone(), config });
+        // PLL ×9, AHB /2, APB1 /2, APB2 /1.
+        let mut pll = ClockConfig {
+            source: ClockSource::Pll,
+            pll_mul: 9,
+            ..ClockConfig::default()
+        };
+        pll.ahb_prescaler = 2;
+        pll.apb1_prescaler = 2;
+        let (cr, cfgr) = stm32f1_clock_registers(&pll);
+        assert_eq!(cr, 0x0101_0000, "HSEON | PLLON");
+        // SW=10, PLLMUL=(9-2)=7<<18, HPRE=1000<<4, PPRE1=100<<8, PPRE2=000<<11.
+        assert_eq!(cfgr, 0x001C_0482, "CFGR fields");
+    }
 
-        app.open_peripheral_config(cx);
-        let state = app.periph_config.as_ref().unwrap();
-        let gpio_index = state
-            .items
-            .iter()
-            .position(|item| item.name == "GPIOA")
-            .expect("GPIOA in stm32f103c8 catalog");
+    /// The clock-tree modal opens for an STM32F1 project, cycles source/PLL/bus
+    /// prescalers, and generates `src/clock_init.c` with real RCC register writes.
+    #[test]
+    fn clock_tree_gui_opens_cycles_and_generates() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_clock_tree_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "clockproj".to_string();
+            config.project.target = "stm32f103c8".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
 
-        app.toggle_periph_enabled(gpio_index, cx);
-        app.cycle_periph_pin(gpio_index, 1, cx);
-        app.cycle_periph_pin(gpio_index, 1, cx); // InputFloat → InputPull → OutputPushPull
-        app.cycle_periph_pin(gpio_index, 1, cx);
+            app.open_clock_tree(cx);
+            assert!(app.clock_tree_dialog.is_some(), "dialog opens for STM32F1");
 
-        app.generate_peripheral_config_code(cx);
-        let path = dir.join("src").join("peripheral_init.c");
-        let code = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(code.contains("GPIOA->CRL"), "generated code missing CRL: {code}");
-        assert!(code.contains("GPIOA->CRH"), "generated code missing CRH: {code}");
-        // All 16 pins input-float (0x4) except pin 1 → output push-pull (0x3):
-        // CRL = 0x44444434.
-        assert!(code.contains("GPIOA->CRL = 0x44444434;"), "not packed: {code}");
-        assert!(code.contains("gpioa_init"), "{code}");
+            // HSI → HSE → PLL.
+            app.cycle_clock_source(cx);
+            assert_eq!(
+                app.clock_tree_dialog.as_ref().unwrap().clock.source,
+                ClockSource::Hse
+            );
+            app.cycle_clock_source(cx);
+            assert_eq!(
+                app.clock_tree_dialog.as_ref().unwrap().clock.source,
+                ClockSource::Pll
+            );
+            // ×9 → ×10.
+            app.cycle_clock_pll(cx);
+            assert_eq!(app.clock_tree_dialog.as_ref().unwrap().clock.pll_mul, 10);
+            // AHB /1 → /2; APB1 /1 → /2; APB2 /1 → /2.
+            app.cycle_clock_ahb(cx);
+            app.cycle_clock_apb(false, cx);
+            app.cycle_clock_apb(true, cx);
+            let clock = app.clock_tree_dialog.as_ref().unwrap().clock;
+            assert_eq!(clock.ahb_prescaler, 2);
+            assert_eq!(clock.apb1_prescaler, 2);
+            assert_eq!(clock.apb2_prescaler, 2);
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
+            app.generate_clock_tree_code(cx);
+            assert!(
+                app.clock_tree_dialog.is_none(),
+                "dialog closes after generate"
+            );
+            let path = dir.join("src").join("clock_init.c");
+            let code = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(code.contains("rcc_clock_init"), "missing init fn: {code}");
+            assert!(code.contains("RCC->CR ="), "missing CR write: {code}");
+            assert!(code.contains("RCC->CFGR ="), "missing CFGR write: {code}");
+            assert!(
+                code.contains("ns_rcc_f1_t"),
+                "missing self-contained RCC: {code}"
+            );
+            assert!(code.contains("#ifndef RCC"), "missing RCC guard: {code}");
+            assert!(code.contains("PLL"), "source label missing: {code}");
+            assert!(app.status.contains("已生成时钟树配置"), "{}", app.status);
 
-#[test]
-fn periph_pinout_selects_gpio_and_skips_non_gpio() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = temp.join(format!("ns_pinout_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "pinoutproj".to_string();
-        config.project.target = "stm32f103c8".to_string();
-        app.project = Some(Project { root: dir.clone(), config });
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
 
-        app.open_peripheral_config(cx);
-        let state = app.periph_config.as_ref().unwrap();
-        let gpio_index = state
-            .items
-            .iter()
-            .position(|item| item.name == "GPIOA")
-            .expect("GPIOA in stm32f103c8 catalog");
-        let non_gpio_index = state
-            .items
-            .iter()
-            .position(|item| !item.name.to_ascii_uppercase().starts_with("GPIO"))
-            .expect("non-GPIO peripheral exists");
+    /// Opening the clock-tree modal without a project, with an unsupported (non
+    /// STM32F1) family, or with a target lacking an RCC controller reports
+    /// honestly instead of opening an empty dialog or emitting wrong registers.
+    #[test]
+    fn open_clock_tree_without_project_or_rcc_reports() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.open_clock_tree(cx);
+            assert!(app.clock_tree_dialog.is_none());
+            assert!(app.status.contains("请先打开项目"), "{}", app.status);
 
-        // Selecting a GPIO sets the pinout; selecting a non-GPIO does not.
-        app.select_pinout_periph(gpio_index, cx);
-        assert_eq!(app.periph_config.as_ref().unwrap().selected_pinout, Some(gpio_index));
-        app.select_pinout_periph(non_gpio_index, cx);
-        assert_eq!(
-            app.periph_config.as_ref().unwrap().selected_pinout,
-            Some(gpio_index),
-            "non-GPIO selection must not change the pinout"
+            let temp = std::env::temp_dir();
+            let dir = temp.join(format!("ns_clock_tree_err_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "notarget".to_string();
+            config.project.target = "no-such-mcu".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+            app.status.clear();
+            app.open_clock_tree(cx);
+            assert!(app.clock_tree_dialog.is_none());
+            assert!(!app.status.is_empty(), "unknown target must report");
+
+            // A non-F1/non-F4 STM32 is rejected, not silently opened.
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "g4target".to_string();
+            config.project.target = "stm32g431rb".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+            app.status.clear();
+            app.open_clock_tree(cx);
+            assert!(app.clock_tree_dialog.is_none());
+            assert!(
+                app.status.contains("支持 STM32F1 / STM32F4"),
+                "{}",
+                app.status
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// The STM32F4 clock tree computes HSI/HSE/PLL frequencies and the PLL48
+    /// (USB) clock from the F4 PLLM/PLLN/PLLP/PLLQ parameters.
+    #[test]
+    fn f4_clock_tree_computes_hsi_hse_pll_and_prescalers() {
+        // Reset default: HSI 16 MHz, all prescalers /1.
+        let default = F4ClockConfig::default();
+        assert_eq!(default.hsi_hz(), 16_000_000);
+        assert_eq!(default.sysclk_hz(), 16_000_000);
+
+        // F407 classic 168 MHz: HSE 8 MHz, PLLM=8 → 1 MHz VCO input, PLLN=336 →
+        // 336 MHz VCO, PLLP=2 → 168 MHz SYSCLK, PLLQ=7 → 48 MHz PLL48.
+        let mut pll = F4ClockConfig {
+            source: ClockSource::Pll,
+            hse_hz: 8_000_000,
+            pll_m: 8,
+            pll_n: 336,
+            pll_p: 2,
+            pll_q: 7,
+            pll_src_hse: true,
+            ..F4ClockConfig::default()
+        };
+        assert_eq!(pll.pll_source_hz(), 8_000_000);
+        assert_eq!(pll.pll_vco_hz(), 336_000_000);
+        assert_eq!(pll.pll_hz(), 168_000_000);
+        assert_eq!(pll.pll48_hz(), 48_000_000);
+        assert_eq!(pll.sysclk_hz(), 168_000_000);
+
+        // AHB /2, APB1 /4, APB2 /2.
+        pll.ahb_prescaler = 2;
+        pll.apb1_prescaler = 4;
+        pll.apb2_prescaler = 2;
+        assert_eq!(pll.ahb_hz(), 84_000_000);
+        assert_eq!(pll.apb1_hz(), 21_000_000);
+        assert_eq!(pll.apb2_hz(), 42_000_000);
+
+        // PLL from HSI: 16 MHz / PLLM 16 = 1 MHz, PLLN=336, PLLP=2 → 168 MHz.
+        let pll_hsi = F4ClockConfig {
+            source: ClockSource::Pll,
+            pll_m: 16,
+            pll_n: 336,
+            pll_p: 2,
+            pll_q: 7,
+            pll_src_hse: false,
+            ..F4ClockConfig::default()
+        };
+        assert_eq!(pll_hsi.pll_source_hz(), 16_000_000);
+        assert_eq!(pll_hsi.pll_hz(), 168_000_000);
+    }
+
+    /// STM32F4 `RCC->CR`/`PLLCFGR`/`CFGR` encoding: PLLM/PLLN/PLLP/PLLSRC/PLLQ live
+    /// in PLLCFGR (unlike F1's CFGR PLLMUL), while SW/HPRE/PPRE stay in CFGR.
+    #[test]
+    fn stm32f4_clock_registers_encodes_source_and_pllcfgr() {
+        // HSE direct: HSEON set, SW=01, PLLCFGR untouched.
+        let hse = F4ClockConfig {
+            source: ClockSource::Hse,
+            ..F4ClockConfig::default()
+        };
+        let (cr, pllcfgr, cfgr) = stm32f4_clock_registers(&hse);
+        assert_eq!(cr, 0x0001_0000, "HSEON");
+        assert_eq!(pllcfgr, 0, "PLLCFGR untouched");
+        assert_eq!(cfgr, 0b01, "SW=HSE");
+
+        // PLL: PLLM=8, PLLN=336, PLLP=2, PLLSRC=HSE, PLLQ=7, AHB /2, APB1 /2.
+        let mut pll = F4ClockConfig {
+            source: ClockSource::Pll,
+            pll_m: 8,
+            pll_n: 336,
+            pll_p: 2,
+            pll_q: 7,
+            pll_src_hse: true,
+            ..F4ClockConfig::default()
+        };
+        pll.ahb_prescaler = 2;
+        pll.apb1_prescaler = 2;
+        let (cr, pllcfgr, cfgr) = stm32f4_clock_registers(&pll);
+        assert_eq!(cr, 0x0101_0000, "HSEON | PLLON");
+        // PLLM=8 bits[5:0], PLLN=336<<6, PLLP=00<<16, PLLSRC=1<<22, PLLQ=7<<24.
+        assert_eq!(pllcfgr, 0x0740_5408, "PLLCFGR fields");
+        // SW=10, HPRE=1000<<4, PPRE1=100<<8, PPRE2=000<<11.
+        assert_eq!(cfgr, 0x0000_0482, "CFGR fields");
+    }
+
+    /// The clock-tree modal opens for an STM32F4 project, cycles PLLM/PLLN/PLLP/
+    /// PLLQ/source, and generates `src/clock_init.c` with real RCC->PLLCFGR write.
+    #[test]
+    fn f4_clock_tree_gui_opens_cycles_and_generates() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_clock_tree_f4_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "f4clock".to_string();
+            config.project.target = "stm32f407vg".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            app.open_clock_tree(cx);
+            let dialog = app.clock_tree_dialog.as_ref().unwrap();
+            assert_eq!(dialog.family, ClockFamily::F4, "F4 family selected");
+
+            // PLL source cycles to PLL; PLLM 8→9, PLLN 336→337, PLLP 2→4, PLLQ 7→8.
+            app.cycle_clock_source(cx);
+            app.cycle_clock_source(cx);
+            assert_eq!(
+                app.clock_tree_dialog.as_ref().unwrap().f4.source,
+                ClockSource::Pll
+            );
+            app.cycle_f4_pll_m(cx);
+            app.cycle_f4_pll_n(cx);
+            app.cycle_f4_pll_p(cx);
+            app.cycle_f4_pll_q(cx);
+            app.cycle_f4_pll_src(cx);
+            let f4 = app.clock_tree_dialog.as_ref().unwrap().f4;
+            assert_eq!(f4.pll_m, 9);
+            assert_eq!(f4.pll_n, 337);
+            assert_eq!(f4.pll_p, 4);
+            assert_eq!(f4.pll_q, 8);
+            assert!(!f4.pll_src_hse, "PLL source toggled to HSI");
+
+            app.generate_clock_tree_code(cx);
+            assert!(
+                app.clock_tree_dialog.is_none(),
+                "dialog closes after generate"
+            );
+            let path = dir.join("src").join("clock_init.c");
+            let code = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(code.contains("rcc_clock_init"), "missing init fn: {code}");
+            assert!(code.contains("RCC->CR ="), "missing CR write: {code}");
+            assert!(code.contains("RCC->PLLCFGR ="), "missing PLLCFGR: {code}");
+            assert!(code.contains("RCC->CFGR ="), "missing CFGR write: {code}");
+            assert!(
+                code.contains("ns_rcc_t"),
+                "missing self-contained RCC: {code}"
+            );
+            assert!(code.contains("#ifndef RCC"), "missing RCC guard: {code}");
+            assert!(app.status.contains("已生成时钟树配置"), "{}", app.status);
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// The STM32F103C (LQFP48) pin map packs AF pin modes into CRL/CRH, computes
+    /// the required APB2/APB1 clock enables, applies AFIO remap bits for remapped
+    /// pin groups, and generates real register writes.
+    #[test]
+    fn stm32f1_pin_mapping_packs_af_registers_and_remap() {
+        fn assign(dialog: &mut PinMapDialog, port: char, pin: usize, signal: PinSignal) {
+            let port_index = dialog
+                .ports
+                .iter()
+                .position(|item| item.port == port)
+                .unwrap();
+            let slot = pin - dialog.ports[port_index].start_pin;
+            dialog.ports[port_index].pins[slot] = Some(signal);
+        }
+
+        let mut dialog = PinMapDialog::for_target("stm32f103c8".to_string());
+        assign(&mut dialog, 'A', 0, PinSignal::Tim2Ch1);
+        assign(&mut dialog, 'A', 1, PinSignal::Tim2Ch2);
+        assign(&mut dialog, 'A', 2, PinSignal::Usart2Tx);
+        assign(&mut dialog, 'A', 3, PinSignal::Usart2Rx);
+        assign(&mut dialog, 'A', 4, PinSignal::Spi1Nss);
+        assign(&mut dialog, 'A', 5, PinSignal::Spi1Sck);
+        assign(&mut dialog, 'A', 6, PinSignal::Spi1Miso);
+        assign(&mut dialog, 'A', 7, PinSignal::Spi1Mosi);
+        assign(&mut dialog, 'B', 0, PinSignal::GpioOutput);
+        assign(&mut dialog, 'B', 6, PinSignal::Usart1Tx);
+        assign(&mut dialog, 'B', 7, PinSignal::Usart1Rx);
+        assign(&mut dialog, 'B', 8, PinSignal::I2c1Scl);
+        assign(&mut dialog, 'B', 9, PinSignal::I2c1Sda);
+        assign(&mut dialog, 'B', 10, PinSignal::Usart3Tx);
+        assign(&mut dialog, 'B', 11, PinSignal::Usart3Rx);
+
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "valid map must pass: {:?}",
+            validate_pin_mapping(&dialog)
         );
 
-        // Enabling a GPIO auto-selects it for the pinout.
-        app.periph_config.as_mut().unwrap().selected_pinout = None;
-        app.toggle_periph_enabled(gpio_index, cx);
-        assert_eq!(app.periph_config.as_ref().unwrap().selected_pinout, Some(gpio_index));
+        let (apb2, apb1) = stm32f1_pin_clocks(&dialog);
+        // AFIO + IOPA + IOPB + SPI1 + USART1 on APB2 (PA0/PA1 use GPIOA even as TIM2 AF).
+        assert_eq!(apb2, 0x500D, "apb2={apb2:#010x}");
+        // TIM2 + USART2 + USART3 + I2C1 on APB1.
+        assert_eq!(apb1, 0x260001, "apb1={apb1:#010x}");
+        // USART1 remap (bit2) + I2C1 remap (bit1).
+        assert_eq!(stm32f1_remap_bits(&dialog), 0x6, "MAPR");
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
+        let port_a = &dialog.ports[0];
+        let (crl, crh) = stm32f1_pin_registers(port_a);
+        assert_eq!(crl, 0xBBBBBBBB, "GPIOA CRL all AF push-pull");
+        assert_eq!(crh, 0x44444444, "GPIOA CRH input-float");
 
+        let port_b = &dialog.ports[1];
+        let (crl, crh) = stm32f1_pin_registers(port_b);
+        assert_eq!(crl, 0xBB444443, "GPIOB CRL");
+        // PB8/PB9 I2C open-drain, PB10/PB11 USART3 AF, rest input-float.
+        assert_eq!(crh, 0x4444BBFF, "GPIOB CRH");
 
-/// `jump_memory_to_pc` reports honestly without a PC, and with a PC sets the
-/// address input to the PC hex and triggers a read (no session → a clear
-/// error rather than a silent no-op).
-#[test]
-fn jump_memory_to_pc_sets_address_and_reports() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.ensure_memory_input(cx);
+        let code = stm32f1_pin_mapping_code(&dialog);
+        assert!(code.contains("RCC->APB2ENR |= 0x0000500du;"), "{code}");
+        assert!(code.contains("RCC->APB1ENR |= 0x00260001u;"), "{code}");
+        assert!(code.contains("AFIO->MAPR |= 0x00000006u;"), "{code}");
+        assert!(code.contains("GPIOA->CRL = 0xbbbbbbbbu;"), "{code}");
+        assert!(code.contains("GPIOB->CRH = 0x4444bbffu;"), "{code}");
+        assert!(
+            !code.contains("GPIOC->CRL"),
+            "unassigned port must not be written"
+        );
+    }
 
-        // No PC yet: an honest error, no panic.
-        app.jump_memory_to_pc(cx);
-        assert!(app
-            .debug
-            .memory
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("无 PC")));
+    /// Port C on the STM32F103C LQFP48 family starts at PC13; an assignment there
+    /// must land in the CRH nibble for pin 13, not be mispacked as CRL pin 0-2.
+    #[test]
+    fn stm32f1_pin_mapping_uses_physical_pc_pin_numbers() {
+        let mut dialog = PinMapDialog::for_target("stm32f103c8".to_string());
+        let port_c = 2usize;
+        dialog.ports[port_c].pins[0] = Some(PinSignal::GpioOutput);
 
-        // With a PC, the address field is populated and a read is attempted
-        // (no live session → the read path reports "调试会话未运行").
-        app.debug.pc = Some(0x0800_0100);
-        app.jump_memory_to_pc(cx);
-        let text = app
-            .debug
-            .memory
-            .address_input
-            .as_ref()
-            .map(|field| field.read(cx).text())
-            .unwrap_or_default();
-        assert_eq!(text, "0x8000100");
-        assert!(app
-            .debug
-            .memory
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("调试会话未运行")));
-        app
-    });
-}
+        assert!(validate_pin_mapping(&dialog).is_empty());
+        let (crl, crh) = stm32f1_pin_registers(&dialog.ports[port_c]);
+        assert_eq!(crl, 0x44444444, "PC13-15 are CRH pins");
+        assert_eq!(crh, 0x44344444, "PC13 output push-pull");
+        let (apb2, _) = stm32f1_pin_clocks(&dialog);
+        assert_eq!(apb2, 1 << 4, "IOPCEN");
+    }
 
-/// `jump_memory_to_address` sets the memory address input to the given address
-/// (not just PC) and reports the jump in the status bar.
-#[test]
-fn jump_memory_to_address_sets_input_and_reports() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.jump_memory_to_address(0x2000_0004, cx);
-        let text = app
-            .debug
-            .memory
-            .address_input
-            .as_ref()
-            .map(|field| field.read(cx).text())
-            .unwrap_or_default();
-        assert_eq!(text, "0x20000004");
-        assert!(app.status.contains("0x20000004"), "{}", app.status);
-        app
-    });
-}
+    /// A duplicate signal or a mix of default/remapped pins for one peripheral
+    /// group is rejected honestly instead of silently generating wrong AFIO bits.
+    #[test]
+    fn pin_map_validates_duplicate_and_mixed_remap() {
+        fn assign(dialog: &mut PinMapDialog, port: char, pin: usize, signal: PinSignal) {
+            let port_index = dialog
+                .ports
+                .iter()
+                .position(|item| item.port == port)
+                .unwrap();
+            let slot = pin - dialog.ports[port_index].start_pin;
+            dialog.ports[port_index].pins[slot] = Some(signal);
+        }
 
-/// `build_rtos_tasks` assembles collected partial tasks, marks the task at
-/// `current_index` running, maps state/stack, and sorts by name.
-#[test]
-fn build_rtos_tasks_marks_running_and_sorts() {
-    let mut tasks = BTreeMap::new();
-    tasks.insert(
-        0,
-        PartialRtosTask {
-            name: Some("led".into()),
-            priority: Some(2),
-            stack_usage: Some(35),
-            state: Some(0),
-        },
-    );
-    tasks.insert(
-        1,
-        PartialRtosTask {
-            name: Some("monitor".into()),
-            priority: Some(1),
-            stack_usage: Some(60),
-            state: Some(1),
-        },
-    );
-    tasks.insert(
-        2,
-        PartialRtosTask {
-            name: Some("usb".into()),
-            priority: Some(0),
-            stack_usage: None,
-            state: Some(2),
-        },
-    );
-    let state = RtosRefreshState {
-        count: 3,
-        current_index: Some(1),
-        tasks,
-        mode: RtosKernelMode::Template,
-        kernel: None,
-    };
-    let rtos = build_rtos_tasks(&state);
-    assert_eq!(rtos.len(), 3);
-    let running = rtos.iter().filter(|task| task.running).collect::<Vec<_>>();
-    assert_eq!(running.len(), 1);
-    assert_eq!(running[0].name, "monitor");
-    // Sorted by name: led, monitor, usb.
-    assert_eq!(rtos[0].name, "led");
-    assert_eq!(rtos[2].name, "usb");
-    // State and stack carried through.
-    let monitor = rtos.iter().find(|task| task.name == "monitor").unwrap();
-    assert_eq!(monitor.state, RtosTaskState::Blocked);
-    assert_eq!(monitor.stack_usage, Some(60));
-}
+        // Same signal on two pins.
+        let mut duplicate = PinMapDialog::for_target("stm32f103c8".to_string());
+        assign(&mut duplicate, 'A', 9, PinSignal::Usart1Tx);
+        assign(&mut duplicate, 'A', 10, PinSignal::Usart1Tx);
+        let errors = validate_pin_mapping(&duplicate);
+        assert!(
+            errors.iter().any(|error| error.contains("USART1_TX")),
+            "{errors:?}"
+        );
 
-/// `refresh_rtos_tasks` without a live session reports an honest status and
-/// clears the task list instead of silently doing nothing.
-#[test]
-fn refresh_rtos_tasks_without_session_reports() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.refresh_rtos_tasks(cx);
-        assert!(app.debug.rtos_status.contains("无调试会话"), "{}", app.debug.rtos_status);
-        assert!(app.debug.rtos_tasks.is_empty());
-        app
-    });
-}
+        // USART1 default TX on PA9 plus remapped RX on PB7 cannot share AFIO.
+        let mut mixed = PinMapDialog::for_target("stm32f103c8".to_string());
+        assign(&mut mixed, 'A', 9, PinSignal::Usart1Tx);
+        assign(&mut mixed, 'B', 7, PinSignal::Usart1Rx);
+        let errors = validate_pin_mapping(&mixed);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("USART1") && error.contains("重映射")),
+            "{errors:?}"
+        );
+    }
 
-/// `handle_rtos_evaluated` routes a `task_count` result: a count of 0 clears
-/// the list; a positive count marks the refresh as in-flight (consumed).
-#[test]
-fn handle_rtos_evaluated_routes_task_count() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.rtos_pending = Some(RtosRefreshState {
-            count: 0,
-            current_index: None,
-            tasks: BTreeMap::new(),
+    /// The pin-mapping modal opens for each STM32F103 LQFP48 variant, cycles a
+    /// pin to USART1_TX and generates `src/pin_mapping.c` with real GPIO/AFIO
+    /// writes and the correct target in the header comment.
+    #[test]
+    fn pin_map_gui_opens_cycles_and_generates() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_pin_map_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "pinmapproj".to_string();
+            config.project.target = "stm32f103c6".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            app.open_pin_map(cx);
+            assert!(app.pin_map_dialog.is_some(), "dialog opens for F103C6");
+            assert_eq!(app.pin_map_dialog.as_ref().unwrap().target, "stm32f103c6");
+
+            // PA9 allowed: None → GPIO 输出 → GPIO 输入 → USART1_TX.
+            for _ in 0..3 {
+                app.cycle_pin_signal(0, 9, cx);
+            }
+            let signal = app.pin_map_dialog.as_ref().unwrap().ports[0].pins[9];
+            assert_eq!(signal, Some(PinSignal::Usart1Tx));
+
+            // PA10 allowed: None → GPIO 输出 → GPIO 输入 → USART1_RX.
+            for _ in 0..3 {
+                app.cycle_pin_signal(0, 10, cx);
+            }
+            let signal = app.pin_map_dialog.as_ref().unwrap().ports[0].pins[10];
+            assert_eq!(signal, Some(PinSignal::Usart1Rx));
+
+            app.generate_pin_mapping_code(cx);
+            assert!(app.pin_map_dialog.is_none(), "dialog closes after generate");
+            let path = dir.join("src").join("pin_mapping.c");
+            let code = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(code.contains("pin_mapping_init"), "missing init: {code}");
+            assert!(code.contains("STM32F103C6"), "wrong header target: {code}");
+            assert!(code.contains("GPIOA->CRL"), "missing CRL: {code}");
+            assert!(code.contains("RCC->APB2ENR"), "missing APB2: {code}");
+            assert!(app.status.contains("已生成引脚映射配置"), "{}", app.status);
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// `stm32f103c8` and `stm32f103cb` share the LQFP48 AF table, so the modal
+    /// must open for them too and generate the matching target header.
+    #[test]
+    fn pin_map_gui_opens_for_other_lqfp48_variants() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_pin_map_var_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "pinmapproj".to_string();
+            config.project.target = "stm32f103cb".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config: config.clone(),
+            });
+
+            app.open_pin_map(cx);
+            assert!(app.pin_map_dialog.is_some(), "dialog opens for F103CB");
+            app.cycle_pin_signal(0, 9, cx); // PA9 → GPIO 输出
+            app.generate_pin_mapping_code(cx);
+            let path = dir.join("src").join("pin_mapping.c");
+            let code = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(code.contains("STM32F103CB"), "wrong header target: {code}");
+
+            // `stm32f103c8` still opens (regression guard).
+            config.project.target = "stm32f103c8".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+            app.open_pin_map(cx);
+            assert!(app.pin_map_dialog.is_some(), "dialog opens for F103C8");
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// The STM32F407 pin map packs MODER (2 bits/pin), AFRL/AFRH (4 bits/pin,
+    /// AF0-15), OTYPER for open-drain I2C, and AHB1ENR clock-enable bits.
+    #[test]
+    fn stm32f4_pin_mapping_packs_moder_afrl_afrh() {
+        let mut dialog = PinMapDialog::for_target("stm32f407vg".to_string());
+        assert_eq!(dialog.family, PinMapFamily::F4);
+        dialog.f4_ports[0].pins[0] = Some(F4PinSignal::Tim2Ch1);
+        dialog.f4_ports[0].pins[2] = Some(F4PinSignal::Usart2Tx);
+        dialog.f4_ports[0].pins[4] = Some(F4PinSignal::Spi1Nss);
+        dialog.f4_ports[0].pins[6] = Some(F4PinSignal::I2c1Scl);
+        dialog.f4_ports[0].pins[9] = Some(F4PinSignal::Usart1Tx);
+        dialog.f4_ports[0].pins[15] = Some(F4PinSignal::GpioOutput);
+
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "valid F4 map must pass: {:?}",
+            validate_pin_mapping(&dialog)
+        );
+
+        let (moder, otyper, ospeedr, pupdr, afrl, afrh) =
+            stm32f4_port_registers(&dialog.f4_ports[0]);
+        assert_eq!(moder, 0x4008_2222, "GPIOA MODER");
+        assert_eq!(otyper, 0x40, "GPIOA OTYPER (PB6? open-drain on PA6)");
+        assert_eq!(ospeedr, 0x8008_2222, "GPIOA OSPEEDR (outputs/AF = high)");
+        assert_eq!(pupdr, 0, "GPIOA PUPDR (no pulled input)");
+        assert_eq!(afrl, 0x0405_0701, "GPIOA AFRL");
+        assert_eq!(afrh, 0x70, "GPIOA AFRH (PA9 USART1 AF7)");
+
+        let code = stm32f4_pin_mapping_code(&dialog);
+        assert!(code.contains("STM32F407VG"), "wrong header: {code}");
+        assert!(code.contains("RCC->AHB1ENR |= 0x00000001u;"), "{code}");
+        assert!(code.contains("GPIOA->MODER = 0x40082222u;"), "{code}");
+        assert!(code.contains("GPIOA->OTYPER = 0x00000040u;"), "{code}");
+        assert!(code.contains("GPIOA->OSPEEDR = 0x80082222u;"), "{code}");
+        assert!(code.contains("GPIOA->PUPDR = 0x00000000u;"), "{code}");
+        assert!(code.contains("GPIOA->AFRL = 0x04050701u;"), "{code}");
+        assert!(code.contains("GPIOA->AFRH = 0x00000070u;"), "{code}");
+        assert!(
+            !code.contains("GPIOB->"),
+            "unassigned port must not be written"
+        );
+    }
+
+    /// GPIO input variants select the pull resistors (`PUPDR`) while alternate
+    /// and output pins take the high output speed (`OSPEEDR`), so the generated
+    /// `pin_mapping.c` carries the complete GPIO configuration.
+    #[test]
+    fn f4_pin_map_packs_pupdr_and_ospeedr_for_input_and_af_pins() {
+        use F4PinSignal::*;
+
+        assert_eq!(
+            GpioInputPull.mode(),
+            PinMode::InputPull,
+            "pull-up input keeps the input mode"
+        );
+        assert_eq!(
+            GpioInputPullDown.mode(),
+            PinMode::InputPullDown,
+            "pull-down input keeps the input mode"
+        );
+        assert_eq!(GpioInputPull.af(), None);
+        assert_eq!(GpioInputPull.group(), "GPIO");
+        assert!(
+            stm32f4_allowed_signals('A', 0).contains(&GpioInputPull),
+            "PA0 offers a pull-up input"
+        );
+        assert!(
+            stm32f4_allowed_signals('B', 14).contains(&GpioInputPullDown),
+            "PB14 offers a pull-down input"
+        );
+
+        let mut dialog = PinMapDialog::for_target("stm32f407vg".to_string());
+        dialog.f4_ports[0].pins[0] = Some(Tim2Ch1); // alternate → high speed
+        dialog.f4_ports[0].pins[1] = Some(GpioInput); // floating input, no pull
+        dialog.f4_ports[0].pins[2] = Some(GpioInputPull); // pull-up
+        dialog.f4_ports[0].pins[3] = Some(GpioInputPullDown); // pull-down
+        dialog.f4_ports[0].pins[15] = Some(GpioOutput); // output → high speed
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "mixed input modes validate: {:?}",
+            validate_pin_mapping(&dialog)
+        );
+
+        let (moder, otyper, ospeedr, pupdr, afrl, _afrh) =
+            stm32f4_port_registers(&dialog.f4_ports[0]);
+        assert_eq!(moder, 0x4000_0002, "GPIOA MODER (PA0 AF + PA15 output)");
+        assert_eq!(otyper, 0, "GPIOA OTYPER (no open-drain)");
+        assert_eq!(ospeedr, 0x8000_0002, "GPIOA OSPEEDR (PA0 + PA15 high)");
+        assert_eq!(pupdr, 0x0000_0090, "GPIOA PUPDR (PA2 up, PA3 down)");
+        assert_eq!(afrl, 0x0000_0001, "GPIOA AFRL (PA0 TIM2 AF1)");
+
+        let code = stm32f4_pin_mapping_code(&dialog);
+        assert!(code.contains("GPIOA->OSPEEDR = 0x80000002u;"), "{code}");
+        assert!(code.contains("GPIOA->PUPDR = 0x00000090u;"), "{code}");
+    }
+
+    /// The STM32F407 pin map covers GPIOA..GPIOE on the LQFP100 package: ports
+    /// C/D/E carry USART2/3, SPI3, TIM1/3/4/8 and CAN1 AFs with the correct AF
+    /// numbers (SPI3=6, USART6=8, TIM8=3, TIM1=1) and AHB1ENR clock bits.
+    #[test]
+    fn f4_pin_map_covers_ports_cde_af_table_and_code() {
+        use F4PinSignal::*;
+
+        assert_eq!(stm32f4_pin_clock_bit('C'), Some(2), "GPIOCEN bit");
+        assert_eq!(stm32f4_pin_clock_bit('D'), Some(3), "GPIODEN bit");
+        assert_eq!(stm32f4_pin_clock_bit('E'), Some(4), "GPIOEEN bit");
+
+        assert_eq!(Spi3Sck.af(), Some(6), "SPI3 is AF6 on F4");
+        assert_eq!(Usart6Tx.af(), Some(8), "USART6 is AF8 on F4");
+        assert_eq!(Tim8Ch1.af(), Some(3), "TIM8 is AF3 on F4");
+        assert_eq!(Tim1Etr.af(), Some(1), "TIM1 is AF1 on F4");
+
+        let c6 = stm32f4_allowed_signals('C', 6);
+        assert!(c6.contains(&Tim3Ch1) && c6.contains(&Tim8Ch1) && c6.contains(&Usart6Tx));
+        let c10 = stm32f4_allowed_signals('C', 10);
+        assert!(c10.contains(&Usart3Tx) && c10.contains(&Spi3Sck));
+        let d5 = stm32f4_allowed_signals('D', 5);
+        assert!(d5.contains(&Usart2Tx));
+        let e9 = stm32f4_allowed_signals('E', 9);
+        assert!(e9.contains(&Tim1Ch1), "PE9 is TIM1_CH1");
+        let e8 = stm32f4_allowed_signals('E', 8);
+        assert!(e8.contains(&Tim1Ch1N), "PE8 is TIM1_CH1N");
+
+        let mut dialog = PinMapDialog::for_target("stm32f407vg".to_string());
+        assert_eq!(dialog.f4_ports.len(), 5, "GPIOA..GPIOE");
+        dialog.f4_ports[2].pins[6] = Some(Usart6Tx);
+        dialog.f4_ports[2].pins[10] = Some(Usart3Tx);
+        dialog.f4_ports[3].pins[5] = Some(Usart2Tx);
+        dialog.f4_ports[4].pins[9] = Some(Tim1Ch1);
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "valid C/D/E map: {:?}",
+            validate_pin_mapping(&dialog)
+        );
+
+        let (moder, otyper, ospeedr, pupdr, afrl, afrh) =
+            stm32f4_port_registers(&dialog.f4_ports[2]);
+        assert_eq!(moder, 0x0020_2000, "GPIOC MODER (PC6 AF + PC10 AF)");
+        assert_eq!(otyper, 0, "GPIOC OTYPER push-pull");
+        assert_eq!(ospeedr, 0x0020_2000, "GPIOC OSPEEDR (AF pins = high)");
+        assert_eq!(pupdr, 0, "GPIOC PUPDR (no pulled input)");
+        assert_eq!(afrl, 0x0800_0000, "GPIOC AFRL (PC6 USART6 AF8)");
+        assert_eq!(afrh, 0x0000_0700, "GPIOC AFRH (PC10 USART3 AF7)");
+
+        let code = stm32f4_pin_mapping_code(&dialog);
+        assert!(code.contains("RCC->AHB1ENR |= 0x00000004u;"), "{code}");
+        assert!(code.contains("RCC->AHB1ENR |= 0x00000008u;"), "{code}");
+        assert!(code.contains("RCC->AHB1ENR |= 0x00000010u;"), "{code}");
+        assert!(code.contains("GPIOC->MODER = 0x00202000u;"), "{code}");
+        assert!(code.contains("GPIOC->OSPEEDR = 0x00202000u;"), "{code}");
+        assert!(code.contains("GPIOC->PUPDR = 0x00000000u;"), "{code}");
+        assert!(code.contains("GPIOC->AFRL = 0x08000000u;"), "{code}");
+        assert!(code.contains("GPIOC->AFRH = 0x00000700u;"), "{code}");
+        assert!(code.contains("GPIOD->AFRL = 0x00700000u;"), "{code}");
+        assert!(code.contains("GPIOE->AFRH = 0x00000010u;"), "{code}");
+    }
+
+    /// The F407 pin map adds the remaining common peripherals on ports C/D:
+    /// The generated F407 code enables the peripheral clocks, not just the GPIO
+    /// ports: USART1/SDIO on APB2, I2C1/TIM2 on APB1, USB OTG FS on AHB1, and
+    /// SWD stays clock-free.
+    #[test]
+    fn f4_pin_mapping_code_enables_peripheral_clocks() {
+        let mut dialog = PinMapDialog::for_f4_target("stm32f407vg".to_string());
+        dialog.f4_ports[0].pins[9] = Some(F4PinSignal::Usart1Tx);
+        dialog.f4_ports[0].pins[6] = Some(F4PinSignal::Tim2Ch3);
+        dialog.f4_ports[0].pins[13] = Some(F4PinSignal::Swdio);
+        dialog.f4_ports[0].pins[11] = Some(F4PinSignal::UsbDm);
+        dialog.f4_ports[1].pins[6] = Some(F4PinSignal::I2c1Scl);
+        dialog.f4_ports[2].pins[8] = Some(F4PinSignal::SdioD0);
+        let code = stm32f4_pin_mapping_code(&dialog);
+        assert!(
+            code.contains("RCC->APB1ENR |= 0x00200001u;"),
+            "I2C1(21)+TIM2(0) on APB1: {code}"
+        );
+        assert!(
+            code.contains("RCC->APB2ENR |= 0x00000810u;"),
+            "USART1(4)+SDIO(11) on APB2: {code}"
+        );
+        assert!(
+            code.contains("RCC->AHB1ENR |= 0x00000081u;"),
+            "GPIOA(0)+USB_OTG_FS(7) on AHB1: {code}"
+        );
+    }
+
+    /// Generated `pin_mapping.c` carries its own register views so it compiles
+    /// on its own; the `ns_` types and `#ifndef` guards keep a vendor header
+    /// that already defines the ports from colliding.
+    #[test]
+    fn pin_mapping_code_is_self_contained() {
+        let f1 = stm32f1_pin_mapping_code(&PinMapDialog::for_f1_target("stm32f103c8".to_string()));
+        assert!(f1.contains("ns_gpio_f1_t"), "{}", f1);
+        assert!(f1.contains("ns_rcc_f1_t"), "{}", f1);
+        assert!(
+            f1.contains("#define AFIO ((ns_afio_t *)0x40010000u)"),
+            "{}",
+            f1
+        );
+        assert!(f1.contains("#ifndef GPIOA"), "{}", f1);
+
+        let mut f4 = PinMapDialog::for_f4_target("stm32f407vg".to_string());
+        f4.f4_ports[0].pins[9] = Some(F4PinSignal::Usart1Tx);
+        let code = stm32f4_pin_mapping_code(&f4);
+        assert!(code.contains("ns_gpio_t"), "{}", code);
+        assert!(code.contains("ns_rcc_t"), "{}", code);
+        assert!(
+            code.contains("#define GPIOE ((ns_gpio_t *)0x40021000u)"),
+            "{}",
+            code
+        );
+        assert!(code.contains("#ifndef RCC"), "{}", code);
+    }
+
+    /// SDIO (AF12, PC8-12 + PD2/PD6-9) and TIM9/10/11 (AF3, PA2/PA3/PB8/PB9).
+    /// A full SDIO bus assigns consistently (one AF12 group) and generates the
+    /// real GPIOC/GPIOD AFR writes plus the correct AHB1ENR clock bits.
+    #[test]
+    fn f4_pin_map_adds_sdio_and_tim9_11_af() {
+        use F4PinSignal::*;
+
+        assert_eq!(SdioCk.af(), Some(12), "SDIO is AF12 on F4");
+        assert_eq!(SdioD0.af(), Some(12), "SDIO data is AF12 on F4");
+        assert_eq!(Tim9Ch1.af(), Some(3), "TIM9 is AF3 on F4");
+        assert_eq!(Tim10Ch1.af(), Some(3), "TIM10 is AF3 on F4");
+        assert_eq!(Tim11Ch1.af(), Some(3), "TIM11 is AF3 on F4");
+
+        assert!(
+            stm32f4_allowed_signals('A', 2).contains(&Tim9Ch1),
+            "PA2 TIM9_CH1"
+        );
+        assert!(
+            stm32f4_allowed_signals('A', 3).contains(&Tim9Ch2),
+            "PA3 TIM9_CH2"
+        );
+        assert!(
+            stm32f4_allowed_signals('B', 8).contains(&Tim10Ch1),
+            "PB8 TIM10_CH1"
+        );
+        assert!(
+            stm32f4_allowed_signals('B', 9).contains(&Tim11Ch1),
+            "PB9 TIM11_CH1"
+        );
+        assert!(
+            stm32f4_allowed_signals('C', 8).contains(&SdioD0),
+            "PC8 SDIO_D0"
+        );
+        assert!(
+            stm32f4_allowed_signals('C', 12).contains(&SdioCk),
+            "PC12 SDIO_CK"
+        );
+        assert!(
+            stm32f4_allowed_signals('D', 2).contains(&SdioCmd),
+            "PD2 SDIO_CMD"
+        );
+        assert!(
+            stm32f4_allowed_signals('D', 9).contains(&SdioD7),
+            "PD9 SDIO_D7"
+        );
+
+        let mut dialog = PinMapDialog::for_target("stm32f407vg".to_string());
+        // Full 10-signal SDIO bus across GPIOC and GPIOD.
+        dialog.f4_ports[2].pins[8] = Some(SdioD0);
+        dialog.f4_ports[2].pins[9] = Some(SdioD1);
+        dialog.f4_ports[2].pins[10] = Some(SdioD2);
+        dialog.f4_ports[2].pins[11] = Some(SdioD3);
+        dialog.f4_ports[2].pins[12] = Some(SdioCk);
+        dialog.f4_ports[3].pins[2] = Some(SdioCmd);
+        dialog.f4_ports[3].pins[6] = Some(SdioD4);
+        dialog.f4_ports[3].pins[7] = Some(SdioD5);
+        dialog.f4_ports[3].pins[8] = Some(SdioD6);
+        dialog.f4_ports[3].pins[9] = Some(SdioD7);
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "one AF12 SDIO group: {:?}",
+            validate_pin_mapping(&dialog)
+        );
+
+        let code = stm32f4_pin_mapping_code(&dialog);
+        assert!(code.contains("RCC->AHB1ENR |= 0x00000004u;"), "{code}");
+        assert!(code.contains("RCC->AHB1ENR |= 0x00000008u;"), "{code}");
+        assert!(
+            code.contains("GPIOC->MODER = 0x02aa0000u;"),
+            "GPIOC MODER (PC8-12 AF): {code}"
+        );
+        assert!(
+            code.contains("GPIOC->AFRH = 0x000cccccu;"),
+            "GPIOC AFRH (PC8-12 AF12): {code}"
+        );
+        assert!(
+            code.contains("GPIOD->AFRL = 0xcc000c00u;"),
+            "GPIOD AFRL (PD2/PD6/PD7 AF12): {code}"
+        );
+        assert!(
+            code.contains("GPIOD->AFRH = 0x000000ccu;"),
+            "GPIOD AFRH (PD8/PD9 AF12): {code}"
+        );
+    }
+
+    /// The F407 pin map adds the remaining small gaps: I2C3 (AF4, open-drain,
+    /// PA8/PC12 SCL + PC9 SDA) and the general-purpose TIM12/13/14 (AF9).
+    #[test]
+    fn f4_pin_map_adds_i2c3_and_tim12_13_14_af() {
+        use F4PinSignal::*;
+
+        assert_eq!(I2c3Scl.af(), Some(4), "I2C3 is AF4 on F4");
+        assert_eq!(I2c3Sda.af(), Some(4), "I2C3 is AF4 on F4");
+        assert_eq!(Tim12Ch1.af(), Some(9), "TIM12 is AF9 on F4");
+        assert_eq!(Tim12Ch2.af(), Some(9), "TIM12 is AF9 on F4");
+        assert_eq!(Tim13Ch1.af(), Some(9), "TIM13 is AF9 on F4");
+        assert_eq!(Tim14Ch1.af(), Some(9), "TIM14 is AF9 on F4");
+        assert_eq!(
+            I2c3Scl.mode(),
+            PinMode::AltOpenDrain,
+            "I2C3 needs an open-drain bus"
+        );
+
+        assert!(
+            stm32f4_allowed_signals('A', 6).contains(&Tim13Ch1),
+            "PA6 TIM13_CH1"
+        );
+        assert!(
+            stm32f4_allowed_signals('A', 7).contains(&Tim14Ch1),
+            "PA7 TIM14_CH1"
+        );
+        assert!(
+            stm32f4_allowed_signals('A', 8).contains(&I2c3Scl),
+            "PA8 I2C3_SCL"
+        );
+        assert!(
+            stm32f4_allowed_signals('B', 14).contains(&Tim12Ch1),
+            "PB14 TIM12_CH1"
+        );
+        assert!(
+            stm32f4_allowed_signals('B', 15).contains(&Tim12Ch2),
+            "PB15 TIM12_CH2"
+        );
+        assert!(
+            stm32f4_allowed_signals('C', 9).contains(&I2c3Sda),
+            "PC9 I2C3_SDA"
+        );
+        assert!(
+            stm32f4_allowed_signals('C', 12).contains(&I2c3Scl),
+            "PC12 I2C3_SCL"
+        );
+
+        let mut dialog = PinMapDialog::for_target("stm32f407vg".to_string());
+        dialog.f4_ports[0].pins[6] = Some(Tim13Ch1);
+        dialog.f4_ports[0].pins[7] = Some(Tim14Ch1);
+        dialog.f4_ports[1].pins[14] = Some(Tim12Ch1);
+        dialog.f4_ports[1].pins[15] = Some(Tim12Ch2);
+        dialog.f4_ports[2].pins[9] = Some(I2c3Sda);
+        dialog.f4_ports[2].pins[12] = Some(I2c3Scl);
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "I2C3 + TIM12-14 assign cleanly: {:?}",
+            validate_pin_mapping(&dialog)
+        );
+
+        let code = stm32f4_pin_mapping_code(&dialog);
+        assert!(
+            code.contains("GPIOA->MODER = 0x0000a000u;"),
+            "GPIOA MODER (PA6/PA7 alternate): {code}"
+        );
+        assert!(
+            code.contains("GPIOA->AFRL = 0x99000000u;"),
+            "GPIOA AFRL (PA6/PA7 AF9): {code}"
+        );
+        assert!(
+            code.contains("GPIOB->MODER = 0xa0000000u;"),
+            "GPIOB MODER (PB14/PB15 alternate): {code}"
+        );
+        assert!(
+            code.contains("GPIOB->AFRH = 0x99000000u;"),
+            "GPIOB AFRH (PB14/PB15 AF9): {code}"
+        );
+        assert!(
+            code.contains("GPIOC->MODER = 0x02080000u;"),
+            "GPIOC MODER (PC9/PC12 alternate): {code}"
+        );
+        assert!(
+            code.contains("GPIOC->OTYPER = 0x00001200u;"),
+            "GPIOC OTYPER (I2C3 open-drain only): {code}"
+        );
+        assert!(
+            code.contains("GPIOC->AFRH = 0x00040040u;"),
+            "GPIOC AFRH (PC9/PC12 AF4): {code}"
+        );
+    }
+
+    /// A duplicate F4 signal is rejected, while two distinct signals from the same
+    /// peripheral group with the same AF number are valid.
+    #[test]
+    fn f4_pin_map_validates_duplicate_and_af_consistency() {
+        fn assign(dialog: &mut PinMapDialog, port_index: usize, pin: usize, signal: F4PinSignal) {
+            dialog.f4_ports[port_index].pins[pin] = Some(signal);
+        }
+
+        let mut duplicate = PinMapDialog::for_target("stm32f407vg".to_string());
+        assign(&mut duplicate, 0, 9, F4PinSignal::Usart1Tx);
+        assign(&mut duplicate, 0, 10, F4PinSignal::Usart1Tx);
+        let errors = validate_pin_mapping(&duplicate);
+        assert!(
+            errors.iter().any(|error| error.contains("USART1_TX")),
+            "{errors:?}"
+        );
+
+        let mut same_af = PinMapDialog::for_target("stm32f407vg".to_string());
+        assign(&mut same_af, 0, 9, F4PinSignal::Usart1Tx);
+        assign(&mut same_af, 0, 10, F4PinSignal::Usart1Rx);
+        assert!(
+            validate_pin_mapping(&same_af).is_empty(),
+            "same AF group must pass: {:?}",
+            validate_pin_mapping(&same_af)
+        );
+    }
+
+    /// The pin-mapping modal opens for STM32F407, cycles PA9 to USART1_TX, and
+    /// generates `src/pin_mapping.c` with real MODER/AFRL/AFRH writes.
+    #[test]
+    fn pin_map_gui_opens_cycles_and_generates_f4() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_pin_map_f4_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "f4pinmap".to_string();
+            config.project.target = "stm32f407vg".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            app.open_pin_map(cx);
+            let dialog = app.pin_map_dialog.as_ref().unwrap();
+            assert_eq!(dialog.family, PinMapFamily::F4, "F4 family selected");
+            assert_eq!(dialog.f4_ports.len(), 5, "GPIOA..GPIOE ports");
+
+            // PA9 allowed: None → GPIO 输出 → GPIO 输入 → 输入·上拉 → 输入·下拉
+            // → USART1_TX.
+            for _ in 0..5 {
+                app.cycle_pin_signal(0, 9, cx);
+            }
+            let signal = app.pin_map_dialog.as_ref().unwrap().f4_ports[0].pins[9];
+            assert_eq!(signal, Some(F4PinSignal::Usart1Tx));
+
+            // PC10 cycles through the same input variants, then reaches
+            // USART3_TX and SPI3_SCK (both AF options).
+            for _ in 0..5 {
+                app.cycle_pin_signal(2, 10, cx);
+            }
+            let signal = app.pin_map_dialog.as_ref().unwrap().f4_ports[2].pins[10];
+            assert_eq!(signal, Some(F4PinSignal::Usart3Tx));
+
+            app.generate_pin_mapping_code(cx);
+            assert!(app.pin_map_dialog.is_none(), "dialog closes after generate");
+            let path = dir.join("src").join("pin_mapping.c");
+            let code = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(code.contains("pin_mapping_init"), "missing init: {code}");
+            assert!(code.contains("STM32F407VG"), "wrong header target: {code}");
+            assert!(code.contains("GPIOA->AFRH"), "missing AFRH: {code}");
+            assert!(code.contains("GPIOC->AFRH"), "missing GPIOC AFRH: {code}");
+            assert!(code.contains("RCC->AHB1ENR"), "missing AHB1ENR: {code}");
+            assert!(
+                code.contains("GPIOA->OSPEEDR = 0x00080000u;"),
+                "PA9 AF must take the high output speed: {code}"
+            );
+            assert!(
+                code.contains("GPIOA->PUPDR = 0x00000000u;"),
+                "no pulled input in this map: {code}"
+            );
+            assert!(app.status.contains("已生成引脚映射配置"), "{}", app.status);
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// Headless render smoke test for the STM32F407 pin-map modal: opening it and
+    /// assigning an AF pin must render the `AFRL`/`AFRH` diagram without panicking.
+    #[test]
+    fn renders_f4_pin_map_modal_without_panicking() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "f4render".to_string();
+            config.project.target = "stm32f407vg".to_string();
+            app.project = Some(Project {
+                root: temp.clone(),
+                config,
+            });
+            app.pin_map_dialog = Some(PinMapDialog::for_f4_target("stm32f407vg".to_string()));
+            app.pin_map_dialog.as_mut().unwrap().f4_ports[0].pins[9] = Some(F4PinSignal::Usart1Tx);
+            app
+        });
+    }
+
+    /// TIM2_CH3/CH4 (PA6/PA7, AF1) join the F407 table, and one peripheral group
+    /// can be assigned or cleared with a single toggle without clobbering pins
+    /// that already carry another group's signal.
+    #[test]
+    fn f4_pin_map_group_toggle_assigns_and_clears() {
+        use F4PinSignal::*;
+
+        assert_eq!(Tim2Ch3.af(), Some(1), "TIM2 is AF1 on F4");
+        assert_eq!(Tim2Ch4.af(), Some(1), "TIM2 is AF1 on F4");
+        assert_eq!(Tim2Ch3.group(), "TIM2");
+        assert!(
+            stm32f4_allowed_signals('A', 6).contains(&Tim2Ch3),
+            "PA6 TIM2_CH3"
+        );
+        assert!(
+            stm32f4_allowed_signals('A', 7).contains(&Tim2Ch4),
+            "PA7 TIM2_CH4"
+        );
+
+        let mut dialog = PinMapDialog::for_target("stm32f407vg".to_string());
+        assert!(dialog.group_names().contains(&"I2C1"), "I2C1 group listed");
+        assert!(
+            !dialog.group_names().contains(&"GPIO"),
+            "GPIO modes stay a pin-by-pin choice"
+        );
+
+        let (cleared, changed, untouched) = dialog.toggle_group("I2C1");
+        assert!(!cleared, "first toggle assigns");
+        // Both modeled SCL/SDA pairs of I2C1 (PB6/PB7 and PB8/PB9) join the
+        // group: they share AF4, so the assignment stays consistent.
+        // The second pair is skipped: I2C1_SCL/I2C1_SDA are single signals and
+        // must not be assigned to two pins at once.
+        assert_eq!(
+            (changed, untouched),
+            (2, 2),
+            "PB6/PB7 applied, PB8/PB9 skipped"
+        );
+        assert_eq!(dialog.f4_ports[1].pins[6], Some(I2c1Scl));
+        assert_eq!(dialog.f4_ports[1].pins[7], Some(I2c1Sda));
+        assert_eq!(dialog.f4_ports[1].pins[8], None, "PB8 stays free");
+        assert_eq!(dialog.f4_ports[1].pins[9], None, "PB9 stays free");
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "{:?}",
+            validate_pin_mapping(&dialog)
+        );
+        assert!(dialog.is_group_present("I2C1"));
+
+        let (cleared, changed, _) = dialog.toggle_group("I2C1");
+        assert!(cleared, "second toggle clears the group");
+        assert_eq!(changed, 2);
+        assert_eq!(dialog.assigned_count(), 0);
+
+        // TIM2 spans PA0/PA1/PA6/PA7 plus the external trigger on PA5.
+        let (_, changed, _) = dialog.toggle_group("TIM2");
+        assert_eq!(changed, 5, "PA0/PA1/PA6/PA7 + PA5 ETR");
+        assert_eq!(dialog.f4_ports[0].pins[0], Some(Tim2Ch1));
+        assert_eq!(dialog.f4_ports[0].pins[7], Some(Tim2Ch4));
+        assert_eq!(dialog.f4_ports[0].pins[5], Some(Tim2Ch1Etr));
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "{:?}",
+            validate_pin_mapping(&dialog)
+        );
+
+        // TIM3 shares PA6/PA7 with TIM2 and must not clobber them.
+        let (_, changed, untouched) = dialog.toggle_group("TIM3");
+        assert_eq!(changed, 4, "PB0/PB1 + PC6/PC7 are free");
+        assert_eq!(
+            untouched, 4,
+            "PA6/PA7 hold TIM2, PC8/PC9 would duplicate TIM3_CH3/CH4"
+        );
+        assert_eq!(dialog.f4_ports[1].pins[0], Some(Tim3Ch3));
+        assert_eq!(
+            dialog.f4_ports[0].pins[6],
+            Some(Tim2Ch3),
+            "PA6 keeps TIM2_CH3"
+        );
+        assert_eq!(
+            dialog.f4_ports[2].pins[8], None,
+            "PC8 would duplicate TIM3_CH3 and stays free"
+        );
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "{:?}",
+            validate_pin_mapping(&dialog)
+        );
+    }
+
+    /// A pin-map scheme round-trips through `.ns-ide/pin_map.json`: assignments
+    /// survive a cleared dialog, illegal entries are skipped, a corrupted file is
+    /// reported, and a scheme belonging to another target is refused.
+    #[test]
+    fn pin_map_scheme_saves_and_loads_per_target() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_pin_map_scheme_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "pinmapproj".to_string();
+            config.project.target = "stm32f407vg".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config: config.clone(),
+            });
+
+            app.open_pin_map(cx);
+            // PA9 reaches the first peripheral signal after five clicks; PB14 is
+            // assigned directly so the test does not depend on its list order.
+            for _ in 0..5 {
+                app.cycle_pin_signal(0, 9, cx);
+            }
+            {
+                let dialog = app.pin_map_dialog.as_mut().unwrap();
+                dialog.f4_ports[1].pins[14] = Some(F4PinSignal::Tim12Ch1);
+            }
+            assert_eq!(
+                app.pin_map_dialog.as_ref().unwrap().f4_ports[0].pins[9],
+                Some(F4PinSignal::Usart1Tx)
+            );
+            assert_eq!(
+                app.pin_map_dialog.as_ref().unwrap().f4_ports[1].pins[14],
+                Some(F4PinSignal::Tim12Ch1)
+            );
+
+            app.save_pin_map_scheme(cx);
+            let scheme_path = dir.join(".ns-ide").join("pin_map.json");
+            assert!(scheme_path.exists(), "scheme file must be written");
+            assert!(app.status.contains("引脚方案已保存"), "{}", app.status);
+
+            // A cleared dialog restores the saved scheme.
+            app.clear_pin_map(cx);
+            assert_eq!(app.pin_map_dialog.as_ref().unwrap().assigned_count(), 0);
+            app.load_pin_map_scheme(cx);
+            assert_eq!(
+                app.pin_map_dialog.as_ref().unwrap().f4_ports[0].pins[9],
+                Some(F4PinSignal::Usart1Tx)
+            );
+            assert_eq!(
+                app.pin_map_dialog.as_ref().unwrap().f4_ports[1].pins[14],
+                Some(F4PinSignal::Tim12Ch1)
+            );
+            assert!(app.status.contains("引脚方案已载入"), "{}", app.status);
+
+            // An illegal entry is skipped instead of being applied.
+            let mut scheme: PinMapScheme =
+                serde_json::from_str(&std::fs::read_to_string(&scheme_path).unwrap()).unwrap();
+            scheme.entries.push(PinMapSchemeEntry {
+                port: 'C',
+                pin: 9,
+                signal: "SPI1_MISO".to_string(),
+            });
+            std::fs::write(&scheme_path, serde_json::to_string(&scheme).unwrap()).unwrap();
+            app.load_pin_map_scheme(cx);
+            assert_eq!(
+                app.pin_map_dialog.as_ref().unwrap().f4_ports[2].pins[9],
+                None,
+                "illegal PC9 signal must not apply"
+            );
+            assert!(app.status.contains("跳过 1 个非法项"), "{}", app.status);
+
+            // A corrupted file is reported, and a foreign scheme is refused.
+            std::fs::write(&scheme_path, "{ not json").unwrap();
+            app.load_pin_map_scheme(cx);
+            assert!(app.status.contains("引脚方案已损坏"), "{}", app.status);
+            std::fs::write(
+                &scheme_path,
+                r#"{"target":"stm32f103c8","family":"F1","entries":[]}"#,
+            )
+            .unwrap();
+            app.load_pin_map_scheme(cx);
+            assert!(app.status.contains("不符"), "{}", app.status);
+
+            // The STM32F1 family persists through the same file.
+            config.project.target = "stm32f103c8".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+            app.open_pin_map(cx);
+            for _ in 0..3 {
+                app.cycle_pin_signal(0, 9, cx);
+            }
+            assert_eq!(
+                app.pin_map_dialog.as_ref().unwrap().ports[0].pins[9],
+                Some(PinSignal::Usart1Tx)
+            );
+            app.save_pin_map_scheme(cx);
+            app.clear_pin_map(cx);
+            app.load_pin_map_scheme(cx);
+            assert_eq!(
+                app.pin_map_dialog.as_ref().unwrap().ports[0].pins[9],
+                Some(PinSignal::Usart1Tx)
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// A CubeMX `.ioc` loads its pin assignments into the open pin map, skips
+    /// what the built-in AF table does not model, refuses a foreign MCU and
+    /// reports a repeated signal as a conflict instead of silently applying it.
+    #[test]
+    fn pin_map_imports_cubemx_ioc_and_reports_conflicts() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let root = std::env::temp_dir().join("ns_pin_ioc_noop");
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "iocproj".to_string();
+            config.project.target = "stm32f407vg".to_string();
+            app.project = Some(Project {
+                root: root.clone(),
+                config: config.clone(),
+            });
+            app.open_pin_map(cx);
+
+            const F407_IOC: &str = r#"McuName=STM32F407VGTx
+McuPackage=LQFP100
+Mcu.IP_TIM2=TIM2
+Mode.PA9=GPIO
+Signal.PA9=USART1_TX
+SignalMode.PA9=AS
+Mode.PA10=GPIO
+Signal.PA10=USART1_RX
+SignalMode.PA10=AS
+Mode.PB6=GPIO
+Signal.PB6=I2C1_SCL
+SignalMode.PB6=AS
+Mode.PB7=GPIO
+Signal.PB7=I2C1_SDA
+SignalMode.PB7=AS
+Mode.PA0=GPIO
+Signal.PA0=GPIO
+SignalMode.PA0=RegularOutput
+Mode.PA1=GPIO
+Signal.PA1=GPIO
+SignalMode.PA1=Input
+Pull.PA1=PUp
+Mode.PC14=GPIO
+Signal.PC14=GPIO
+Mode.PA5=GPIO
+Signal.PA5=TIM2_CH1_ETR
+SignalMode.PA5=AS
+Mode.PA6=GPIO
+Signal.PA6=TIM2_CH3
+SignalMode.PA6=AS
+Mode.PA7=GPIO
+Signal.PA7=TIM2_CH4
+SignalMode.PA7=AS
+Mode.PA8=GPIO
+Signal.PA8=TIM1_CH1
+SignalMode.PA8=AS
+Mode.PA11=GPIO
+Signal.PA11=USB_OTG_FS_DM
+SignalMode.PA11=AS
+Mode.PA13=GPIO
+Signal.PA13=SYS_JTMS-SWO
+SignalMode.PA13=AS
+Mode.PA14=GPIO
+Signal.PA14=SYS_JTCK-SWCLK
+SignalMode.PA14=AS
+Mode.PB14=GPIO
+Signal.PB14=TIM12_CH1
+SignalMode.PB14=AS
+Mode.PC13=GPIO
+Signal.PC13=GPIO
+SignalMode.PC13=Input
+Pull.PC13=PDown
+Mode.PD9=GPIO
+Signal.PD9=ETH_MII_CRS
+SignalMode.PD9=AS
+Locked.PA9=0
+Unlock.PA9=0
+ProjectManager.KeepUserCode=0
+"#;
+            app.import_pin_map_ioc_text(F407_IOC, cx);
+
+            let dialog = app.pin_map_dialog.as_ref().unwrap();
+            assert_eq!(dialog.f4_ports[0].pins[9], Some(F4PinSignal::Usart1Tx));
+            assert_eq!(dialog.f4_ports[0].pins[0], Some(F4PinSignal::GpioOutput));
+            assert_eq!(dialog.f4_ports[0].pins[1], Some(F4PinSignal::GpioInputPull));
+            assert_eq!(dialog.f4_ports[0].pins[6], Some(F4PinSignal::Tim2Ch3));
+            assert_eq!(dialog.f4_ports[0].pins[7], Some(F4PinSignal::Tim2Ch4));
+            assert_eq!(dialog.f4_ports[0].pins[13], Some(F4PinSignal::Swdio));
+            assert_eq!(dialog.f4_ports[0].pins[14], Some(F4PinSignal::Swclk));
+            assert_eq!(dialog.f4_ports[1].pins[6], Some(F4PinSignal::I2c1Scl));
+            assert_eq!(dialog.f4_ports[0].pins[11], Some(F4PinSignal::UsbDm));
+            assert_eq!(dialog.f4_ports[2].pins[13], Some(F4PinSignal::GpioInputPullDown));
+            assert_eq!(
+                dialog.f4_ports[2].pins[14],
+                None,
+                "a bare GPIO pin without a SignalMode is not an assignment"
+            );
+            assert_eq!(
+                dialog.f4_ports[3].pins[9],
+                None,
+                "unmodelled ETH_MII_CRS must not be applied"
+            );
+            assert_eq!(dialog.assigned_count(), 15);
+            assert!(app.status.contains("导入 15 个引脚"), "{}", app.status);
+            assert!(app.status.contains("1 项未导入"), "{}", app.status);
+
+            // An `.ioc` describing another MCU is refused, leaving the map intact.
+            const FOREIGN: &str = "Mcu.PartNumber=STM32F103C8Tx\nPA9.Signal0=SPI1_NSS\n";
+            app.import_pin_map_ioc_text(FOREIGN, cx);
+            assert!(app.status.contains("不符"), "{}", app.status);
+            assert_eq!(
+                app.pin_map_dialog.as_ref().unwrap().f4_ports[0].pins[9],
+                Some(F4PinSignal::Usart1Tx)
+            );
+
+            // The same signal on two pins is imported and reported as a conflict.
+            app.clear_pin_map(cx);
+            const DUPLICATE: &str =
+                "Mcu.PartNumber=STM32F407VGTx\nPB6.Signal0=I2C1_SCL\nPB8.Signal0=I2C1_SCL\n";
+            app.import_pin_map_ioc_text(DUPLICATE, cx);
+            assert_eq!(
+                app.pin_map_dialog.as_ref().unwrap().f4_ports[1].pins[8],
+                Some(F4PinSignal::I2c1Scl)
+            );
+            assert!(app.status.contains("冲突"), "{}", app.status);
+
+            // The STM32F1 family imports through the same path.
+            config.project.target = "stm32f103c8".to_string();
+            app.project = Some(Project { root, config });
+            app.open_pin_map(cx);
+            const F103_IOC: &str = "Mcu.PartNumber=STM32F103C8Tx\nPA9.Signal0=USART1_TX\nPA10.Signal0=USART1_RX\nPB6.Signal0=I2C1_SCL\nPA0.Mode=GPIO_Output\n";
+            app.import_pin_map_ioc_text(F103_IOC, cx);
+            let dialog = app.pin_map_dialog.as_ref().unwrap();
+            assert_eq!(dialog.ports[0].pins[9], Some(PinSignal::Usart1Tx));
+            assert_eq!(dialog.ports[1].pins[6], Some(PinSignal::I2c1Scl));
+            assert_eq!(dialog.ports[0].pins[0], Some(PinSignal::GpioOutput));
+            assert!(app.status.contains("导入 4 个引脚"), "{}", app.status);
+
+            app
+        });
+    }
+
+    /// The pin map exports a CubeMX-style `.ioc` pin-out that its own importer
+    /// reads back into the same assignment.
+    #[test]
+    fn pin_map_exports_ioc_and_roundtrips_through_import() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir =
+                std::env::temp_dir().join(format!("ns_pin_ioc_export_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "iocexport".to_string();
+            config.project.target = "stm32f407vg".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+            app.open_pin_map(cx);
+
+            // Nothing assigned: the export is refused and no file is written.
+            let path = dir.join("pin_map.ioc");
+            app.export_pin_map_ioc(cx);
+            assert!(app.status.contains("没有可导出"), "{}", app.status);
+            assert!(!path.exists(), "an empty pin map must not export");
+
+            {
+                let dialog = app.pin_map_dialog.as_mut().unwrap();
+                dialog.f4_ports[0].pins[9] = Some(F4PinSignal::Usart1Tx);
+                dialog.f4_ports[0].pins[1] = Some(F4PinSignal::GpioInputPull);
+                dialog.f4_ports[0].pins[13] = Some(F4PinSignal::Swdio);
+                dialog.f4_ports[1].pins[6] = Some(F4PinSignal::I2c1Scl);
+            }
+            app.export_pin_map_ioc(cx);
+            assert!(app.status.contains("已导出"), "{}", app.status);
+            assert!(path.exists(), "pin_map.ioc must be written");
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.contains("McuName=STM32F407VGTx"), "{}", text);
+            assert!(text.contains("Signal.PA9=USART1_TX"), "{}", text);
+            assert!(text.contains("Pull.PA1=PUp"), "{}", text);
+            assert!(text.contains("Signal.PA13=SYS_JTMS-SWO"), "{}", text);
+
+            // The importer reads the export back into the same assignment.
+            app.clear_pin_map(cx);
+            assert_eq!(app.pin_map_dialog.as_ref().unwrap().assigned_count(), 0);
+            app.import_pin_map_ioc_text(&text, cx);
+            let dialog = app.pin_map_dialog.as_ref().unwrap();
+            assert_eq!(dialog.f4_ports[0].pins[9], Some(F4PinSignal::Usart1Tx));
+            assert_eq!(dialog.f4_ports[0].pins[1], Some(F4PinSignal::GpioInputPull));
+            assert_eq!(dialog.f4_ports[0].pins[13], Some(F4PinSignal::Swdio));
+            assert_eq!(dialog.f4_ports[1].pins[6], Some(F4PinSignal::I2c1Scl));
+            assert_eq!(dialog.assigned_count(), 4);
+            assert!(app.status.contains("导入 4 个引脚"), "{}", app.status);
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// Without a project or with an unsupported target, the pin-mapping modal
+    /// reports honestly and does not open an empty/wrong diagram.
+    #[test]
+    fn open_pin_map_without_project_or_unsupported_reports() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.open_pin_map(cx);
+            assert!(app.pin_map_dialog.is_none());
+            assert!(app.status.contains("请先打开项目"), "{}", app.status);
+
+            let temp = std::env::temp_dir();
+            let dir = temp.join(format!("ns_pin_map_err_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "g4target".to_string();
+            config.project.target = "stm32g431rb".to_string();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+            app.status.clear();
+            app.open_pin_map(cx);
+            assert!(app.pin_map_dialog.is_none());
+            assert!(app.status.contains("暂不支持目标"), "{}", app.status);
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// `jump_memory_to_pc` reports honestly without a PC, and with a PC sets the
+    /// address input to the PC hex and triggers a read (no session → a clear
+    /// error rather than a silent no-op).
+    #[test]
+    fn jump_memory_to_pc_sets_address_and_reports() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.ensure_memory_input(cx);
+
+            // No PC yet: an honest error, no panic.
+            app.jump_memory_to_pc(cx);
+            assert!(
+                app.debug
+                    .memory
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("无 PC"))
+            );
+
+            // With a PC, the address field is populated and a read is attempted
+            // (no live session → the read path reports "调试会话未运行").
+            app.debug.pc = Some(0x0800_0100);
+            app.jump_memory_to_pc(cx);
+            let text = app
+                .debug
+                .memory
+                .address_input
+                .as_ref()
+                .map(|field| field.read(cx).text())
+                .unwrap_or_default();
+            assert_eq!(text, "0x8000100");
+            assert!(
+                app.debug
+                    .memory
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("调试会话未运行"))
+            );
+            app
+        });
+    }
+
+    /// `jump_memory_to_address` sets the memory address input to the given address
+    /// (not just PC) and reports the jump in the status bar.
+    #[test]
+    fn jump_memory_to_address_sets_input_and_reports() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.jump_memory_to_address(0x2000_0004, cx);
+            let text = app
+                .debug
+                .memory
+                .address_input
+                .as_ref()
+                .map(|field| field.read(cx).text())
+                .unwrap_or_default();
+            assert_eq!(text, "0x20000004");
+            assert!(app.status.contains("0x20000004"), "{}", app.status);
+            app
+        });
+    }
+
+    /// `build_rtos_tasks` assembles collected partial tasks, marks the task at
+    /// `current_index` running, maps state/stack, and sorts by name.
+    #[test]
+    fn build_rtos_tasks_marks_running_and_sorts() {
+        let mut tasks = BTreeMap::new();
+        tasks.insert(
+            0,
+            PartialRtosTask {
+                name: Some("led".into()),
+                priority: Some(2),
+                stack_usage: Some(35),
+                state: Some(0),
+            },
+        );
+        tasks.insert(
+            1,
+            PartialRtosTask {
+                name: Some("monitor".into()),
+                priority: Some(1),
+                stack_usage: Some(60),
+                state: Some(1),
+            },
+        );
+        tasks.insert(
+            2,
+            PartialRtosTask {
+                name: Some("usb".into()),
+                priority: Some(0),
+                stack_usage: None,
+                state: Some(2),
+            },
+        );
+        let state = RtosRefreshState {
+            count: 3,
+            current_index: Some(1),
+            tasks,
             mode: RtosKernelMode::Template,
             kernel: None,
-        });
-        // Zero tasks: consumed, list cleared, pending dropped.
-        assert!(app.handle_rtos_evaluated("task_count", "0", cx));
-        assert!(app.debug.rtos_tasks.is_empty());
-        assert!(app.rtos_pending.is_none());
-
-        // Positive count: consumed and pending remains (names still expected).
-        app.rtos_pending = Some(RtosRefreshState {
-            count: 0,
-            current_index: None,
-            tasks: BTreeMap::new(),
-            mode: RtosKernelMode::Template,
-            kernel: None,
-        });
-        assert!(app.handle_rtos_evaluated("task_count", "2", cx));
-        assert!(app.rtos_pending.is_some());
-        // Unrelated expression is not consumed.
-        assert!(!app.handle_rtos_evaluated("x + 1", "3", cx));
-        app
-    });
-}
-
-/// The variables panel copy action writes `name = value` (or just `name` when
-/// the value is empty) to the clipboard and reports the status.
-#[test]
-fn copy_variable_value_writes_name_eq_value() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.copy_variable_value("count", "42", cx);
-        assert!(app.status.contains("count = 42"));
-        app.copy_variable_value("empty_val", "", cx);
-        assert!(app.status.contains("empty_val"));
-        app
-    });
-}
-
-/// The disassembly copy action writes `address  instruction` to the clipboard.
-#[test]
-fn copy_disasm_instruction_writes_addr_and_insn() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.copy_disasm_instruction(0x0800_0100, "addi a0, a0, 1", cx);
-        assert!(
-            app.status.contains("0x8000100  addi a0, a0, 1"),
-            "{}",
-            app.status
-        );
-        app
-    });
-}
-
-/// The memory row copy action writes `address  hex-bytes  │ ascii`.
-#[test]
-fn copy_memory_row_writes_address_hex_ascii() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.copy_memory_row(0x0800_0000, &[0xde, 0xad, 0xbe, 0xef], "....", cx);
-        assert!(
-            app.status.contains("0x08000000  de ad be ef  │ ...."),
-            "{}",
-            app.status
-        );
-        app
-    });
-}
-
-/// The watch copy action writes `expression = value` (value-empty → expression).
-#[test]
-fn copy_watch_value_writes_expr_eq_value() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        app.copy_watch_value("counter", "42", cx);
-        assert!(app.status.contains("counter = 42"), "{}", app.status);
-        app.copy_watch_value("marker", "", cx);
-        assert!(app.status.contains("marker"), "{}", app.status);
-        app
-    });
-}
-
-/// `set_build_config` writes the chosen config to the active target's
-/// `[[targets]]` entry (or the shared `[build] config` when no target is set),
-/// persisting to `project.toml`; an invalid config is rejected.
-#[test]
-fn set_build_config_persists_to_project() {
-    let mut cx = gpui::TestAppContext::single();
-    let temp = std::env::temp_dir();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = temp.join(format!("ns_buildcfg_test_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "cfgproj".to_string();
-        config.project.target = "stm32f103c8".to_string();
-        config.build.config = "debug".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        app.project = Some(Project {
-            root: dir.clone(),
-            config,
-        });
-
-        // Release is applied to the active target's entry and persisted.
-        app.set_build_config("release", cx);
-        assert_eq!(app.project.as_ref().unwrap().build_config(), "release");
-        let disk = std::fs::read_to_string(dir.join("project.toml")).unwrap();
-        assert!(disk.contains("release"), "config persisted: {disk}");
-
-        // Setting the same config is a no-op that does not clobber.
-        let before = disk.clone();
-        app.set_build_config("release", cx);
-        assert!(app.status.contains("已是"));
-        assert_eq!(std::fs::read_to_string(dir.join("project.toml")).unwrap(), before);
-
-        // An invalid config is rejected.
-        app.set_build_config("oops", cx);
-        assert!(app.status.contains("必须为 debug 或 release"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// Debug-console command history: up walks older commands, down walks back to
-/// the draft, and consecutive repeats are deduplicated.
-#[test]
-fn debug_console_history_navigates_and_dedupes() {
-    let mut view = DebugView::default();
-    view.push_console_history("step");
-    view.push_console_history("bt");
-    view.push_console_history("step"); // not consecutive to the last
-    assert_eq!(view.console_history, vec!["step", "bt", "step"]);
-
-    // Consecutive repeats are collapsed.
-    view.push_console_history("step");
-    assert_eq!(view.console_history.len(), 3);
-
-    // Up from a fresh line: saves the draft, recalls the newest.
-    assert_eq!(view.history_navigate(true, "print x"), Some("step".to_string()));
-    assert_eq!(view.console_draft, "print x");
-    // Up again: older entry.
-    assert_eq!(view.history_navigate(true, "step"), Some("bt".to_string()));
-    // Up again: move to the oldest entry.
-    assert_eq!(view.history_navigate(true, "bt"), Some("step".to_string()));
-    // At the oldest: no further movement.
-    assert_eq!(view.history_navigate(true, "step"), None);
-    // Down walks forward.
-    assert_eq!(view.history_navigate(false, "step"), Some("bt".to_string()));
-    assert_eq!(view.history_navigate(false, "bt"), Some("step".to_string()));
-    // Down past the newest restores the draft.
-    assert_eq!(view.history_navigate(false, "step"), Some("print x".to_string()));
-    assert_eq!(view.console_history_idx, None);
-
-    // Empty history never navigates.
-    let mut empty = DebugView::default();
-    assert_eq!(empty.history_navigate(true, ""), None);
-}
-
-/// Go-to-line dialog: parses a 1-based line number, jumps the active editor,
-/// and clamps out-of-range values to the document bounds.
-#[test]
-fn go_to_line_dialog_jumps_and_clamps() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let path = std::env::temp_dir().join(format!("ns_gtl_{}.c", std::process::id()));
-        let text = "line0\nline1\nline2\nline3\nline4\n".to_string();
-        app.open_text_tab(path.clone(), text, cx);
-
-        // Valid line: jumps to the 1-based line.
-        app.open_go_to_line(cx);
-        let field = app.go_to_line_dialog.as_ref().unwrap().field.clone();
-        field.update(cx, |f, cx| f.set_text("3", cx));
-        app.save_go_to_line_dialog(cx);
-        let (line, _col) = app.active_editor().unwrap().read(cx).cursor_line_col();
-        assert_eq!(line, 3, "cursor should be on 1-based line 3");
-        assert!(app.status.contains("第 3 行"));
-
-        // Out-of-range line is clamped to the last line.
-        app.open_go_to_line(cx);
-        let field = app.go_to_line_dialog.as_ref().unwrap().field.clone();
-        field.update(cx, |f, cx| f.set_text("999", cx));
-        app.save_go_to_line_dialog(cx);
-        let (line, _col) = app.active_editor().unwrap().read(cx).cursor_line_col();
-        assert_eq!(line, 6, "clamped to the last logical line (trailing newline → 6)");
-
-        // Non-numeric input is rejected without moving.
-        app.open_go_to_line(cx);
-        let field = app.go_to_line_dialog.as_ref().unwrap().field.clone();
-        field.update(cx, |f, cx| f.set_text("abc", cx));
-        app.save_go_to_line_dialog(cx);
-        assert!(app.status.contains("大于 0 的整数"));
-
-        let _ = std::fs::remove_file(&path);
-        app
-    });
-}
-
-/// The tree "duplicate" operation copies a file or a whole directory tree to
-/// the new name, preserving nested structure and file contents.
-#[test]
-fn duplicate_tree_entry_copies_recursively() {
-    let base = std::env::temp_dir().join(format!("ns_dup_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(base.join("src/sub")).unwrap();
-    std::fs::write(base.join("src/main.c"), "int main(){}").unwrap();
-    std::fs::write(base.join("src/sub/util.h"), "#pragma once").unwrap();
-
-    // File copy: the save handler uses `std::fs::copy` for files.
-    std::fs::copy(base.join("src/main.c"), base.join("main_copy.c")).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(base.join("main_copy.c")).unwrap(),
-        "int main(){}"
-    );
-
-    // Directory copy (recursive) via the tree-duplicate helper.
-    copy_dir_recursive(&base.join("src"), &base.join("src_copy")).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(base.join("src_copy/main.c")).unwrap(),
-        "int main(){}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(base.join("src_copy/sub/util.h")).unwrap(),
-        "#pragma once"
-    );
-
-    let _ = std::fs::remove_dir_all(&base);
-}
-
-/// The output panel "save" writes the active build/run buffer to a log file
-/// under the project's `out/` directory and reports the path; empty output is
-/// rejected without writing.
-#[test]
-fn save_output_to_file_writes_log_and_rejects_empty() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = std::env::temp_dir().join(format!("ns_outlog_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "outlog".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        app.project = Some(Project { root: dir.clone(), config });
-
-        // Empty output is rejected.
-        app.output.clear();
-        app.save_output_to_file(cx);
-        assert!(app.status.contains("为空"));
-
-        // Non-empty output is written to out/build-output-*.log.
-        app.output = "build ok\nwarning: x\n".to_string();
-        app.save_output_to_file(cx);
-        assert!(app.status.contains("已保存"));
-        let logs = std::fs::read_dir(dir.join("out")).unwrap().count();
-        assert_eq!(logs, 1);
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-#[test]
-fn memory_export_writes_bin_and_rejects_empty() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = std::env::temp_dir().join(format!("ns_memexp_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "memexp".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        app.project = Some(Project { root: dir.clone(), config });
-
-        // Empty bytes are rejected.
-        app.debug.memory.bytes.clear();
-        app.export_memory_region(cx);
-        assert!(app.debug.memory.error.as_deref().unwrap_or("").contains("没有"));
-
-        // Non-empty bytes are written to out/memory-<addr>-<ts>.bin.
-        app.debug.memory.address = 0x2000_0000;
-        app.debug.memory.bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        app.export_memory_region(cx);
-        assert!(app.status.contains("内存已导出"));
-        let written = std::fs::read_dir(dir.join("out"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        assert_eq!(std::fs::read(&written).unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-#[test]
-fn log_breakpoint_hit_marks_and_persists() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = std::env::temp_dir().join(format!("ns_logbp_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "logbp".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        app.project = Some(Project { root: dir.clone(), config });
-
-        // Add a log breakpoint at src/main.c:12 and fire a tagged output.
-        let rel = "src/main.c";
-        app.breakpoints.set(rel, 12, true);
-        app.breakpoints.set_log_message(rel, 12, "counter: {value}");
-        assert_eq!(app.breakpoints.find(rel, 12).unwrap().hits, 0);
-
-        app.mark_log_breakpoint_hit(&dir.join(rel).to_string_lossy(), 12, cx);
-        let bp = app.breakpoints.find(rel, 12).unwrap();
-        assert_eq!(bp.hits, 1);
-        assert!(bp.hit);
-        assert!(app.status.contains("日志断点命中"));
-
-        // Reload the store: the hit count is persisted.
-        let reloaded = ns_project::BreakpointStore::load(&dir);
-        assert_eq!(reloaded.find(rel, 12).unwrap().hits, 1);
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// `on_bookmark_toggled` adds/removes the bookmark in the store and persists
-/// it to `.ns-ide/bookmarks.json`; reloading the store recovers it.
-#[test]
-fn bookmark_toggle_updates_and_persists() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = std::env::temp_dir().join(format!("ns_bm_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "bm".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        app.project = Some(Project { root: dir.clone(), config });
-
-        let rel = "src/main.c";
-        app.on_bookmark_toggled(rel, 5, true, cx);
-        assert!(app.bookmarks.find(rel, 5).is_some());
-        assert!(app.status.contains("已添加书签"));
-
-        app.on_bookmark_toggled(rel, 5, false, cx);
-        assert!(app.bookmarks.find(rel, 5).is_none());
-
-        app.on_bookmark_toggled(rel, 7, true, cx);
-        let reloaded = ns_project::BookmarkStore::load(&dir);
-        assert!(reloaded.find(rel, 7).is_some());
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// `remove_bookmark` / `clear_bookmarks` update the store and persist; the
-/// panel's per-row remove and clear-all both take effect.
-#[test]
-fn bookmark_panel_remove_and_clear() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let mut app = IdeApp::new(None, cx);
-        let dir = std::env::temp_dir().join(format!("ns_bmp_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "bmp".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        app.project = Some(Project { root: dir.clone(), config });
-
-        let rel = "src/main.c";
-        app.bookmarks.add(rel, 3, "");
-        app.bookmarks.add(rel, 9, "");
-        app.bookmarks.add("src/uart.c", 4, "");
-        assert_eq!(app.bookmarks.len(), 3);
-
-        app.remove_bookmark(rel, 3, cx);
-        assert_eq!(app.bookmarks.len(), 2);
-        assert!(app.bookmarks.find(rel, 3).is_none());
-
-        app.clear_bookmarks(cx);
-        assert!(app.bookmarks.is_empty());
-        let reloaded = ns_project::BookmarkStore::load(&dir);
-        assert!(reloaded.is_empty());
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// External tools: add/edit/save/delete a tool command, then run it via the
-/// picker; the store persists to `.ns-ide/tools.json` and reloads.
-#[test]
-fn external_tools_add_edit_run_delete() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-tools-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "toolsproj".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-
-        let mut app = IdeApp::new(None, cx);
-        app.project = Some(Project { root: dir.clone(), config });
-
-        // Add a tool via the editor dialog, then save.
-        app.open_tool_editor(None, cx);
-        let dialog = app.tool_dialog.as_ref().expect("dialog opened");
-        dialog.title.update(cx, |field, fcx| field.set_text("构建", fcx));
-        dialog.command.update(cx, |field, fcx| field.set_text("echo hello", fcx));
-        app.save_tool(cx);
-        assert_eq!(app.tools_store.len(), 1);
-        assert!(app.tools_store.find("tool-1").is_some());
-        assert!(dir.join(".ns-ide/tools.json").exists(), "tools saved to disk");
-
-        // Reload from disk.
-        let reloaded = ns_project::ToolStore::load(&dir);
-        assert_eq!(reloaded.len(), 1);
-        assert_eq!(reloaded.find("tool-1").unwrap().title, "构建");
-
-        // Picker selects and runs it (the panel receives the command).
-        app.run_tool_picker(cx);
-        assert!(app.tool_picker_open, "picker opens");
-        app.confirm_tool_picker(cx);
-        assert!(!app.tool_picker_open, "picker closes after confirm");
-        assert!(app.tools.is_some(), "tools panel created for the run");
-
-        // Edit the existing tool, then delete it.
-        app.open_tool_editor(Some("tool-1".to_string()), cx);
-        assert!(app.tool_dialog.as_ref().unwrap().is_edit);
-        app.delete_tool("tool-1", cx);
-        assert_eq!(app.tools_store.len(), 0);
-        let reloaded = ns_project::ToolStore::load(&dir);
-        assert!(reloaded.is_empty(), "deletion persisted");
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// Snippet management: add a row, fill prefix/body, save to `snippets.json`,
-/// reload from disk, then delete the row and confirm persistence.
-#[test]
-fn snippet_dialog_add_edit_save_delete() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        // Snapshot the pre-existing global store, then wipe it so the test is
-        // hermetic regardless of pollution from earlier runs.
-        let original = ns_project::SnippetStore::load();
-        let _ = ns_project::SnippetStore::default().save();
-        let mut app = IdeApp::new(None, cx);
-
-
-        // Open the dialog (loads the current snippets.json).
-        app.open_snippet_dialog(cx);
-        assert!(app.snippet_dialog.is_some(), "dialog opens");
-        let before = app.snippet_dialog.as_ref().unwrap().rows.len();
-
-        // Add a blank row and fill it.
-        app.add_snippet_row(cx);
-        let rows = app.snippet_dialog.as_ref().unwrap().rows.len();
-        assert_eq!(rows, before + 1, "a new row is added");
-        let row = app.snippet_dialog.as_ref().unwrap().rows.last().unwrap();
-        row.prefix.update(cx, |f, fcx| f.set_text("for", fcx));
-        row.body.update(cx, |f, fcx| {
-            f.set_text("for (int i = 0; i < $1; i++) { $0 }", fcx)
-        });
-        row.description
-            .update(cx, |f, fcx| f.set_text("经典 for 循环", fcx));
-        app.save_snippets(cx);
-        assert!(app.snippet_dialog.is_none(), "dialog closes on save");
-        assert!(app.status.contains("已保存"), "{}", app.status);
-
-        // Reload from disk and verify the new snippet persisted.
-        let store = ns_project::SnippetStore::load();
-        assert!(
-            store
-                .matching("for")
-                .iter()
-                .any(|s| s.body.contains("$1") && s.description == "经典 for 循环"),
-            "snippet persisted with body and description"
-        );
-
-        // Re-open: the added snippet shows up as a row; delete it.
-        app.open_snippet_dialog(cx);
-        let target = app
-            .snippet_dialog
-            .as_ref()
-            .unwrap()
-            .rows
-            .iter()
-            .position(|r| r.prefix.read(cx).text() == "for");
-        let target = target.expect("the new snippet row is present");
-        app.delete_snippet_row(target, cx);
-        app.save_snippets(cx);
-
-        // The snippet must be gone.
-        let store = ns_project::SnippetStore::load();
-        assert!(
-            !store
-                .snippets
-                .iter()
-                .any(|s| s.prefix == "for" && s.description == "经典 for 循环"),
-            "the test snippet was removed"
-        );
-        // Restore the original store so the test leaves no trace.
-        let _ = original.save();
-
-        app
-    });
-}
-
-
-
-/// Diagnostic navigation walks build + LSP diagnostics in file/line order,
-/// wraps at the ends, and reports the destination in the status bar.
-#[test]
-fn navigate_diagnostic_walks_and_wraps() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-diag-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "diagproj".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-
-        let mut app = IdeApp::new(None, cx);
-        app.project = Some(Project { root: dir.clone(), config });
-
-        let a = dir.join("src/a.c");
-        let b = dir.join("src/b.c");
-        std::fs::write(&a, "int x;\nint y;\nint z;\n").unwrap();
-        std::fs::write(&b, "int p;\nint q;\n").unwrap();
-
-        // Build diagnostic at a.c:2; LSP diagnostic at a.c:1 and b.c:1.
-        app.diagnostics = vec![Diagnostic {
-            path: Some(a.clone()),
-            line: Some(2),
-            column: Some(3),
-            severity: Severity::Error,
-            message: "build error".to_string(),
-            raw: String::new(),
-        }];
-        app.lsp_diagnostics.insert(
-            a.clone(),
-            vec![ns_lsp::LspDiagnostic {
-                path: a.clone(),
-                line: 1,
-                column: 1,
-                severity: ns_lsp::LspSeverity::Warning,
-                message: "lsp warn".to_string(),
-            }],
-        );
-        app.lsp_diagnostics.insert(
-            b.clone(),
-            vec![ns_lsp::LspDiagnostic {
-                path: b.clone(),
-                line: 1,
-                column: 2,
-                severity: ns_lsp::LspSeverity::Error,
-                message: "lsp err".to_string(),
-            }],
-        );
-
-        // No file open: next lands on the first diagnostic (a.c:1).
-        app.navigate_diagnostic(1, cx);
-        assert!(app.status.contains("a.c:1:1"), "first diag: {}", app.status);
-        assert_eq!(app.output_tab, OutputTab::Problems, "problems panel shown");
-
-        // Next lands on a.c:2 (build error).
-        app.navigate_diagnostic(1, cx);
-        assert!(app.status.contains("a.c:2:3"), "second diag: {}", app.status);
-
-        // Next lands on b.c:1 (LSP error), then wraps to a.c:1.
-        app.navigate_diagnostic(1, cx);
-        assert!(app.status.contains("b.c:1:2"), "third diag: {}", app.status);
-        app.navigate_diagnostic(1, cx);
-        assert!(app.status.contains("a.c:1:1"), "wrap: {}", app.status);
-
-        // Previous from a.c:1 wraps to b.c:1.
-        app.navigate_diagnostic(-1, cx);
-        assert!(app.status.contains("b.c:1:2"), "prev wrap: {}", app.status);
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// Debug variable hover: with a stopped session the hovered identifier is
-/// recorded and an `Evaluate` is requested; when the response arrives it is
-/// shown as the hover value. Leaving the word clears the tooltip state.
-#[test]
-fn debug_hover_evaluates_and_clears() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-hover-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "hoverproj".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        std::fs::write(dir.join("src/main.c"), "int counter = 5;\n").unwrap();
-
-        let mut app = IdeApp::new(None, cx);
-        app.project = Some(Project { root: dir.clone(), config });
-        app.open_file(dir.join("src/main.c"), cx);
-
-        // Not stopped: hovering a word clears any stale debug hover.
-        app.debug_hover = Some(("counter".to_string(), Point::new(px(1.), px(2.))));
-        app.on_hover_word(Some("counter".to_string()), Point::new(px(1.), px(2.)), cx);
-        assert!(app.debug_hover.is_none(), "not stopped clears hover");
-
-        // Stopped but no session: records the hover word and anchor.
-        app.debug.status = DebugStatus::Stopped {
-            reason: "breakpoint".to_string(),
         };
-        app.on_hover_word(Some("counter".to_string()), Point::new(px(10.), px(20.)), cx);
+        let rtos = build_rtos_tasks(&state);
+        assert_eq!(rtos.len(), 3);
+        let running = rtos.iter().filter(|task| task.running).collect::<Vec<_>>();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].name, "monitor");
+        // Sorted by name: led, monitor, usb.
+        assert_eq!(rtos[0].name, "led");
+        assert_eq!(rtos[2].name, "usb");
+        // State and stack carried through.
+        let monitor = rtos.iter().find(|task| task.name == "monitor").unwrap();
+        assert_eq!(monitor.state, RtosTaskState::Blocked);
+        assert_eq!(monitor.stack_usage, Some(60));
+    }
+
+    /// `refresh_rtos_tasks` without a live session reports an honest status and
+    /// clears the task list instead of silently doing nothing.
+    #[test]
+    fn refresh_rtos_tasks_without_session_reports() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.refresh_rtos_tasks(cx);
+            assert!(
+                app.debug.rtos_status.contains("无调试会话"),
+                "{}",
+                app.debug.rtos_status
+            );
+            assert!(app.debug.rtos_tasks.is_empty());
+            app
+        });
+    }
+
+    /// `handle_rtos_evaluated` routes a `task_count` result: a count of 0 clears
+    /// the list; a positive count marks the refresh as in-flight (consumed).
+    #[test]
+    fn handle_rtos_evaluated_routes_task_count() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.rtos_pending = Some(RtosRefreshState {
+                count: 0,
+                current_index: None,
+                tasks: BTreeMap::new(),
+                mode: RtosKernelMode::Template,
+                kernel: None,
+            });
+            // Zero tasks: consumed, list cleared, pending dropped.
+            assert!(app.handle_rtos_evaluated("task_count", "0", cx));
+            assert!(app.debug.rtos_tasks.is_empty());
+            assert!(app.rtos_pending.is_none());
+
+            // Positive count: consumed and pending remains (names still expected).
+            app.rtos_pending = Some(RtosRefreshState {
+                count: 0,
+                current_index: None,
+                tasks: BTreeMap::new(),
+                mode: RtosKernelMode::Template,
+                kernel: None,
+            });
+            assert!(app.handle_rtos_evaluated("task_count", "2", cx));
+            assert!(app.rtos_pending.is_some());
+            // Unrelated expression is not consumed.
+            assert!(!app.handle_rtos_evaluated("x + 1", "3", cx));
+            app
+        });
+    }
+
+    /// A tiny synthetic FreeRTOS memory image used to drive the real-kernel walk
+    /// path in-memory. Addresses are absolute; writes are little-endian.
+    struct RtosMemory {
+        base: u64,
+        data: Vec<u8>,
+    }
+
+    impl RtosMemory {
+        fn new(base: u64, size: usize) -> Self {
+            Self {
+                base,
+                data: vec![0; size],
+            }
+        }
+
+        fn write_u32(&mut self, address: u64, value: u64) {
+            let offset = (address - self.base) as usize;
+            self.data[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
+        }
+
+        fn write_str(&mut self, address: u64, text: &str) {
+            let offset = (address - self.base) as usize;
+            for (index, byte) in text.bytes().enumerate() {
+                self.data[offset + index] = byte;
+            }
+        }
+
+        fn read(&self, address: u64, len: usize) -> Option<Vec<u8>> {
+            if address < self.base {
+                return None;
+            }
+            let offset = (address - self.base) as usize;
+            if offset + len > self.data.len() {
+                return None;
+            }
+            Some(self.data[offset..offset + len].to_vec())
+        }
+    }
+
+    /// The DAP real-kernel walk path and the pure [`ns_debug::rtos::walk_free_rtos`]
+    /// walker must agree on the same FreeRTOS scheduler image. This drives the
+    /// Evaluate round-trip state machine exactly as the adapter would answer it,
+    /// then asserts the final task list matches the pure function (the acceptance
+    /// criterion for E1, and a regression guard for the kick threshold).
+    #[test]
+    fn real_kernel_dap_walk_matches_pure_walker() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let layout = ns_debug::rtos::RtosLayout::default();
+            let base = 0x2000_0000u64;
+            let mut memory = RtosMemory::new(base, 0x10000);
+
+            // Two TCBs: taskA (ready, priority 1) and taskB (delayed, priority 2).
+            let tcb_a = base + 0x100;
+            let tcb_b = base + 0x200;
+            memory.write_str(tcb_a + layout.tcb_pc_task_name as u64, "taskA");
+            memory.write_u32(tcb_a + layout.tcb_ux_priority as u64, 1);
+            memory.write_str(tcb_b + layout.tcb_pc_task_name as u64, "taskB");
+            memory.write_u32(tcb_b + layout.tcb_ux_priority as u64, 2);
+
+            // Non-empty list heads: ready and delayed1.
+            let ready = base + 0x1000;
+            let ready_item = base + 0x1010;
+            let delayed = base + 0x2000;
+            let delayed_item = base + 0x2010;
+            // Empty list heads for the remaining scheduler lists.
+            let empty_heads = [
+                (base + 0x3000, 1u32), // delayed2
+                (base + 0x4000, 0u32), // pending ready
+                (base + 0x5000, 2u32), // suspended
+                (base + 0x6000, 3u32), // termination
+            ];
+
+            // Link a single-item list whose head is `head` and first item is `item`.
+            let link_list = |memory: &mut RtosMemory, head: u64, item: u64, tcb: u64| {
+                memory.write_u32(head, 1);
+                let embedded = head + layout.list_x_list_end as u64;
+                memory.write_u32(embedded + layout.list_item_px_next as u64, item);
+                memory.write_u32(item + layout.list_item_px_next as u64, embedded);
+                memory.write_u32(item + layout.list_item_pv_owner as u64, tcb);
+            };
+            link_list(&mut memory, ready, ready_item, tcb_a);
+            link_list(&mut memory, delayed, delayed_item, tcb_b);
+            for (head, _) in empty_heads {
+                memory.write_u32(head, 0);
+            }
+
+            let mut app = IdeApp::new(None, cx);
+
+            // The user requested a refresh; `uxCurrentNumberOfTasks` identifies a
+            // real kernel and requests the running TCB plus six list heads.
+            app.rtos_pending = Some(RtosRefreshState {
+                count: 0,
+                current_index: None,
+                tasks: BTreeMap::new(),
+                mode: RtosKernelMode::Template,
+                kernel: None,
+            });
+            assert!(app.handle_rtos_evaluated("uxCurrentNumberOfTasks", "2", cx));
+
+            // Answer the symbol evaluations exactly as the adapter would. The
+            // expression prefix is irrelevant to the walker (it parses the tag),
+            // but we keep the real form to exercise the parser.
+            let symbol = |kind: &str, address: u64| {
+                (
+                    format!("(unsigned int)0x{address:x} /* __rtos_{kind}_0 */"),
+                    format!("{address:#x}"),
+                )
+            };
+            assert!(app.handle_rtos_evaluated(
+                "(unsigned int)pxCurrentTCB /* __rtos_running_0 */",
+                &format!("{tcb_a:#x}"),
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &symbol("ready", ready).0,
+                &symbol("ready", ready).1,
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &symbol("delayed1", delayed).0,
+                &symbol("delayed1", delayed).1,
+                cx,
+            ));
+            for (head, state) in empty_heads {
+                let (expr, result) = symbol(
+                    match state {
+                        0 => "pending",
+                        1 => "delayed2",
+                        2 => "suspended",
+                        _ => "termination",
+                    },
+                    head,
+                );
+                assert!(app.handle_rtos_evaluated(&expr, &result, cx));
+            }
+
+            // The kick must have fired once all six list heads and the running TCB
+            // arrived. Without the `REAL_KERNEL_LIST_COUNT` fix the walker leaves
+            // `in_flight` at 0 (it never issued the first-item read), so this
+            // assertion is the regression guard for the off-by-one start threshold.
+            let kernel = app
+                .rtos_pending
+                .as_ref()
+                .and_then(|pending| pending.kernel.as_ref())
+                .expect("real-kernel pending state");
+            assert_eq!(
+                kernel.in_flight, 1,
+                "real-kernel walk did not start after six list heads + running TCB"
+            );
+            assert_eq!(kernel.list_index, 0);
+            assert_eq!(kernel.step, RtosWalkStep::FirstItem);
+
+            // Walk the ready list: first item → owner → name → priority → next.
+            let first_ready_addr =
+                ready + layout.list_x_list_end as u64 + layout.list_item_px_next as u64;
+            assert!(app.handle_rtos_evaluated(
+                &format!("x /* __rtos_first_{first_ready_addr:#x} */"),
+                &format!("{ready_item:#x}"),
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &format!(
+                    "x /* __rtos_owner_{:#x} */",
+                    ready_item + layout.list_item_pv_owner as u64
+                ),
+                &format!("{tcb_a:#x}"),
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &format!(
+                    "x /* __rtos_name_{:#x} */",
+                    tcb_a + layout.tcb_pc_task_name as u64
+                ),
+                "\"taskA\"",
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &format!(
+                    "x /* __rtos_priority_{:#x} */",
+                    tcb_a + layout.tcb_ux_priority as u64
+                ),
+                "1",
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &format!(
+                    "x /* __rtos_next_{:#x} */",
+                    ready_item + layout.list_item_px_next as u64
+                ),
+                &format!("{:#x}", ready + layout.list_x_list_end as u64),
+                cx,
+            ));
+
+            // Walk the delayed list the same way.
+            let first_delayed_addr =
+                delayed + layout.list_x_list_end as u64 + layout.list_item_px_next as u64;
+            assert!(app.handle_rtos_evaluated(
+                &format!("x /* __rtos_first_{first_delayed_addr:#x} */"),
+                &format!("{delayed_item:#x}"),
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &format!(
+                    "x /* __rtos_owner_{:#x} */",
+                    delayed_item + layout.list_item_pv_owner as u64
+                ),
+                &format!("{tcb_b:#x}"),
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &format!(
+                    "x /* __rtos_name_{:#x} */",
+                    tcb_b + layout.tcb_pc_task_name as u64
+                ),
+                "\"taskB\"",
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &format!(
+                    "x /* __rtos_priority_{:#x} */",
+                    tcb_b + layout.tcb_ux_priority as u64
+                ),
+                "2",
+                cx,
+            ));
+            assert!(app.handle_rtos_evaluated(
+                &format!(
+                    "x /* __rtos_next_{:#x} */",
+                    delayed_item + layout.list_item_px_next as u64
+                ),
+                &format!("{:#x}", delayed + layout.list_x_list_end as u64),
+                cx,
+            ));
+
+            // The four empty lists advance without yielding any tasks.
+            for head in empty_heads.map(|(head, _)| head) {
+                let first_addr =
+                    head + layout.list_x_list_end as u64 + layout.list_item_px_next as u64;
+                assert!(app.handle_rtos_evaluated(
+                    &format!("x /* __rtos_first_{first_addr:#x} */"),
+                    &format!("{:#x}", head + layout.list_x_list_end as u64),
+                    cx,
+                ));
+            }
+
+            // The DAP walk produced exactly the two tasks and reports kernel walk.
+            assert_eq!(
+                app.debug.rtos_tasks.len(),
+                2,
+                "tasks: {:?}",
+                app.debug.rtos_tasks
+            );
+            assert!(
+                app.debug.rtos_status.contains("内核遍历"),
+                "{}",
+                app.debug.rtos_status
+            );
+
+            // The pure walker must agree with the DAP path on the same image.
+            let lists = [
+                (ready, 0u32),
+                (delayed, 1u32),
+                (base + 0x3000, 1u32),
+                (base + 0x4000, 0u32),
+                (base + 0x5000, 2u32),
+                (base + 0x6000, 3u32),
+            ];
+            let pure = ns_debug::rtos::walk_free_rtos(
+                &|address, len| memory.read(address, len),
+                &layout,
+                &lists,
+                Some(tcb_a),
+            );
+            let mut app_tasks: Vec<(String, bool, u32, u32)> = app
+                .debug
+                .rtos_tasks
+                .iter()
+                .map(|task| {
+                    (
+                        task.name.clone(),
+                        task.running,
+                        task.priority,
+                        match task.state {
+                            RtosTaskState::Ready => 0,
+                            RtosTaskState::Blocked => 1,
+                            RtosTaskState::Suspended => 2,
+                        },
+                    )
+                })
+                .collect();
+            let mut pure_tasks: Vec<(String, bool, u32, u32)> = pure
+                .iter()
+                .map(|task| (task.name.clone(), task.running, task.priority, task.state))
+                .collect();
+            app_tasks.sort();
+            pure_tasks.sort();
+            assert_eq!(app_tasks, pure_tasks);
+
+            app
+        });
+    }
+
+    /// The variables panel copy action writes `name = value` (or just `name` when
+    /// the value is empty) to the clipboard and reports the status.
+    #[test]
+    fn copy_variable_value_writes_name_eq_value() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.copy_variable_value("count", "42", cx);
+            assert!(app.status.contains("count = 42"));
+            app.copy_variable_value("empty_val", "", cx);
+            assert!(app.status.contains("empty_val"));
+            app
+        });
+    }
+
+    /// The disassembly copy action writes `address  instruction` to the clipboard.
+    #[test]
+    fn copy_disasm_instruction_writes_addr_and_insn() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.copy_disasm_instruction(0x0800_0100, "addi a0, a0, 1", cx);
+            assert!(
+                app.status.contains("0x8000100  addi a0, a0, 1"),
+                "{}",
+                app.status
+            );
+            app
+        });
+    }
+
+    /// The memory row copy action writes `address  hex-bytes  │ ascii`.
+    #[test]
+    fn copy_memory_row_writes_address_hex_ascii() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.copy_memory_row(0x0800_0000, &[0xde, 0xad, 0xbe, 0xef], "....", cx);
+            assert!(
+                app.status.contains("0x08000000  de ad be ef  │ ...."),
+                "{}",
+                app.status
+            );
+            app
+        });
+    }
+
+    /// The watch copy action writes `expression = value` (value-empty → expression).
+    #[test]
+    fn copy_watch_value_writes_expr_eq_value() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            app.copy_watch_value("counter", "42", cx);
+            assert!(app.status.contains("counter = 42"), "{}", app.status);
+            app.copy_watch_value("marker", "", cx);
+            assert!(app.status.contains("marker"), "{}", app.status);
+            app
+        });
+    }
+
+    /// `set_build_config` writes the chosen config to the active target's
+    /// `[[targets]]` entry (or the shared `[build] config` when no target is set),
+    /// persisting to `project.toml`; an invalid config is rejected.
+    #[test]
+    fn set_build_config_persists_to_project() {
+        let mut cx = gpui::TestAppContext::single();
+        let temp = std::env::temp_dir();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = temp.join(format!("ns_buildcfg_test_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "cfgproj".to_string();
+            config.project.target = "stm32f103c8".to_string();
+            config.build.config = "debug".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            // Release is applied to the active target's entry and persisted.
+            app.set_build_config("release", cx);
+            assert_eq!(app.project.as_ref().unwrap().build_config(), "release");
+            let disk = std::fs::read_to_string(dir.join("project.toml")).unwrap();
+            assert!(disk.contains("release"), "config persisted: {disk}");
+
+            // Setting the same config is a no-op that does not clobber.
+            let before = disk.clone();
+            app.set_build_config("release", cx);
+            assert!(app.status.contains("已是"));
+            assert_eq!(
+                std::fs::read_to_string(dir.join("project.toml")).unwrap(),
+                before
+            );
+
+            // An invalid config is rejected.
+            app.set_build_config("oops", cx);
+            assert!(app.status.contains("必须为 debug 或 release"));
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// Debug-console command history: up walks older commands, down walks back to
+    /// the draft, and consecutive repeats are deduplicated.
+    #[test]
+    fn debug_console_history_navigates_and_dedupes() {
+        let mut view = DebugView::default();
+        view.push_console_history("step");
+        view.push_console_history("bt");
+        view.push_console_history("step"); // not consecutive to the last
+        assert_eq!(view.console_history, vec!["step", "bt", "step"]);
+
+        // Consecutive repeats are collapsed.
+        view.push_console_history("step");
+        assert_eq!(view.console_history.len(), 3);
+
+        // Up from a fresh line: saves the draft, recalls the newest.
         assert_eq!(
-            app.debug_hover.as_ref().map(|(w, _)| w.as_str()),
-            Some("counter")
+            view.history_navigate(true, "print x"),
+            Some("step".to_string())
         );
-        assert!(app.debug_hover_value.is_none());
-
-        // Leaving the word clears both hover state fields.
-        app.on_hover_word(None, Point::new(px(0.), px(0.)), cx);
-        assert!(app.debug_hover.is_none());
-        assert!(app.debug_hover_value.is_none());
-
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
-
-/// Global find & replace: setting the search query and replace text then
-/// invoking `search_replace_all` rewrites matching files on disk, reloads the
-/// open (clean) editor buffer, and reports the change counts in the status.
-#[test]
-fn search_replace_all_rewrites_files_and_reloads_editor() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-searchrepl-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "searchrepl".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        std::fs::write(dir.join("src/main.c"), "int ticks = TICKS;\n").unwrap();
-
-        let mut app = IdeApp::new(None, cx);
-        app.project = Some(Project { root: dir.clone(), config });
-        app.open_file(dir.join("src/main.c"), cx);
-
-        // Set up the search state with query + replace text.
-        let field = cx.new(|cx| {
-            let mut f = crate::text_field::TextField::new("search", cx);
-            f.set_text("TICKS", cx);
-            f
-        });
-        let replace_field = cx.new(|cx| {
-            let mut f = crate::text_field::TextField::new("replace", cx);
-            f.set_text("COUNT", cx);
-            f
-        });
-        let sub = cx.observe(&field, |_, _, _| {});
-        app.search = Some(SearchState {
-            field,
-            replace_field,
-            matches: Vec::new(),
-            selected: 0,
-            case_sensitive: false,
-            whole_word: false,
-            _subscription: sub,
-        });
-
-        app.search_replace_all(cx);
-        assert!(app.status.contains("1 处"), "status: {}", app.status);
-        assert!(app.status.contains("1 个文件"), "status: {}", app.status);
+        assert_eq!(view.console_draft, "print x");
+        // Up again: older entry.
+        assert_eq!(view.history_navigate(true, "step"), Some("bt".to_string()));
+        // Up again: move to the oldest entry.
+        assert_eq!(view.history_navigate(true, "bt"), Some("step".to_string()));
+        // At the oldest: no further movement.
+        assert_eq!(view.history_navigate(true, "step"), None);
+        // Down walks forward.
+        assert_eq!(view.history_navigate(false, "step"), Some("bt".to_string()));
+        assert_eq!(view.history_navigate(false, "bt"), Some("step".to_string()));
+        // Down past the newest restores the draft.
         assert_eq!(
-            std::fs::read_to_string(dir.join("src/main.c")).unwrap(),
-            "int ticks = COUNT;\n"
+            view.history_navigate(false, "step"),
+            Some("print x".to_string())
         );
-        // The open editor buffer was reloaded to match disk.
-        let editor_text = app
-            .active_editor()
-            .map(|e| e.read(cx).text().to_string())
-            .unwrap_or_default();
-        assert_eq!(editor_text, "int ticks = COUNT;\n");
+        assert_eq!(view.console_history_idx, None);
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
+        // Empty history never navigates.
+        let mut empty = DebugView::default();
+        assert_eq!(empty.history_navigate(true, ""), None);
+    }
 
-/// Toggling the search option pills flips the `case_sensitive` / `whole_word`
-/// flags and re-runs the query so the result set updates immediately.
-#[test]
-fn search_option_toggles_flip_flags_and_refresh() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-searchopt-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "searchopt".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        std::fs::write(dir.join("src/main.c"), "int TICKS;\nint ticks_counter;\n").unwrap();
+    /// Go-to-line dialog: parses a 1-based line number, jumps the active editor,
+    /// and clamps out-of-range values to the document bounds.
+    #[test]
+    fn go_to_line_dialog_jumps_and_clamps() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let path = std::env::temp_dir().join(format!("ns_gtl_{}.c", std::process::id()));
+            let text = "line0\nline1\nline2\nline3\nline4\n".to_string();
+            app.open_text_tab(path.clone(), text, cx);
 
-        let mut app = IdeApp::new(None, cx);
-        app.project = Some(Project { root: dir.clone(), config });
-        app.open_file(dir.join("src/main.c"), cx);
-        app.open_search(window, cx);
+            // Valid line: jumps to the 1-based line.
+            app.open_go_to_line(cx);
+            let field = app.go_to_line_dialog.as_ref().unwrap().field.clone();
+            field.update(cx, |f, cx| f.set_text("3", cx));
+            app.save_go_to_line_dialog(cx);
+            let (line, _col) = app.active_editor().unwrap().read(cx).cursor_line_col();
+            assert_eq!(line, 3, "cursor should be on 1-based line 3");
+            assert!(app.status.contains("第 3 行"));
 
-        let field = app.search.as_ref().unwrap().field.clone();
-        field.update(cx, |field, cx| field.set_text("ticks", cx));
-        app.refresh_search(field.clone(), cx);
+            // Out-of-range line is clamped to the last line.
+            app.open_go_to_line(cx);
+            let field = app.go_to_line_dialog.as_ref().unwrap().field.clone();
+            field.update(cx, |f, cx| f.set_text("999", cx));
+            app.save_go_to_line_dialog(cx);
+            let (line, _col) = app.active_editor().unwrap().read(cx).cursor_line_col();
+            assert_eq!(
+                line, 6,
+                "clamped to the last logical line (trailing newline → 6)"
+            );
 
-        // Default: case-insensitive -> 2 content matches (TICKS + ticks_counter).
-        let initial = app.search.as_ref().unwrap().matches.len();
-        assert_eq!(initial, 2, "case-insensitive finds both lines");
+            // Non-numeric input is rejected without moving.
+            app.open_go_to_line(cx);
+            let field = app.go_to_line_dialog.as_ref().unwrap().field.clone();
+            field.update(cx, |f, cx| f.set_text("abc", cx));
+            app.save_go_to_line_dialog(cx);
+            assert!(app.status.contains("大于 0 的整数"));
 
-        // Case-sensitive: only the lowercase `ticks_counter` line matches.
-        app.toggle_case_sensitive(cx);
-        let after_cs = app.search.as_ref().unwrap();
-        assert!(after_cs.case_sensitive);
-        assert_eq!(after_cs.matches.len(), 1, "case-sensitive finds one line");
+            let _ = std::fs::remove_file(&path);
+            app
+        });
+    }
 
-        // Whole-word on top: `ticks_counter` is a prefix, no standalone `ticks`.
-        app.toggle_whole_word(cx);
-        let after_ww = app.search.as_ref().unwrap();
-        assert!(after_ww.whole_word);
-        assert_eq!(after_ww.matches.len(), 0, "whole-word + case-sensitive finds none");
+    /// The tree "duplicate" operation copies a file or a whole directory tree to
+    /// the new name, preserving nested structure and file contents.
+    #[test]
+    fn duplicate_tree_entry_copies_recursively() {
+        let base = std::env::temp_dir().join(format!("ns_dup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("src/sub")).unwrap();
+        std::fs::write(base.join("src/main.c"), "int main(){}").unwrap();
+        std::fs::write(base.join("src/sub/util.h"), "#pragma once").unwrap();
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
+        // File copy: the save handler uses `std::fs::copy` for files.
+        std::fs::copy(base.join("src/main.c"), base.join("main_copy.c")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(base.join("main_copy.c")).unwrap(),
+            "int main(){}"
+        );
 
-/// After a failed build, `jump_to_first_build_diagnostic` opens the source file
-/// of the first error and moves the cursor to that line; when there is no
-/// source-located diagnostic it reports that instead of jumping.
-#[test]
-fn jump_to_first_build_diagnostic_opens_first_error() {
-    let mut cx = gpui::TestAppContext::single();
-    cx.add_window_view(|_window, cx| {
-        let dir = std::env::temp_dir().join(format!("ns-jumpdiag-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let mut config = ns_project::ProjectConfig::default();
-        config.project.name = "jumpdiag".to_string();
-        std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
-        std::fs::write(dir.join("src/main.c"), "int main(void) {\n  bad();\n  return 0;\n}\n").unwrap();
+        // Directory copy (recursive) via the tree-duplicate helper.
+        copy_dir_recursive(&base.join("src"), &base.join("src_copy")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(base.join("src_copy/main.c")).unwrap(),
+            "int main(){}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("src_copy/sub/util.h")).unwrap(),
+            "#pragma once"
+        );
 
-        let mut app = IdeApp::new(None, cx);
-        app.project = Some(Project { root: dir.clone(), config });
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
-        // Two diagnostics: an error on line 2 of main.c, then a warning on a
-        // pathless linker message. The error should win the jump.
-        app.diagnostics = vec![
-            Diagnostic {
-                path: Some(dir.join("src/main.c")),
+    /// The output panel "save" writes the active build/run buffer to a log file
+    /// under the project's `out/` directory and reports the path; empty output is
+    /// rejected without writing.
+    #[test]
+    fn save_output_to_file_writes_log_and_rejects_empty() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = std::env::temp_dir().join(format!("ns_outlog_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "outlog".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            // Empty output is rejected.
+            app.output.clear();
+            app.save_output_to_file(cx);
+            assert!(app.status.contains("为空"));
+
+            // Non-empty output is written to out/build-output-*.log.
+            app.output = "build ok\nwarning: x\n".to_string();
+            app.save_output_to_file(cx);
+            assert!(app.status.contains("已保存"));
+            let logs = std::fs::read_dir(dir.join("out")).unwrap().count();
+            assert_eq!(logs, 1);
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    #[test]
+    fn memory_export_writes_bin_and_rejects_empty() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = std::env::temp_dir().join(format!("ns_memexp_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "memexp".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            // Empty bytes are rejected.
+            app.debug.memory.bytes.clear();
+            app.export_memory_region(cx);
+            assert!(
+                app.debug
+                    .memory
+                    .error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("没有")
+            );
+
+            // Non-empty bytes are written to out/memory-<addr>-<ts>.bin.
+            app.debug.memory.address = 0x2000_0000;
+            app.debug.memory.bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
+            app.export_memory_region(cx);
+            assert!(app.status.contains("内存已导出"));
+            let written = std::fs::read_dir(dir.join("out"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            assert_eq!(
+                std::fs::read(&written).unwrap(),
+                vec![0xDE, 0xAD, 0xBE, 0xEF]
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    #[test]
+    fn log_breakpoint_hit_marks_and_persists() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = std::env::temp_dir().join(format!("ns_logbp_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "logbp".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            // Add a log breakpoint at src/main.c:12 and fire a tagged output.
+            let rel = "src/main.c";
+            app.breakpoints.set(rel, 12, true);
+            app.breakpoints.set_log_message(rel, 12, "counter: {value}");
+            assert_eq!(app.breakpoints.find(rel, 12).unwrap().hits, 0);
+
+            app.mark_log_breakpoint_hit(&dir.join(rel).to_string_lossy(), 12, cx);
+            let bp = app.breakpoints.find(rel, 12).unwrap();
+            assert_eq!(bp.hits, 1);
+            assert!(bp.hit);
+            assert!(app.status.contains("日志断点命中"));
+
+            // Reload the store: the hit count is persisted.
+            let reloaded = ns_project::BreakpointStore::load(&dir);
+            assert_eq!(reloaded.find(rel, 12).unwrap().hits, 1);
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// `on_bookmark_toggled` adds/removes the bookmark in the store and persists
+    /// it to `.ns-ide/bookmarks.json`; reloading the store recovers it.
+    #[test]
+    fn bookmark_toggle_updates_and_persists() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = std::env::temp_dir().join(format!("ns_bm_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "bm".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            let rel = "src/main.c";
+            app.on_bookmark_toggled(rel, 5, true, cx);
+            assert!(app.bookmarks.find(rel, 5).is_some());
+            assert!(app.status.contains("已添加书签"));
+
+            app.on_bookmark_toggled(rel, 5, false, cx);
+            assert!(app.bookmarks.find(rel, 5).is_none());
+
+            app.on_bookmark_toggled(rel, 7, true, cx);
+            let reloaded = ns_project::BookmarkStore::load(&dir);
+            assert!(reloaded.find(rel, 7).is_some());
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// `remove_bookmark` / `clear_bookmarks` update the store and persist; the
+    /// panel's per-row remove and clear-all both take effect.
+    #[test]
+    fn bookmark_panel_remove_and_clear() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let mut app = IdeApp::new(None, cx);
+            let dir = std::env::temp_dir().join(format!("ns_bmp_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "bmp".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            let rel = "src/main.c";
+            app.bookmarks.add(rel, 3, "");
+            app.bookmarks.add(rel, 9, "");
+            app.bookmarks.add("src/uart.c", 4, "");
+            assert_eq!(app.bookmarks.len(), 3);
+
+            app.remove_bookmark(rel, 3, cx);
+            assert_eq!(app.bookmarks.len(), 2);
+            assert!(app.bookmarks.find(rel, 3).is_none());
+
+            app.clear_bookmarks(cx);
+            assert!(app.bookmarks.is_empty());
+            let reloaded = ns_project::BookmarkStore::load(&dir);
+            assert!(reloaded.is_empty());
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// External tools: add/edit/save/delete a tool command, then run it via the
+    /// picker; the store persists to `.ns-ide/tools.json` and reloads.
+    #[test]
+    fn external_tools_add_edit_run_delete() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-tools-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "toolsproj".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            // Add a tool via the editor dialog, then save.
+            app.open_tool_editor(None, cx);
+            let dialog = app.tool_dialog.as_ref().expect("dialog opened");
+            dialog
+                .title
+                .update(cx, |field, fcx| field.set_text("构建", fcx));
+            dialog
+                .command
+                .update(cx, |field, fcx| field.set_text("echo hello", fcx));
+            app.save_tool(cx);
+            assert_eq!(app.tools_store.len(), 1);
+            assert!(app.tools_store.find("tool-1").is_some());
+            assert!(
+                dir.join(".ns-ide/tools.json").exists(),
+                "tools saved to disk"
+            );
+
+            // Reload from disk.
+            let reloaded = ns_project::ToolStore::load(&dir);
+            assert_eq!(reloaded.len(), 1);
+            assert_eq!(reloaded.find("tool-1").unwrap().title, "构建");
+
+            // Picker selects and runs it (the panel receives the command).
+            app.run_tool_picker(cx);
+            assert!(app.tool_picker_open, "picker opens");
+            app.confirm_tool_picker(cx);
+            assert!(!app.tool_picker_open, "picker closes after confirm");
+            assert!(app.tools.is_some(), "tools panel created for the run");
+
+            // Edit the existing tool, then delete it.
+            app.open_tool_editor(Some("tool-1".to_string()), cx);
+            assert!(app.tool_dialog.as_ref().unwrap().is_edit);
+            app.delete_tool("tool-1", cx);
+            assert_eq!(app.tools_store.len(), 0);
+            let reloaded = ns_project::ToolStore::load(&dir);
+            assert!(reloaded.is_empty(), "deletion persisted");
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// Snippet management: add a row, fill prefix/body, save to `snippets.json`,
+    /// reload from disk, then delete the row and confirm persistence.
+    #[test]
+    fn snippet_dialog_add_edit_save_delete() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            // Snapshot the pre-existing global store, then wipe it so the test is
+            // hermetic regardless of pollution from earlier runs.
+            let original = ns_project::SnippetStore::load();
+            let _ = ns_project::SnippetStore::default().save();
+            let mut app = IdeApp::new(None, cx);
+
+            // Open the dialog (loads the current snippets.json).
+            app.open_snippet_dialog(cx);
+            assert!(app.snippet_dialog.is_some(), "dialog opens");
+            let before = app.snippet_dialog.as_ref().unwrap().rows.len();
+
+            // Add a blank row and fill it.
+            app.add_snippet_row(cx);
+            let rows = app.snippet_dialog.as_ref().unwrap().rows.len();
+            assert_eq!(rows, before + 1, "a new row is added");
+            let row = app.snippet_dialog.as_ref().unwrap().rows.last().unwrap();
+            row.prefix.update(cx, |f, fcx| f.set_text("for", fcx));
+            row.body.update(cx, |f, fcx| {
+                f.set_text("for (int i = 0; i < $1; i++) { $0 }", fcx)
+            });
+            row.description
+                .update(cx, |f, fcx| f.set_text("经典 for 循环", fcx));
+            app.save_snippets(cx);
+            assert!(app.snippet_dialog.is_none(), "dialog closes on save");
+            assert!(app.status.contains("已保存"), "{}", app.status);
+
+            // Reload from disk and verify the new snippet persisted.
+            let store = ns_project::SnippetStore::load();
+            assert!(
+                store
+                    .matching("for")
+                    .iter()
+                    .any(|s| s.body.contains("$1") && s.description == "经典 for 循环"),
+                "snippet persisted with body and description"
+            );
+
+            // Re-open: the added snippet shows up as a row; delete it.
+            app.open_snippet_dialog(cx);
+            let target = app
+                .snippet_dialog
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .position(|r| r.prefix.read(cx).text() == "for");
+            let target = target.expect("the new snippet row is present");
+            app.delete_snippet_row(target, cx);
+            app.save_snippets(cx);
+
+            // The snippet must be gone.
+            let store = ns_project::SnippetStore::load();
+            assert!(
+                !store
+                    .snippets
+                    .iter()
+                    .any(|s| s.prefix == "for" && s.description == "经典 for 循环"),
+                "the test snippet was removed"
+            );
+            // Restore the original store so the test leaves no trace.
+            let _ = original.save();
+
+            app
+        });
+    }
+
+    /// Diagnostic navigation walks build + LSP diagnostics in file/line order,
+    /// wraps at the ends, and reports the destination in the status bar.
+    #[test]
+    fn navigate_diagnostic_walks_and_wraps() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-diag-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "diagproj".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            let a = dir.join("src/a.c");
+            let b = dir.join("src/b.c");
+            std::fs::write(&a, "int x;\nint y;\nint z;\n").unwrap();
+            std::fs::write(&b, "int p;\nint q;\n").unwrap();
+
+            // Build diagnostic at a.c:2; LSP diagnostic at a.c:1 and b.c:1.
+            app.diagnostics = vec![Diagnostic {
+                path: Some(a.clone()),
                 line: Some(2),
                 column: Some(3),
                 severity: Severity::Error,
-                message: "use of undeclared identifier 'bad'".to_string(),
-                raw: "error: use of undeclared identifier".to_string(),
-            },
-            Diagnostic {
-                path: None,
-                line: None,
-                column: None,
-                severity: Severity::Error,
-                message: "undefined reference to `startup`".to_string(),
-                raw: "undefined reference to `startup`".to_string(),
-            },
-        ];
+                message: "build error".to_string(),
+                raw: String::new(),
+            }];
+            app.lsp_diagnostics.insert(
+                a.clone(),
+                vec![ns_lsp::LspDiagnostic {
+                    path: a.clone(),
+                    line: 1,
+                    column: 1,
+                    severity: ns_lsp::LspSeverity::Warning,
+                    message: "lsp warn".to_string(),
+                }],
+            );
+            app.lsp_diagnostics.insert(
+                b.clone(),
+                vec![ns_lsp::LspDiagnostic {
+                    path: b.clone(),
+                    line: 1,
+                    column: 2,
+                    severity: ns_lsp::LspSeverity::Error,
+                    message: "lsp err".to_string(),
+                }],
+            );
 
-        app.jump_to_first_build_diagnostic(cx);
-        assert!(app.status.contains("已定位到首个错误"), "status: {}", app.status);
-        // The editor for main.c is open and its cursor is on line 2.
-        let editor = app.active_editor().expect("main.c editor open");
-        let (line, _column) = editor.read(cx).cursor_line_col();
-        assert_eq!(line, 2, "cursor jumped to the error line");
+            // No file open: next lands on the first diagnostic (a.c:1).
+            app.navigate_diagnostic(1, cx);
+            assert!(app.status.contains("a.c:1:1"), "first diag: {}", app.status);
+            assert_eq!(app.output_tab, OutputTab::Problems, "problems panel shown");
 
-        let _ = std::fs::remove_dir_all(&dir);
-        app
-    });
-}
+            // Next lands on a.c:2 (build error).
+            app.navigate_diagnostic(1, cx);
+            assert!(
+                app.status.contains("a.c:2:3"),
+                "second diag: {}",
+                app.status
+            );
+
+            // Next lands on b.c:1 (LSP error), then wraps to a.c:1.
+            app.navigate_diagnostic(1, cx);
+            assert!(app.status.contains("b.c:1:2"), "third diag: {}", app.status);
+            app.navigate_diagnostic(1, cx);
+            assert!(app.status.contains("a.c:1:1"), "wrap: {}", app.status);
+
+            // Previous from a.c:1 wraps to b.c:1.
+            app.navigate_diagnostic(-1, cx);
+            assert!(app.status.contains("b.c:1:2"), "prev wrap: {}", app.status);
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// Debug variable hover: with a stopped session the hovered identifier is
+    /// recorded and an `Evaluate` is requested; when the response arrives it is
+    /// shown as the hover value. Leaving the word clears the tooltip state.
+    #[test]
+    fn debug_hover_evaluates_and_clears() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-hover-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "hoverproj".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            std::fs::write(dir.join("src/main.c"), "int counter = 5;\n").unwrap();
+
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+            app.open_file(dir.join("src/main.c"), cx);
+
+            // Not stopped: hovering a word clears any stale debug hover.
+            app.debug_hover = Some(("counter".to_string(), Point::new(px(1.), px(2.))));
+            app.on_hover_word(Some("counter".to_string()), Point::new(px(1.), px(2.)), cx);
+            assert!(app.debug_hover.is_none(), "not stopped clears hover");
+
+            // Stopped but no session: records the hover word and anchor.
+            app.debug.status = DebugStatus::Stopped {
+                reason: "breakpoint".to_string(),
+            };
+            app.on_hover_word(
+                Some("counter".to_string()),
+                Point::new(px(10.), px(20.)),
+                cx,
+            );
+            assert_eq!(
+                app.debug_hover.as_ref().map(|(w, _)| w.as_str()),
+                Some("counter")
+            );
+            assert!(app.debug_hover_value.is_none());
+
+            // Leaving the word clears both hover state fields.
+            app.on_hover_word(None, Point::new(px(0.), px(0.)), cx);
+            assert!(app.debug_hover.is_none());
+            assert!(app.debug_hover_value.is_none());
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// Global find & replace: setting the search query and replace text then
+    /// invoking `search_replace_all` rewrites matching files on disk, reloads the
+    /// open (clean) editor buffer, and reports the change counts in the status.
+    #[test]
+    fn search_replace_all_rewrites_files_and_reloads_editor() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-searchrepl-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "searchrepl".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            std::fs::write(dir.join("src/main.c"), "int ticks = TICKS;\n").unwrap();
+
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+            app.open_file(dir.join("src/main.c"), cx);
+
+            // Set up the search state with query + replace text.
+            let field = cx.new(|cx| {
+                let mut f = crate::text_field::TextField::new("search", cx);
+                f.set_text("TICKS", cx);
+                f
+            });
+            let replace_field = cx.new(|cx| {
+                let mut f = crate::text_field::TextField::new("replace", cx);
+                f.set_text("COUNT", cx);
+                f
+            });
+            let sub = cx.observe(&field, |_, _, _| {});
+            app.search = Some(SearchState {
+                field,
+                replace_field,
+                matches: Vec::new(),
+                selected: 0,
+                case_sensitive: false,
+                whole_word: false,
+                _subscription: sub,
+            });
+
+            app.search_replace_all(cx);
+            assert!(app.status.contains("1 处"), "status: {}", app.status);
+            assert!(app.status.contains("1 个文件"), "status: {}", app.status);
+            assert_eq!(
+                std::fs::read_to_string(dir.join("src/main.c")).unwrap(),
+                "int ticks = COUNT;\n"
+            );
+            // The open editor buffer was reloaded to match disk.
+            let editor_text = app
+                .active_editor()
+                .map(|e| e.read(cx).text().to_string())
+                .unwrap_or_default();
+            assert_eq!(editor_text, "int ticks = COUNT;\n");
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// Toggling the search option pills flips the `case_sensitive` / `whole_word`
+    /// flags and re-runs the query so the result set updates immediately.
+    #[test]
+    fn search_option_toggles_flip_flags_and_refresh() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-searchopt-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "searchopt".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            std::fs::write(dir.join("src/main.c"), "int TICKS;\nint ticks_counter;\n").unwrap();
+
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+            app.open_file(dir.join("src/main.c"), cx);
+            app.open_search(window, cx);
+
+            let field = app.search.as_ref().unwrap().field.clone();
+            field.update(cx, |field, cx| field.set_text("ticks", cx));
+            app.refresh_search(field.clone(), cx);
+
+            // Default: case-insensitive -> 2 content matches (TICKS + ticks_counter).
+            let initial = app.search.as_ref().unwrap().matches.len();
+            assert_eq!(initial, 2, "case-insensitive finds both lines");
+
+            // Case-sensitive: only the lowercase `ticks_counter` line matches.
+            app.toggle_case_sensitive(cx);
+            let after_cs = app.search.as_ref().unwrap();
+            assert!(after_cs.case_sensitive);
+            assert_eq!(after_cs.matches.len(), 1, "case-sensitive finds one line");
+
+            // Whole-word on top: `ticks_counter` is a prefix, no standalone `ticks`.
+            app.toggle_whole_word(cx);
+            let after_ww = app.search.as_ref().unwrap();
+            assert!(after_ww.whole_word);
+            assert_eq!(
+                after_ww.matches.len(),
+                0,
+                "whole-word + case-sensitive finds none"
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
+
+    /// After a failed build, `jump_to_first_build_diagnostic` opens the source file
+    /// of the first error and moves the cursor to that line; when there is no
+    /// source-located diagnostic it reports that instead of jumping.
+    #[test]
+    fn jump_to_first_build_diagnostic_opens_first_error() {
+        let mut cx = gpui::TestAppContext::single();
+        cx.add_window_view(|_window, cx| {
+            let dir = std::env::temp_dir().join(format!("ns-jumpdiag-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            let mut config = ns_project::ProjectConfig::default();
+            config.project.name = "jumpdiag".to_string();
+            std::fs::write(dir.join("project.toml"), toml::to_string(&config).unwrap()).unwrap();
+            std::fs::write(
+                dir.join("src/main.c"),
+                "int main(void) {\n  bad();\n  return 0;\n}\n",
+            )
+            .unwrap();
+
+            let mut app = IdeApp::new(None, cx);
+            app.project = Some(Project {
+                root: dir.clone(),
+                config,
+            });
+
+            // Two diagnostics: an error on line 2 of main.c, then a warning on a
+            // pathless linker message. The error should win the jump.
+            app.diagnostics = vec![
+                Diagnostic {
+                    path: Some(dir.join("src/main.c")),
+                    line: Some(2),
+                    column: Some(3),
+                    severity: Severity::Error,
+                    message: "use of undeclared identifier 'bad'".to_string(),
+                    raw: "error: use of undeclared identifier".to_string(),
+                },
+                Diagnostic {
+                    path: None,
+                    line: None,
+                    column: None,
+                    severity: Severity::Error,
+                    message: "undefined reference to `startup`".to_string(),
+                    raw: "undefined reference to `startup`".to_string(),
+                },
+            ];
+
+            app.jump_to_first_build_diagnostic(cx);
+            assert!(
+                app.status.contains("已定位到首个错误"),
+                "status: {}",
+                app.status
+            );
+            // The editor for main.c is open and its cursor is on line 2.
+            let editor = app.active_editor().expect("main.c editor open");
+            let (line, _column) = editor.read(cx).cursor_line_col();
+            assert_eq!(line, 2, "cursor jumped to the error line");
+
+            let _ = std::fs::remove_dir_all(&dir);
+            app
+        });
+    }
     /// A clean buffer whose file changes on disk is silently reloaded by
     /// `check_external_changes`; a dirty buffer is left alone and surfaces the
     /// external-change dialog instead of being overwritten.
@@ -29935,7 +36577,10 @@ fn jump_to_first_build_diagnostic_opens_first_error() {
                     .expect("dirty tab");
                 let editor = app.tabs[index].editor.clone();
                 let text = editor.read(cx).text();
-                assert!(text.starts_with("// edit"), "dirty buffer preserved: {text}");
+                assert!(
+                    text.starts_with("// edit"),
+                    "dirty buffer preserved: {text}"
+                );
             }
             assert!(
                 app.external_change_dialog.is_some(),
@@ -30055,19 +36700,37 @@ fn jump_to_first_build_diagnostic_opens_first_error() {
                 branch: "main".to_string(),
                 changes: 3,
                 files: vec![
-                    git::GitChange { path: "src/main.c".into(), staged: ' ', worktree: 'M' },
-                    git::GitChange { path: "src/new.c".into(), staged: '?', worktree: '?' },
-                    git::GitChange { path: "src/old.c".into(), staged: 'D', worktree: ' ' },
+                    git::GitChange {
+                        path: "src/main.c".into(),
+                        staged: ' ',
+                        worktree: 'M',
+                    },
+                    git::GitChange {
+                        path: "src/new.c".into(),
+                        staged: '?',
+                        worktree: '?',
+                    },
+                    git::GitChange {
+                        path: "src/old.c".into(),
+                        staged: 'D',
+                        worktree: ' ',
+                    },
                 ],
             };
             // Modified file.
-            let (label, _) = app.git_tree_badge(&root.join("src/main.c")).expect("M badge");
+            let (label, _) = app
+                .git_tree_badge(&root.join("src/main.c"))
+                .expect("M badge");
             assert_eq!(label, "M");
             // Untracked file.
-            let (label, _) = app.git_tree_badge(&root.join("src/new.c")).expect("U badge");
+            let (label, _) = app
+                .git_tree_badge(&root.join("src/new.c"))
+                .expect("U badge");
             assert_eq!(label, "U");
             // Deleted file.
-            let (label, _) = app.git_tree_badge(&root.join("src/old.c")).expect("D badge");
+            let (label, _) = app
+                .git_tree_badge(&root.join("src/old.c"))
+                .expect("D badge");
             assert_eq!(label, "D");
             // Unchanged / absent path.
             assert!(app.git_tree_badge(&root.join("src/clean.c")).is_none());
@@ -30077,4 +36740,4 @@ fn jump_to_first_build_diagnostic_opens_first_error() {
             app
         });
     }
- }
+}

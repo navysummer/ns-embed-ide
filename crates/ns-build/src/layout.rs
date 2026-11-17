@@ -3,9 +3,9 @@
 //! Parses the project's linker script (`MEMORY { ... }` blocks) into named
 //! regions, and combines that with section sizes read from the built firmware
 //! (via `size`/`nm`) so the IDE can render a region-occupancy map.
- /// A named memory region from the linker script (`MEMORY { NAME (attrs) : ORIGIN = ..., LENGTH = ... }`).
- #[derive(Debug, Clone, PartialEq, Eq)]
- pub struct MemoryRegion {
+/// A named memory region from the linker script (`MEMORY { NAME (attrs) : ORIGIN = ..., LENGTH = ... }`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryRegion {
     pub name: String,
     /// Attributes in parentheses, e.g. `rx`, `rwx`.
     pub attributes: String,
@@ -38,24 +38,26 @@ pub struct MemoryLayout {
 pub fn parse_linker_memory(text: &str) -> Vec<MemoryRegion> {
     let mut regions = Vec::new();
     let mut in_memory = false;
-     for raw_line in text.lines() {
-         let line = raw_line.trim();
-         if !in_memory && line.starts_with("MEMORY") {
-             in_memory = true;
-             continue;
-         }
-         if in_memory && line == "{" {
-             continue;
-         }
-         if !in_memory {
-             continue;
-         }
-         if line.starts_with('}') {
-             in_memory = false;
-             continue;
-         }
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if !in_memory && line.starts_with("MEMORY") {
+            in_memory = true;
+            continue;
+        }
+        if in_memory && line == "{" {
+            continue;
+        }
+        if !in_memory {
+            continue;
+        }
+        if line.starts_with('}') {
+            in_memory = false;
+            continue;
+        }
         let Some(open) = line.find('(') else { continue };
-        let Some(close) = line.find(')') else { continue };
+        let Some(close) = line.find(')') else {
+            continue;
+        };
         let name = line[..open].trim().to_string();
         if name.is_empty() {
             continue;
@@ -85,45 +87,45 @@ fn extract_kv(line: &str, key: &str) -> Option<u64> {
     let rest = &upper[idx + key_upper.len()..];
     let rest = rest.trim_start();
     let rest = rest.strip_prefix('=')?.trim_start();
-     let mut num = String::new();
-     let mut rest_after = "";
-     for (i, ch) in rest.char_indices() {
-         if ch.is_ascii_hexdigit() || ch == 'x' || ch == 'X' || ch == '_' {
-             num.push(ch);
-         } else {
-             rest_after = &rest[i..];
-             break;
-         }
-     }
-     let (value, suffix) = split_num_suffix(&num);
-     let number = if value.starts_with("0x") || value.starts_with("0X") {
-         u64::from_str_radix(&value[2..], 16)
-     } else {
-         value.parse::<u64>()
-     }
-     .ok()?;
-     // Prefer the explicit suffix captured from the source; `split_num_suffix`
-     // is a fallback for numbers that already carry a trailing letter.
-     let suffix = if suffix.is_empty() {
-         rest_after
-             .trim_start()
-             .chars()
-             .next()
-             .map(|c| c.to_string())
-             .unwrap_or_default()
-     } else {
-         suffix
-     };
-     Some(match suffix.as_str() {
-         "K" | "k" => number * 1024,
-         "M" | "m" => number * 1024 * 1024,
-         "G" | "g" => number * 1024 * 1024 * 1024,
-         _ => number,
-     })
- }
+    let mut num = String::new();
+    let mut rest_after = "";
+    for (i, ch) in rest.char_indices() {
+        if ch.is_ascii_hexdigit() || ch == 'x' || ch == 'X' || ch == '_' {
+            num.push(ch);
+        } else {
+            rest_after = &rest[i..];
+            break;
+        }
+    }
+    let (value, suffix) = split_num_suffix(&num);
+    let number = if value.starts_with("0x") || value.starts_with("0X") {
+        u64::from_str_radix(&value[2..], 16)
+    } else {
+        value.parse::<u64>()
+    }
+    .ok()?;
+    // Prefer the explicit suffix captured from the source; `split_num_suffix`
+    // is a fallback for numbers that already carry a trailing letter.
+    let suffix = if suffix.is_empty() {
+        rest_after
+            .trim_start()
+            .chars()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_default()
+    } else {
+        suffix
+    };
+    Some(match suffix.as_str() {
+        "K" | "k" => number * 1024,
+        "M" | "m" => number * 1024 * 1024,
+        "G" | "g" => number * 1024 * 1024 * 1024,
+        _ => number,
+    })
+}
 
- /// Split a numeric string into its numeric part and trailing alpha suffix.
- fn split_num_suffix(num: &str) -> (String, String) {
+/// Split a numeric string into its numeric part and trailing alpha suffix.
+fn split_num_suffix(num: &str) -> (String, String) {
     let split_at = num
         .find(|c: char| !c.is_ascii_hexdigit() && c != 'x' && c != 'X' && c != '_')
         .unwrap_or(num.len());
@@ -135,16 +137,16 @@ fn extract_kv(line: &str, key: &str) -> Option<u64> {
 /// the nearest region (by start address) so nothing is silently dropped.
 pub fn assign_sections(regions: &mut [MemoryRegion], sections: &[SectionUsage]) {
     for section in sections {
-        if let Some(region) = regions
-            .iter_mut()
-            .find(|region| section.address >= region.origin && section.address < region.origin + region.length)
-        {
+        if let Some(region) = regions.iter_mut().find(|region| {
+            section.address >= region.origin && section.address < region.origin + region.length
+        }) {
             region.used += section.size;
         } else {
             // Nearest region by origin (for sections at/below a region start).
-            if let Some(region) = regions.iter_mut().min_by_key(|region| {
-                section.address.abs_diff(region.origin)
-            }) {
+            if let Some(region) = regions
+                .iter_mut()
+                .min_by_key(|region| section.address.abs_diff(region.origin))
+            {
                 region.used += section.size;
             }
         }

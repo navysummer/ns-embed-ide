@@ -130,11 +130,7 @@ impl X51Core {
     }
     fn read_xram(&self, addr: u32) -> u8 {
         let a = addr as usize;
-        if a < self.xram.len() {
-            self.xram[a]
-        } else {
-            0
-        }
+        if a < self.xram.len() { self.xram[a] } else { 0 }
     }
     fn write_xram(&mut self, addr: u32, value: u8) {
         let a = addr as usize;
@@ -144,11 +140,7 @@ impl X51Core {
     }
     fn read_prog(&self, addr: u32) -> u8 {
         let a = addr as usize;
-        if a < self.rom.len() {
-            self.rom[a]
-        } else {
-            0
-        }
+        if a < self.rom.len() { self.rom[a] } else { 0 }
     }
 
     /// Load a program image at `base` (24-bit address) into code space.

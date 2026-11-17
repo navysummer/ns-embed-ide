@@ -149,10 +149,7 @@ impl V850Core {
     }
 
     pub fn read_u16(&self, addr: u32) -> u16 {
-        u16::from_le_bytes([
-            self.read_u8(addr),
-            self.read_u8(addr.wrapping_add(1)),
-        ])
+        u16::from_le_bytes([self.read_u8(addr), self.read_u8(addr.wrapping_add(1))])
     }
 
     pub fn read_u32(&self, addr: u32) -> u32 {
@@ -284,22 +281,22 @@ impl V850Core {
         let ov = self.flag(FLAG_OV);
         let cy = self.flag(FLAG_CY);
         match cond & 0xF {
-            0x0 => ov,                        // v
-            0x1 => cy,                        // c / l
-            0x2 => z,                         // e / z
-            0x3 => cy || z,                   // nh
-            0x4 => s,                         // n
-            0x5 => true,                      // t / br
-            0x6 => s ^ ov,                    // lt
-            0x7 => (s ^ ov) || z,             // le
-            0x8 => !ov,                       // nv
-            0x9 => !cy,                       // nc / nl
-            0xA => !z,                        // ne / nz
-            0xB => !(cy || z),                // h
-            0xC => !s,                        // p
-            0xD => self.flag(FLAG_SAT),       // sa
-            0xE => !(s ^ ov),                 // ge
-            _ => !((s ^ ov) || z),            // gt
+            0x0 => ov,                  // v
+            0x1 => cy,                  // c / l
+            0x2 => z,                   // e / z
+            0x3 => cy || z,             // nh
+            0x4 => s,                   // n
+            0x5 => true,                // t / br
+            0x6 => s ^ ov,              // lt
+            0x7 => (s ^ ov) || z,       // le
+            0x8 => !ov,                 // nv
+            0x9 => !cy,                 // nc / nl
+            0xA => !z,                  // ne / nz
+            0xB => !(cy || z),          // h
+            0xC => !s,                  // p
+            0xD => self.flag(FLAG_SAT), // sa
+            0xE => !(s ^ ov),           // ge
+            _ => !((s ^ ov) || z),      // gt
         }
     }
 
@@ -367,53 +364,214 @@ enum Insn {
     Halt,
     InterruptEnable,
     InterruptDisable,
-    Mov { src: usize, dst: usize },
-    MovI5 { imm: i32, dst: usize },
-    MovI32 { imm: u32, dst: usize },
-    Movea { imm: i32, src: usize, dst: usize },
-    Movhi { imm: i32, src: usize, dst: usize },
-    Add { a: usize, b: usize },
-    AddI5 { imm: i32, b: usize },
-    Addi { imm: i32, src: usize, dst: usize },
-    Sub { a: usize, b: usize },
-    Subr { a: usize, b: usize },
-    Cmp { a: usize, b: usize },
-    CmpI5 { imm: i32, b: usize },
-    And { a: usize, b: usize },
-    Andi { imm: u32, src: usize, dst: usize },
-    Or { a: usize, b: usize },
-    Ori { imm: u32, src: usize, dst: usize },
-    Xor { a: usize, b: usize },
-    Xori { imm: u32, src: usize, dst: usize },
-    Not { src: usize, dst: usize },
-    Tst { a: usize, b: usize },
-    ShlI5 { count: u32, dst: usize },
-    ShrI5 { count: u32, dst: usize },
-    SarI5 { count: u32, dst: usize },
-    ShlReg { count: usize, dst: usize },
-    ShrReg { count: usize, dst: usize },
-    SarReg { count: usize, dst: usize },
-    Shl3 { count: usize, src: usize, dst: usize },
-    Shr3 { count: usize, src: usize, dst: usize },
-    Sar3 { count: usize, src: usize, dst: usize },
-    Mul { a: usize, b: usize, low: usize, high: usize },
-    Mulu { a: usize, b: usize, low: usize, high: usize },
-    Mulh { a: usize, b: usize },
-    MulhI5 { imm: i32, b: usize },
-    Mulhi { imm: i32, src: usize, dst: usize },
-    Div { a: usize, b: usize, quot: usize, rem: usize },
-    Divu { a: usize, b: usize, quot: usize, rem: usize },
-    Setf { cond: u8, dst: usize },
-    Ld { disp: i32, base: usize, dst: usize, size: MemSize, unsigned: bool },
-    St { disp: i32, base: usize, src: usize, size: MemSize },
-    Bcond { cond: u8, target: u32 },
-    Jr { target: u32 },
-    Jarl { target: u32, reg: usize },
-    JmpReg { reg: usize },
-    JmpDisp { reg: usize, disp: u32 },
+    Mov {
+        src: usize,
+        dst: usize,
+    },
+    MovI5 {
+        imm: i32,
+        dst: usize,
+    },
+    MovI32 {
+        imm: u32,
+        dst: usize,
+    },
+    Movea {
+        imm: i32,
+        src: usize,
+        dst: usize,
+    },
+    Movhi {
+        imm: i32,
+        src: usize,
+        dst: usize,
+    },
+    Add {
+        a: usize,
+        b: usize,
+    },
+    AddI5 {
+        imm: i32,
+        b: usize,
+    },
+    Addi {
+        imm: i32,
+        src: usize,
+        dst: usize,
+    },
+    Sub {
+        a: usize,
+        b: usize,
+    },
+    Subr {
+        a: usize,
+        b: usize,
+    },
+    Cmp {
+        a: usize,
+        b: usize,
+    },
+    CmpI5 {
+        imm: i32,
+        b: usize,
+    },
+    And {
+        a: usize,
+        b: usize,
+    },
+    Andi {
+        imm: u32,
+        src: usize,
+        dst: usize,
+    },
+    Or {
+        a: usize,
+        b: usize,
+    },
+    Ori {
+        imm: u32,
+        src: usize,
+        dst: usize,
+    },
+    Xor {
+        a: usize,
+        b: usize,
+    },
+    Xori {
+        imm: u32,
+        src: usize,
+        dst: usize,
+    },
+    Not {
+        src: usize,
+        dst: usize,
+    },
+    Tst {
+        a: usize,
+        b: usize,
+    },
+    ShlI5 {
+        count: u32,
+        dst: usize,
+    },
+    ShrI5 {
+        count: u32,
+        dst: usize,
+    },
+    SarI5 {
+        count: u32,
+        dst: usize,
+    },
+    ShlReg {
+        count: usize,
+        dst: usize,
+    },
+    ShrReg {
+        count: usize,
+        dst: usize,
+    },
+    SarReg {
+        count: usize,
+        dst: usize,
+    },
+    Shl3 {
+        count: usize,
+        src: usize,
+        dst: usize,
+    },
+    Shr3 {
+        count: usize,
+        src: usize,
+        dst: usize,
+    },
+    Sar3 {
+        count: usize,
+        src: usize,
+        dst: usize,
+    },
+    Mul {
+        a: usize,
+        b: usize,
+        low: usize,
+        high: usize,
+    },
+    Mulu {
+        a: usize,
+        b: usize,
+        low: usize,
+        high: usize,
+    },
+    Mulh {
+        a: usize,
+        b: usize,
+    },
+    MulhI5 {
+        imm: i32,
+        b: usize,
+    },
+    Mulhi {
+        imm: i32,
+        src: usize,
+        dst: usize,
+    },
+    Div {
+        a: usize,
+        b: usize,
+        quot: usize,
+        rem: usize,
+    },
+    Divu {
+        a: usize,
+        b: usize,
+        quot: usize,
+        rem: usize,
+    },
+    Setf {
+        cond: u8,
+        dst: usize,
+    },
+    Ld {
+        disp: i32,
+        base: usize,
+        dst: usize,
+        size: MemSize,
+        unsigned: bool,
+    },
+    St {
+        disp: i32,
+        base: usize,
+        src: usize,
+        size: MemSize,
+    },
+    Bcond {
+        cond: u8,
+        target: u32,
+    },
+    Jr {
+        target: u32,
+    },
+    Jarl {
+        target: u32,
+        reg: usize,
+    },
+    JmpReg {
+        reg: usize,
+    },
+    JmpDisp {
+        reg: usize,
+        disp: u32,
+    },
     Ret,
-    Prepare { list: u32, imm5: u32, mode: PrepareMode },
-    Dispose { list: u32, imm5: u32, ret: Option<usize> },
+    Prepare {
+        list: u32,
+        imm5: u32,
+        mode: PrepareMode,
+    },
+    Dispose {
+        list: u32,
+        imm5: u32,
+        ret: Option<usize>,
+    },
     Unknown(u16),
 }
 
@@ -473,7 +631,7 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
                     dst: r2,
                 },
                 2,
-            )
+            );
         }
         0x12 => {
             return (
@@ -482,7 +640,7 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
                     b: r2,
                 },
                 2,
-            )
+            );
         }
         0x13 => {
             return (
@@ -491,7 +649,7 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
                     b: r2,
                 },
                 2,
-            )
+            );
         }
         0x14 => {
             return (
@@ -500,7 +658,7 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
                     dst: r2,
                 },
                 2,
-            )
+            );
         }
         0x15 => {
             return (
@@ -509,7 +667,7 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
                     dst: r2,
                 },
                 2,
-            )
+            );
         }
         0x16 => {
             return (
@@ -518,7 +676,7 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
                     dst: r2,
                 },
                 2,
-            )
+            );
         }
         0x17 => {
             return (
@@ -527,7 +685,7 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
                     b: r2,
                 },
                 2,
-            )
+            );
         }
         _ => {}
     }
@@ -589,8 +747,7 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
     if top == 0x1E {
         let w1 = read16(pc.wrapping_add(2));
         if w1 & 1 == 0 {
-            let disp =
-                (sext((w0 & 0x3F) as u32, 6) << 16) | ((w1 & 0xFFFE) as i32);
+            let disp = (sext((w0 & 0x3F) as u32, 6) << 16) | ((w1 & 0xFFFE) as i32);
             let target = pc.wrapping_add(disp as u32);
             if r2 == 0 {
                 return (Insn::Jr { target }, 4);
@@ -599,8 +756,7 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
         }
         if r2 != 0 {
             // LD.BU disp16[reg1], reg2.
-            let disp = (sext((w1 >> 1) as u32, 15) << 1)
-                | ((w0 >> 5) & 1) as i32;
+            let disp = (sext((w1 >> 1) as u32, 15) << 1) | ((w0 >> 5) & 1) as i32;
             return (
                 Insn::Ld {
                     disp,
@@ -653,7 +809,13 @@ fn decode_at(pc: u32, read16: &dyn Fn(u32) -> u16) -> (Insn, u32) {
             if (w0 & 0xFFE0) == 0x0620 {
                 let low = read16(pc.wrapping_add(2)) as u32;
                 let high = read16(pc.wrapping_add(4)) as u32;
-                (Insn::MovI32 { imm: (high << 16) | low, dst: r1 }, 6)
+                (
+                    Insn::MovI32 {
+                        imm: (high << 16) | low,
+                        dst: r1,
+                    },
+                    6,
+                )
             } else {
                 let imm = sext16(read16(pc.wrapping_add(2)) as u32);
                 (
@@ -867,7 +1029,7 @@ fn decode_group_3f(
                     high: r3,
                 },
                 4,
-            )
+            );
         }
         0x0222 => {
             return (
@@ -878,7 +1040,7 @@ fn decode_group_3f(
                     high: r3,
                 },
                 4,
-            )
+            );
         }
         0x02C0 => {
             return (
@@ -889,7 +1051,7 @@ fn decode_group_3f(
                     rem: r3,
                 },
                 4,
-            )
+            );
         }
         0x02C2 => {
             return (
@@ -900,7 +1062,7 @@ fn decode_group_3f(
                     rem: r3,
                 },
                 4,
-            )
+            );
         }
         0x0082 => {
             return (
@@ -910,7 +1072,7 @@ fn decode_group_3f(
                     dst: r3,
                 },
                 4,
-            )
+            );
         }
         0x00A2 => {
             return (
@@ -920,7 +1082,7 @@ fn decode_group_3f(
                     dst: r3,
                 },
                 4,
-            )
+            );
         }
         0x00C2 => {
             return (
@@ -930,7 +1092,7 @@ fn decode_group_3f(
                     dst: r3,
                 },
                 4,
-            )
+            );
         }
         _ => {}
     }
@@ -1002,9 +1164,7 @@ impl V850Core {
                 self.write_reg(dst, value);
             }
             Insn::Movhi { imm, src, dst } => {
-                let value = self
-                    .read_reg(src)
-                    .wrapping_add((imm as u32) << 16);
+                let value = self.read_reg(src).wrapping_add((imm as u32) << 16);
                 self.write_reg(dst, value);
             }
             Insn::Add { a, b } => {
@@ -1124,20 +1284,18 @@ impl V850Core {
                 self.write_reg(dst, result);
             }
             Insn::Mul { a, b, low, high } => {
-                let product = (self.read_reg(a) as i32 as i64)
-                    .wrapping_mul(self.read_reg(b) as i32 as i64);
+                let product =
+                    (self.read_reg(a) as i32 as i64).wrapping_mul(self.read_reg(b) as i32 as i64);
                 self.write_reg(low, product as u32);
                 self.write_reg(high, (product >> 32) as u32);
             }
             Insn::Mulu { a, b, low, high } => {
-                let product =
-                    (self.read_reg(a) as u64) * (self.read_reg(b) as u64);
+                let product = (self.read_reg(a) as u64) * (self.read_reg(b) as u64);
                 self.write_reg(low, product as u32);
                 self.write_reg(high, (product >> 32) as u32);
             }
             Insn::Mulh { a, b } => {
-                let product = sext16(self.read_reg(a))
-                    .wrapping_mul(sext16(self.read_reg(b)));
+                let product = sext16(self.read_reg(a)).wrapping_mul(sext16(self.read_reg(b)));
                 self.write_reg(b, product as u32);
             }
             Insn::MulhI5 { imm, b } => {
@@ -1151,8 +1309,7 @@ impl V850Core {
             Insn::Div { a, b, quot, rem } => {
                 let divisor = self.read_reg(a);
                 let dividend = self.read_reg(b);
-                let overflow = divisor == 0
-                    || (dividend == 0x8000_0000 && divisor == 0xFFFF_FFFF);
+                let overflow = divisor == 0 || (dividend == 0x8000_0000 && divisor == 0xFFFF_FFFF);
                 let (q, r) = if divisor == 0 {
                     (0, dividend)
                 } else {
@@ -1193,13 +1350,9 @@ impl V850Core {
                 let address = self.read_reg(base).wrapping_add(disp as u32);
                 let value = match (size, unsigned) {
                     (MemSize::Byte, true) => self.read_u8(address) as u32,
-                    (MemSize::Byte, false) => {
-                        self.read_u8(address) as i8 as i32 as u32
-                    }
+                    (MemSize::Byte, false) => self.read_u8(address) as i8 as i32 as u32,
                     (MemSize::Half, true) => self.read_u16(address) as u32,
-                    (MemSize::Half, false) => {
-                        self.read_u16(address) as i16 as i32 as u32
-                    }
+                    (MemSize::Half, false) => self.read_u16(address) as i16 as i32 as u32,
                     (MemSize::Word, _) => self.read_u32(address),
                 };
                 self.write_reg(dst, value);
@@ -1245,26 +1398,18 @@ impl V850Core {
                         self.write_u32(sp, value);
                     }
                 }
-                let sp = self
-                    .read_reg(3)
-                    .wrapping_sub(imm5.wrapping_mul(4));
+                let sp = self.read_reg(3).wrapping_sub(imm5.wrapping_mul(4));
                 self.write_reg(3, sp);
                 match mode {
                     PrepareMode::Plain => {}
                     PrepareMode::StackPointer => self.write_reg(30, sp),
-                    PrepareMode::Imm16Low(value) => {
-                        self.write_reg(30, value as u32)
-                    }
-                    PrepareMode::Imm16High(value) => {
-                        self.write_reg(30, (value as u32) << 16)
-                    }
+                    PrepareMode::Imm16Low(value) => self.write_reg(30, value as u32),
+                    PrepareMode::Imm16High(value) => self.write_reg(30, (value as u32) << 16),
                     PrepareMode::Imm32(value) => self.write_reg(30, value),
                 }
             }
             Insn::Dispose { list, imm5, ret } => {
-                let sp = self
-                    .read_reg(3)
-                    .wrapping_add(imm5.wrapping_mul(4));
+                let sp = self.read_reg(3).wrapping_add(imm5.wrapping_mul(4));
                 self.write_reg(3, sp);
                 // Pop in reverse push order: lp, ep, r29, ..., r20.
                 for reg in (20..=31).rev() {
@@ -1290,9 +1435,8 @@ impl V850Core {
 /// a time through `read`; extension words are consumed by `decode_at`. Unknown
 /// opcodes render as `.word 0xXXXX`.
 pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
-    let read16 = |addr: u32| -> u16 {
-        read(addr) as u16 | ((read(addr.wrapping_add(1)) as u16) << 8)
-    };
+    let read16 =
+        |addr: u32| -> u16 { read(addr) as u16 | ((read(addr.wrapping_add(1)) as u16) << 8) };
     let (insn, _len) = decode_at(pc, &read16);
     let rname = |index: usize| V850Core::register_label(index);
     match insn {

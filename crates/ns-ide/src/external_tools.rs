@@ -195,7 +195,11 @@ fn run_tool(
     } else {
         "sh"
     };
-    let flag = if std::env::consts::OS == "windows" { "/C" } else { "-c" };
+    let flag = if std::env::consts::OS == "windows" {
+        "/C"
+    } else {
+        "-c"
+    };
     let mut cmd = Command::new(shell);
     cmd.arg(flag)
         .arg(&command)

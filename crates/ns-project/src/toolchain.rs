@@ -49,24 +49,48 @@ impl Tool {
 /// package/install command per tool family, or `None` for unknown tools.
 pub fn missing_guide(name: &str) -> Option<&'static str> {
     let known: &[(&str, &str)] = &[
-        ("arm-none-eabi-gcc", "brew install arm-none-eabi-gcc (或下载 ARM GNU Toolchain)"),
-        ("arm-none-eabi-gdb", "brew install arm-none-eabi-gdb (或下载 ARM GNU Toolchain)"),
+        (
+            "arm-none-eabi-gcc",
+            "brew install arm-none-eabi-gcc (或下载 ARM GNU Toolchain)",
+        ),
+        (
+            "arm-none-eabi-gdb",
+            "brew install arm-none-eabi-gdb (或下载 ARM GNU Toolchain)",
+        ),
         ("clang", "brew install llvm (或 Xcode Command Line Tools)"),
         ("gcc", "brew install gcc"),
-        ("rustc", "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"),
-        ("cargo", "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"),
+        (
+            "rustc",
+            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+        ),
+        (
+            "cargo",
+            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+        ),
         ("zig", "brew install zig (或下载 ziglang.org)"),
         ("lldb", "xcode-select --install (Xcode Command Line Tools)"),
         ("gdb", "brew install gdb"),
         ("openocd", "brew install open-ocd"),
         ("pyocd", "pip install pyocd"),
-         ("JLinkExe", "下载 SEGGER J-Link 安装包"),
-         ("probe-rs", "cargo install probe-rs-tools"),
+        ("JLinkExe", "下载 SEGGER J-Link 安装包"),
+        ("probe-rs", "cargo install probe-rs-tools"),
         ("st-flash", "brew install stlink (ST-Link 命令行工具)"),
-        ("avr-gcc", "brew tap osx-cross/avr && brew install avr-gcc (或下载 Microchip AVR GCC)"),
-        ("avr-g++", "brew tap osx-cross/avr && brew install avr-gcc (或下载 Microchip AVR GCC)"),
-        ("msp430-elf-gcc", "下载 TI MSP430 GCC 工具链 (ti.com/msp430-gcc)"),
-        ("msp430-elf-gdb", "下载 TI MSP430 GCC 工具链 (ti.com/msp430-gcc)"),
+        (
+            "avr-gcc",
+            "brew tap osx-cross/avr && brew install avr-gcc (或下载 Microchip AVR GCC)",
+        ),
+        (
+            "avr-g++",
+            "brew tap osx-cross/avr && brew install avr-gcc (或下载 Microchip AVR GCC)",
+        ),
+        (
+            "msp430-elf-gcc",
+            "下载 TI MSP430 GCC 工具链 (ti.com/msp430-gcc)",
+        ),
+        (
+            "msp430-elf-gdb",
+            "下载 TI MSP430 GCC 工具链 (ti.com/msp430-gcc)",
+        ),
         ("v850-elf-gcc", "下载 Renesas V850 GCC 工具链 (renesas.com)"),
         ("rx-elf-gcc", "下载 Renesas RX GCC 工具链 (renesas.com)"),
         ("rl78-elf-gcc", "下载 Renesas RL78 GCC 工具链 (renesas.com)"),
@@ -150,15 +174,14 @@ pub fn debuggers(language: Language) -> Vec<Tool> {
 
 pub fn flashers(language: Language) -> Vec<Tool> {
     let names: &[&str] = match language {
-         Language::C | Language::Cpp | Language::Rust | Language::Zig => {
+        Language::C | Language::Cpp | Language::Rust | Language::Zig => {
             &["openocd", "pyocd", "JLinkExe", "probe-rs", "st-flash"]
-         }
-         Language::ZR => &["openocd"],
+        }
+        Language::ZR => &["openocd"],
         Language::Asm => &["openocd", "pyocd", "JLinkExe", "st-flash"],
     };
     tools(names)
 }
-
 
 pub fn first_available(tools: &[Tool]) -> Option<&Tool> {
     tools.iter().find(|tool| tool.available())
@@ -171,7 +194,9 @@ pub fn preferred_or_first(tools: &[Tool]) -> Option<String> {
 }
 
 pub const TARGETS: &[(&str, &str)] = &[
+    ("stm32f103c6", "STM32F103C6 · Cortex-M3 · 32KB Flash"),
     ("stm32f103c8", "STM32F103C8 · Cortex-M3 · 64KB Flash"),
+    ("stm32f103cb", "STM32F103CB · Cortex-M3 · 128KB Flash"),
     ("stm32f407vg", "STM32F407VG · Cortex-M4F · 1MB Flash"),
     ("stm32g431rb", "STM32G431RB · Cortex-M4F · 128KB Flash"),
     ("nrf52840", "nRF52840 · Cortex-M4F · 1MB Flash"),
@@ -225,10 +250,10 @@ mod tests {
         assert!(missing_guide("v850-elf-gcc").is_some());
         assert!(missing_guide("rx-elf-gcc").is_some());
         assert!(missing_guide("rl78-elf-gcc").is_some());
-         assert!(missing_guide("sdcc").is_some());
+        assert!(missing_guide("sdcc").is_some());
         // ST-Link CLI flasher.
         assert!(missing_guide("st-flash").is_some());
-     }
+    }
 
     #[test]
     fn flashers_include_stflash_and_fallback() {
@@ -242,8 +267,8 @@ mod tests {
         assert!(zr_tools.iter().all(|tool| tool.name != "st-flash"));
     }
 
-     #[test]
-     fn absent_tool_has_no_version() {
+    #[test]
+    fn absent_tool_has_no_version() {
         let tool = Tool {
             name: "definitely-not-real-xyz".to_string(),
             path: None,

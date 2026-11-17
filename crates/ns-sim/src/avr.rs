@@ -199,7 +199,10 @@ impl AvrCore {
     fn add_with_carry(&mut self, a: u8, b: u8, carry_in: u8) -> u8 {
         let sum = a as u16 + b as u16 + carry_in as u16;
         let result = sum as u8;
-        self.set_flag(H, (a & 0x0F) as u16 + (b & 0x0F) as u16 + carry_in as u16 > 0x0F);
+        self.set_flag(
+            H,
+            (a & 0x0F) as u16 + (b & 0x0F) as u16 + carry_in as u16 > 0x0F,
+        );
         self.set_flag(V, (a ^ result) & (b ^ result) & 0x80 != 0);
         self.set_flag(C, sum > 0xFF);
         self.set_flag(N, result & 0x80 != 0);
@@ -211,7 +214,10 @@ impl AvrCore {
     fn sub_with_carry(&mut self, a: u8, b: u8, carry_in: u8) -> u8 {
         let diff = a as i16 - b as i16 - carry_in as i16;
         let result = diff as u8;
-        self.set_flag(H, (a & 0x0F) as i16 - (b & 0x0F) as i16 - (carry_in as i16) < 0);
+        self.set_flag(
+            H,
+            (a & 0x0F) as i16 - (b & 0x0F) as i16 - (carry_in as i16) < 0,
+        );
         self.set_flag(V, (a ^ b) & (a ^ result) & 0x80 != 0);
         self.set_flag(C, diff < 0);
         self.set_flag(N, result & 0x80 != 0);
@@ -263,7 +269,11 @@ impl AvrCore {
 
     fn relative_word_offset(word: u16) -> i32 {
         let k = word & 0x0FFF;
-        let k = if k & 0x0800 != 0 { k as i32 - 0x1000 } else { k as i32 };
+        let k = if k & 0x0800 != 0 {
+            k as i32 - 0x1000
+        } else {
+            k as i32
+        };
         k
     }
 
@@ -418,7 +428,11 @@ impl AvrCore {
             w if w & 0xFC00 == 0xF000 => {
                 let bit = (w & 0x07) as u8;
                 let offset = ((w >> 3) & 0x7F) as i32;
-                let offset = if offset & 0x40 != 0 { offset - 0x80 } else { offset };
+                let offset = if offset & 0x40 != 0 {
+                    offset - 0x80
+                } else {
+                    offset
+                };
                 if self.flag(1 << bit) {
                     self.branch(offset);
                 }
@@ -426,7 +440,11 @@ impl AvrCore {
             w if w & 0xFC00 == 0xF400 => {
                 let bit = (w & 0x07) as u8;
                 let offset = ((w >> 3) & 0x7F) as i32;
-                let offset = if offset & 0x40 != 0 { offset - 0x80 } else { offset };
+                let offset = if offset & 0x40 != 0 {
+                    offset - 0x80
+                } else {
+                    offset
+                };
                 if !self.flag(1 << bit) {
                     self.branch(offset);
                 }
@@ -675,13 +693,13 @@ impl AvrCore {
                 let z = ((self.regs[31] as u32) << 8) | self.regs[30] as u32;
                 self.pc = z * 2 & 0xFFFF;
             }
-            0x9588 => self.halted = true, // SLEEP
-            0x9598 => self.halted = true, // BREAK
-            0x95A8 => {}                  // WDR
+            0x9588 => self.halted = true,      // SLEEP
+            0x9598 => self.halted = true,      // BREAK
+            0x95A8 => {}                       // WDR
             0x9478 => self.set_flag(I, true),  // SEI
             0x94F8 => self.set_flag(I, false), // CLI
-            0x95C8 => {}                  // LPM (R0 <- program[Z])
-            0x95E8 => {}                  // SPM / reserved
+            0x95C8 => {}                       // LPM (R0 <- program[Z])
+            0x95E8 => {}                       // SPM / reserved
             w if w & 0xFE0F == 0x9000 => {
                 // LDS Rd, k (32-bit)
                 let d = ((word >> 4) & 0x1F) as usize;
@@ -878,11 +896,9 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     let reg2 = |w: u16| ((w >> 5) & 0x0F) as usize | ((w >> 5) & 0x10) as usize;
     match word {
         0x0000 => "nop".to_string(),
-        w if w & 0xFF00 == 0x0100 => format!(
-            "movw r{}, r{}",
-            ((w >> 4) & 0x0F) * 2,
-            (w & 0x0F) * 2
-        ),
+        w if w & 0xFF00 == 0x0100 => {
+            format!("movw r{}, r{}", ((w >> 4) & 0x0F) * 2, (w & 0x0F) * 2)
+        }
         w if w & 0xFC00 == 0x0C00 => format!("add r{}, r{}", reg(w), reg2(w)),
         w if w & 0xFC00 == 0x1C00 => format!("adc r{}, r{}", reg(w), reg2(w)),
         w if w & 0xFC00 == 0x1800 => format!("sub r{}, r{}", reg(w), reg2(w)),
@@ -895,16 +911,44 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         w if w & 0xFC00 == 0x2C00 => format!("mov r{}, r{}", reg(w), reg2(w)),
         w if w & 0xFC00 == 0x1000 => format!("cpse r{}, r{}", reg(w), reg2(w)),
         w if w & 0xFC00 == 0x9C00 => format!("mul r{}, r{}", reg(w), reg2(w)),
-        w if w & 0xF000 == 0x3000 => format!("cpi r{}, 0x{:02x}", 16 + ((w >> 4) & 0x0F), (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8),
-        w if w & 0xF000 == 0x4000 => format!("sbci r{}, 0x{:02x}", 16 + ((w >> 4) & 0x0F), (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8),
-        w if w & 0xF000 == 0x5000 => format!("subi r{}, 0x{:02x}", 16 + ((w >> 4) & 0x0F), (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8),
-        w if w & 0xF000 == 0x6000 => format!("ori r{}, 0x{:02x}", 16 + ((w >> 4) & 0x0F), (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8),
-        w if w & 0xF000 == 0x7000 => format!("andi r{}, 0x{:02x}", 16 + ((w >> 4) & 0x0F), (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8),
-        w if w & 0xF000 == 0xE000 => format!("ldi r{}, 0x{:02x}", 16 + ((w >> 4) & 0x0F), (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8),
+        w if w & 0xF000 == 0x3000 => format!(
+            "cpi r{}, 0x{:02x}",
+            16 + ((w >> 4) & 0x0F),
+            (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8
+        ),
+        w if w & 0xF000 == 0x4000 => format!(
+            "sbci r{}, 0x{:02x}",
+            16 + ((w >> 4) & 0x0F),
+            (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8
+        ),
+        w if w & 0xF000 == 0x5000 => format!(
+            "subi r{}, 0x{:02x}",
+            16 + ((w >> 4) & 0x0F),
+            (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8
+        ),
+        w if w & 0xF000 == 0x6000 => format!(
+            "ori r{}, 0x{:02x}",
+            16 + ((w >> 4) & 0x0F),
+            (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8
+        ),
+        w if w & 0xF000 == 0x7000 => format!(
+            "andi r{}, 0x{:02x}",
+            16 + ((w >> 4) & 0x0F),
+            (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8
+        ),
+        w if w & 0xF000 == 0xE000 => format!(
+            "ldi r{}, 0x{:02x}",
+            16 + ((w >> 4) & 0x0F),
+            (((w >> 4) & 0xF0) as u8) | (w & 0x0F) as u8
+        ),
         w if w & 0xF000 == 0xC000 => format!("rjmp .{:+}", sign12(w) * 2 + 2),
         w if w & 0xF000 == 0xD000 => format!("rcall .{:+}", sign12(w) * 2 + 2),
-        w if w & 0xFC00 == 0xF000 => format!("brbs {}, .{:+}", w & 7, sign7((w >> 3) & 0x7F) * 2 + 2),
-        w if w & 0xFC00 == 0xF400 => format!("brbc {}, .{:+}", w & 7, sign7((w >> 3) & 0x7F) * 2 + 2),
+        w if w & 0xFC00 == 0xF000 => {
+            format!("brbs {}, .{:+}", w & 7, sign7((w >> 3) & 0x7F) * 2 + 2)
+        }
+        w if w & 0xFC00 == 0xF400 => {
+            format!("brbc {}, .{:+}", w & 7, sign7((w >> 3) & 0x7F) * 2 + 2)
+        }
         w if w & 0xFE08 == 0xF800 => format!("bld r{}, {}", (w >> 4) & 0x1F, w & 7),
         w if w & 0xFE08 == 0xFA00 => format!("bst r{}, {}", (w >> 4) & 0x1F, w & 7),
         w if w & 0xFE08 == 0xFC00 => format!("sbrc r{}, {}", (w >> 4) & 0x1F, w & 7),
@@ -913,8 +957,16 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         w if w & 0xFF00 == 0x9A00 => format!("sbi 0x{:02x}, {}", (w >> 3) & 0x1F, w & 7),
         w if w & 0xFF00 == 0x9B00 => format!("sbis 0x{:02x}, {}", (w >> 3) & 0x1F, w & 7),
         w if w & 0xFF00 == 0x9900 => format!("sbic 0x{:02x}, {}", (w >> 3) & 0x1F, w & 7),
-        w if w & 0xF800 == 0xB000 => format!("in r{}, 0x{:02x}", (w >> 4) & 0x1F, ((w >> 5) & 0x30) | (w & 0x0F)),
-        w if w & 0xF800 == 0xB800 => format!("out 0x{:02x}, r{}", ((w >> 5) & 0x30) | (w & 0x0F), (w >> 4) & 0x1F),
+        w if w & 0xF800 == 0xB000 => format!(
+            "in r{}, 0x{:02x}",
+            (w >> 4) & 0x1F,
+            ((w >> 5) & 0x30) | (w & 0x0F)
+        ),
+        w if w & 0xF800 == 0xB800 => format!(
+            "out 0x{:02x}, r{}",
+            ((w >> 5) & 0x30) | (w & 0x0F),
+            (w >> 4) & 0x1F
+        ),
         w if w & 0xFE00 == 0x9400 => match w & 0x000F {
             0x0 => format!("com r{}", (w >> 4) & 0x1F),
             0x1 => format!("neg r{}", (w >> 4) & 0x1F),

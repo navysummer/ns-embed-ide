@@ -10,8 +10,8 @@
 
 pub mod dap;
 
-use std::io::BufReader;
 use std::collections::HashMap;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -21,16 +21,15 @@ use std::thread;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
- pub mod swvd;
- pub mod embedded;
-pub mod rtos;
+pub mod embedded;
 pub mod profile;
-
+pub mod rtos;
+pub mod swvd;
 
 pub use dap::{read_message, wait_for_response, write_message};
 pub use embedded::{
-    EmbeddedConfig, EmbeddedDebugHandle, ProbeKind, find_gdb, parse_elf_symbols,
-    server_command, spawn_embedded_debug, start_server,
+    EmbeddedConfig, EmbeddedDebugHandle, ProbeKind, find_gdb, parse_elf_symbols, server_command,
+    spawn_embedded_debug, start_server,
 };
 pub use swvd::{Probe, TraceConfig, TraceMode, find_probe, package_support};
 
@@ -163,43 +162,63 @@ pub struct ThreadInfo {
     pub id: u64,
     pub name: String,
 }
- #[derive(Debug, Clone)]
- pub struct Instruction {
-     /// Absolute address of the instruction.
-     pub address: u64,
-     /// Assembly text, e.g. `movl 0xc12(%rip), %eax ; marker`.
-     pub instruction: String,
-     /// Raw bytes, e.g. `8b 05 12 0c 00 00`.
-     pub bytes: String,
-     pub line: Option<usize>,
-     /// Path of the source file, when available.
-     pub file: Option<String>,
+#[derive(Debug, Clone)]
+pub struct Instruction {
+    /// Absolute address of the instruction.
+    pub address: u64,
+    /// Assembly text, e.g. `movl 0xc12(%rip), %eax ; marker`.
+    pub instruction: String,
+    /// Raw bytes, e.g. `8b 05 12 0c 00 00`.
+    pub bytes: String,
+    pub line: Option<usize>,
+    /// Path of the source file, when available.
+    pub file: Option<String>,
     /// The symbol (function) this instruction belongs to, when the adapter
     /// resolved it (`resolveSymbols`). For example `main`.
     pub symbol: Option<String>,
- }
+}
 /// UI-bound messages produced by the debug session.
 #[derive(Debug, Clone)]
 pub enum DebugMessage {
     /// Adapter finished initialization and the program is ready to run.
     Ready,
     /// The debuggee paused (breakpoint hit, step completed, pause requested, …).
-    Stopped { reason: String, thread_id: u64, description: Option<String> },
+    Stopped {
+        reason: String,
+        thread_id: u64,
+        description: Option<String>,
+    },
     /// The debuggee resumed.
     Continued,
     /// Full call stack for the most recent stop.
-    StackTrace { frames: Vec<Frame> },
+    StackTrace {
+        frames: Vec<Frame>,
+    },
     /// Scopes for the selected frame of the most recent stop.
-    Scopes { frame_id: u64, scopes: Vec<Scope> },
+    Scopes {
+        frame_id: u64,
+        scopes: Vec<Scope>,
+    },
     /// Variables for the most recently requested scope or expandable variable.
-    Variables { reference: u64, variables: Vec<Variable> },
+    Variables {
+        reference: u64,
+        variables: Vec<Variable>,
+    },
     /// Memory bytes starting at `address` (result of `readMemory`).
-    Memory { address: u64, data: Vec<u8> },
+    Memory {
+        address: u64,
+        data: Vec<u8>,
+    },
     /// A `writeMemory` completed successfully at `address`; the caller should
     /// re-read the region to refresh its view.
-    MemoryWritten { address: u64, bytes: usize },
+    MemoryWritten {
+        address: u64,
+        bytes: usize,
+    },
     /// Disassembly instructions starting at the given address.
-    Disassembly { instructions: Vec<Instruction> },
+    Disassembly {
+        instructions: Vec<Instruction>,
+    },
     /// Output from the debuggee or the adapter. When a log breakpoint fires,
     /// the adapter attaches `source` and `line` so the UI can mark that
     /// breakpoint as hit even though execution does not pause.
@@ -231,12 +250,18 @@ pub enum DebugMessage {
         description: String,
     },
     /// Outcome of `setDataBreakpoints`, in the requested order.
-    WatchpointResults { results: Vec<WatchpointResult> },
+    WatchpointResults {
+        results: Vec<WatchpointResult>,
+    },
     /// The most recent stop is a data breakpoint; `description` is the
     /// adapter's text (lldb: `watchpoint 1`) used to identify which watchpoint.
-    WatchpointHit { description: String },
+    WatchpointHit {
+        description: String,
+    },
     /// Threads the adapter knows about (result of [`DebugCommand::Threads`]).
-    Threads { threads: Vec<ThreadInfo> },
+    Threads {
+        threads: Vec<ThreadInfo>,
+    },
     /// Variables of a scope whose `variablesReference` can be reused to
     /// evaluate expressions in [`DebugCommand::Evaluate`].
     ScopeVariables {
@@ -251,7 +276,9 @@ pub enum DebugMessage {
         line: usize,
     },
     /// Every trace register write succeeded; the window is now armed.
-    TraceConfigured { config: TraceConfig },
+    TraceConfigured {
+        config: TraceConfig,
+    },
     /// Decoded SWO trace packets streamed from the probe (SWO/SWV window).
     /// Delivered as the reader thread decodes them.
     TracePackets(Vec<swvd::Packet>),
@@ -277,44 +304,82 @@ pub enum DebugMessage {
 /// Commands the UI can send to a running debug session.
 #[derive(Debug, Clone)]
 pub enum DebugCommand {
-    Continue { thread_id: u64 },
+    Continue {
+        thread_id: u64,
+    },
     /// Run until the given source location (DAP `continueTo`).
-    ContinueTo { thread_id: u64, path: String, line: usize },
-     StepOver { thread_id: u64 },
-     StepIn { thread_id: u64 },
-     StepOut { thread_id: u64 },
+    ContinueTo {
+        thread_id: u64,
+        path: String,
+        line: usize,
+    },
+    StepOver {
+        thread_id: u64,
+    },
+    StepIn {
+        thread_id: u64,
+    },
+    StepOut {
+        thread_id: u64,
+    },
     /// Single-step one machine instruction (DAP `stepInstruction`).
-    StepInstruction { thread_id: u64 },
-     Pause { thread_id: u64 },
+    StepInstruction {
+        thread_id: u64,
+    },
+    Pause {
+        thread_id: u64,
+    },
     /// Set the value of a variable (DAP `setVariable`). The answer arrives as
     /// [`DebugMessage::VariableSet`] so the caller can refresh the panel.
-    SetVariable { variables_reference: u64, name: String, value: String },
-     /// Detach and terminate the debuggee.
-     Stop,
+    SetVariable {
+        variables_reference: u64,
+        name: String,
+        value: String,
+    },
+    /// Detach and terminate the debuggee.
+    Stop,
     /// Restart the debuggee in place via the DAP `restart` request (keeps the
     /// adapter and breakpoints alive instead of a full teardown/relaunch).
     Restart,
-     GetStackTrace { thread_id: u64 },
+    GetStackTrace {
+        thread_id: u64,
+    },
     /// Fetch the scopes for a frame; the answer arrives as [`DebugMessage::Scopes`].
-    GetScopes { frame_id: u64 },
+    GetScopes {
+        frame_id: u64,
+    },
     /// Fetch memory bytes starting at `reference` (a hex address like `0x1000003E8`).
     /// Fetch memory bytes starting at `reference` (a hex address like `0x1000003E8`).
-    ReadMemory { reference: String, count: u64 },
+    ReadMemory {
+        reference: String,
+        count: u64,
+    },
     /// Write `data` bytes at `reference` (a hex address). The answer arrives as
     /// [`DebugMessage::MemoryWritten`] so the caller can re-read the region.
-    WriteMemory { reference: String, data: Vec<u8> },
+    WriteMemory {
+        reference: String,
+        data: Vec<u8>,
+    },
     /// Fetch disassembly instructions starting at `reference` (a hex address).
-    Disassemble { reference: String, instruction_count: u64 },
+    Disassemble {
+        reference: String,
+        instruction_count: u64,
+    },
     /// Fetch the variables for a scope or expandable variable; the answer arrives
     /// as [`DebugMessage::Variables`].
-    GetVariables { variables_reference: u64 },
+    GetVariables {
+        variables_reference: u64,
+    },
     /// Replace all breakpoints of the listed files. Files whose list is empty have
     /// their breakpoints cleared. Files missing from the vector are left untouched.
     ResyncBreakpoints(Vec<(String, Vec<DebugBreakpointLocation>)>),
     /// Resolve a watchpoint expression to a data id. `scope` is the
     /// `variablesReference` of the scope the expression was found in (`0` when
     /// unknown). The answer arrives as [`DebugMessage::DataBreakpointInfo`].
-    DataBreakpointInfo { expression: String, scope: u64 },
+    DataBreakpointInfo {
+        expression: String,
+        scope: u64,
+    },
     /// Replace the full data-breakpoint set; the answer arrives as
     /// [`DebugMessage::WatchpointResults`]. An empty vector clears all.
     SetDataBreakpoints(Vec<WatchpointRequest>),
@@ -327,13 +392,18 @@ pub enum DebugCommand {
     /// Start a background SWO stream reader on the probe's data port. The
     /// decoded packets arrive as [`DebugMessage::TracePackets`]. `port` is the
     /// probe's SWO TCP port; `itm_port` is the armed stimulus port.
-    StartTraceStream { port: u16, itm_port: u8 },
+    StartTraceStream {
+        port: u16,
+        itm_port: u8,
+    },
     /// Stop the background SWO stream reader started by
     /// [`DebugCommand::StartTraceStream`].
     StopTraceStream,
     /// Fetch the variables of a scope by its name (`LocalScope`/`GlobalScope`).
     /// The answer arrives as [`DebugMessage::ScopeVariables`].
-    ScopeVariables { scope: String },
+    ScopeVariables {
+        scope: String,
+    },
     /// Evaluate an expression in the context of a scope.
     Evaluate {
         expression: String,
@@ -357,16 +427,26 @@ enum PendingRequest {
     /// Expressions of a `setDataBreakpoints` request, in request order.
     DataBreakpoints(Vec<String>),
     /// Scope name of a `variables` request issued for evaluation reuse.
-    ScopeVariables { scope: String },
+    ScopeVariables {
+        scope: String,
+    },
     /// Expression and scope of an `evaluate` request.
-    Evaluate { expression: String, scope: String },
+    Evaluate {
+        expression: String,
+        scope: String,
+    },
     /// A `setVariable` request: the (reference, name) so the response can be
     /// attributed back to the caller.
-    VariableSet { variables_reference: u64, name: String },
+    VariableSet {
+        variables_reference: u64,
+        name: String,
+    },
 
     /// A `writeMemory` request: the target address so the response can be
     /// attributed back to the caller (to re-read the region).
-    MemoryWrite { address: u64 },
+    MemoryWrite {
+        address: u64,
+    },
     /// Configuration whose setup was completed by a `writeMemory` response.
     TraceConfigured(TraceConfig),
 }
@@ -401,7 +481,6 @@ impl DebugHandle {
     pub fn into_parts(self) -> (Receiver<DebugMessage>, Sender<DebugCommand>) {
         (self.messages, self.commands)
     }
-
 }
 
 /// Locate the debug adapter executable.
@@ -498,8 +577,7 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
     }
 
     // Tracks the few commands whose responses must carry context from the request.
-    let pending: Arc<Mutex<HashMap<u64, PendingRequest>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let pending: Arc<Mutex<HashMap<u64, PendingRequest>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // ---- Command thread: UI commands -> adapter requests ----
     let command_messages = messages.clone();
@@ -513,10 +591,19 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
             while let Ok(command) = command_rx.recv() {
                 match command {
                     DebugCommand::Continue { thread_id } => {
-                        request(&mut stdin, sequence, "continue", json!({ "threadId": thread_id }));
+                        request(
+                            &mut stdin,
+                            sequence,
+                            "continue",
+                            json!({ "threadId": thread_id }),
+                        );
                         sequence += 1;
                     }
-                    DebugCommand::ContinueTo { thread_id, path, line } => {
+                    DebugCommand::ContinueTo {
+                        thread_id,
+                        path,
+                        line,
+                    } => {
                         request(
                             &mut stdin,
                             sequence,
@@ -556,31 +643,51 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                             }),
                         );
                     }
-                     DebugCommand::StepOver { thread_id } => {
-                         request(&mut stdin, sequence, "next", json!({ "threadId": thread_id }));
-                         sequence += 1;
-                     }
-                     DebugCommand::StepIn { thread_id } => {
-                         request(&mut stdin, sequence, "stepIn", json!({ "threadId": thread_id }));
-                         sequence += 1;
-                     }
-                     DebugCommand::StepOut { thread_id } => {
-                         request(&mut stdin, sequence, "stepOut", json!({ "threadId": thread_id }));
-                         sequence += 1;
-                     }
-                     DebugCommand::StepInstruction { thread_id } => {
-                         request(
-                             &mut stdin,
-                             sequence,
-                             "stepInstruction",
-                             json!({ "threadId": thread_id }),
-                         );
-                         sequence += 1;
-                     }
-                     DebugCommand::Pause { thread_id } => {
-                         request(&mut stdin, sequence, "pause", json!({ "threadId": thread_id }));
-                         sequence += 1;
-                     }
+                    DebugCommand::StepOver { thread_id } => {
+                        request(
+                            &mut stdin,
+                            sequence,
+                            "next",
+                            json!({ "threadId": thread_id }),
+                        );
+                        sequence += 1;
+                    }
+                    DebugCommand::StepIn { thread_id } => {
+                        request(
+                            &mut stdin,
+                            sequence,
+                            "stepIn",
+                            json!({ "threadId": thread_id }),
+                        );
+                        sequence += 1;
+                    }
+                    DebugCommand::StepOut { thread_id } => {
+                        request(
+                            &mut stdin,
+                            sequence,
+                            "stepOut",
+                            json!({ "threadId": thread_id }),
+                        );
+                        sequence += 1;
+                    }
+                    DebugCommand::StepInstruction { thread_id } => {
+                        request(
+                            &mut stdin,
+                            sequence,
+                            "stepInstruction",
+                            json!({ "threadId": thread_id }),
+                        );
+                        sequence += 1;
+                    }
+                    DebugCommand::Pause { thread_id } => {
+                        request(
+                            &mut stdin,
+                            sequence,
+                            "pause",
+                            json!({ "threadId": thread_id }),
+                        );
+                        sequence += 1;
+                    }
                     DebugCommand::Stop => {
                         request(
                             &mut stdin,
@@ -588,18 +695,13 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                             "disconnect",
                             json!({ "terminateDebuggee": true, "restart": false }),
                         );
-                         break;
-                     }
+                        break;
+                    }
                     DebugCommand::Restart => {
-                        request(
-                            &mut stdin,
-                            sequence,
-                            "restart",
-                            json!({ "restart": true }),
-                        );
+                        request(&mut stdin, sequence, "restart", json!({ "restart": true }));
                         sequence += 1;
                     }
-                     DebugCommand::GetStackTrace { thread_id } => {
+                    DebugCommand::GetStackTrace { thread_id } => {
                         request(
                             &mut stdin,
                             sequence,
@@ -617,7 +719,9 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                             .insert(seq, PendingRequest::Scopes(frame_id));
                         request(&mut stdin, seq, "scopes", json!({ "frameId": frame_id }));
                     }
-                    DebugCommand::GetVariables { variables_reference } => {
+                    DebugCommand::GetVariables {
+                        variables_reference,
+                    } => {
                         let seq = sequence;
                         sequence += 1;
                         command_pending
@@ -642,7 +746,8 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                     }
                     DebugCommand::WriteMemory { reference, data } => {
                         // DAP `writeMemory` takes hex-encoded bytes in `data`.
-                        let encoded: String = data.iter().map(|byte| format!("{byte:02x}")).collect();
+                        let encoded: String =
+                            data.iter().map(|byte| format!("{byte:02x}")).collect();
                         let address = parse_hex_address(&reference).unwrap_or(0);
                         let seq = sequence;
                         sequence += 1;
@@ -692,7 +797,12 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                                         .collect(),
                                 ),
                             );
-                        request(&mut stdin, seq, "setDataBreakpoints", data_breakpoints_payload(&watchpoints));
+                        request(
+                            &mut stdin,
+                            seq,
+                            "setDataBreakpoints",
+                            data_breakpoints_payload(&watchpoints),
+                        );
                     }
                     DebugCommand::DataBreakpointInfo { expression, scope } => {
                         let seq = sequence;
@@ -700,10 +810,7 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                         command_pending
                             .lock()
                             .unwrap_or_else(|error| error.into_inner())
-                            .insert(
-                                seq,
-                                PendingRequest::DataBreakpointInfo(expression.clone()),
-                            );
+                            .insert(seq, PendingRequest::DataBreakpointInfo(expression.clone()));
                         // Only `variablesReference` is sent: lldb-dap resolves the
                         // variable via the scope that actually contains it, so the
                         // caller tells us which scope listed the expression.
@@ -740,10 +847,7 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                                 command_pending
                                     .lock()
                                     .unwrap_or_else(|error| error.into_inner())
-                                    .insert(
-                                        seq,
-                                        PendingRequest::TraceConfigured(trace.clone()),
-                                    );
+                                    .insert(seq, PendingRequest::TraceConfigured(trace.clone()));
                             }
                             request(&mut stdin, seq, &command, arguments);
                         }
@@ -857,17 +961,18 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                         for (file, locations) in files {
                             sequence += 1;
                             if locations.is_empty() {
-                                let _ = send_breakpoint_set(&mut stdin, sequence, &file, &locations);
+                                let _ =
+                                    send_breakpoint_set(&mut stdin, sequence, &file, &locations);
                                 continue;
                             }
                             command_pending
                                 .lock()
                                 .unwrap_or_else(|error| error.into_inner())
                                 .insert(sequence, PendingRequest::Breakpoints(file.clone()));
-                            if send_breakpoint_set(&mut stdin, sequence, &file, &locations).is_err() {
-                                let _ = command_messages.send(
-                                    DebugMessage::Error(format!("重新设置断点失败: {file}")),
-                                );
+                            if send_breakpoint_set(&mut stdin, sequence, &file, &locations).is_err()
+                            {
+                                let _ = command_messages
+                                    .send(DebugMessage::Error(format!("重新设置断点失败: {file}")));
                             }
                         }
                     }
@@ -974,8 +1079,7 @@ fn perform_handshake(
             send_breakpoint_set(&mut stdin, sequence, &file, &locations)?;
             let response = wait_for_response(&mut stdout, sequence)
                 .map_err(|error| anyhow!("读取 setBreakpoints 响应失败: {error}"))?;
-            launch_breakpoint_results
-                .push((file, parse_breakpoint_results(&response)));
+            launch_breakpoint_results.push((file, parse_breakpoint_results(&response)));
         }
 
         let configuration_seq = sequence + 1;
@@ -1089,7 +1193,11 @@ fn parse_breakpoint_results(response: &Value) -> Vec<DebugBreakpointResult> {
                     .unwrap_or("未知原因")
                     .to_string()
             };
-            DebugBreakpointResult { line, verified, reason }
+            DebugBreakpointResult {
+                line,
+                verified,
+                reason,
+            }
         })
         .collect()
 }
@@ -1111,11 +1219,7 @@ fn data_breakpoints_payload(watchpoints: &[WatchpointRequest]) -> Value {
 }
 
 /// Map a `dataBreakpointInfo` response body to [`DebugMessage::DataBreakpointInfo`].
-fn parse_data_breakpoint_info(
-    expression: String,
-    response: &Value,
-    success: bool,
-) -> DebugMessage {
+fn parse_data_breakpoint_info(expression: String, response: &Value, success: bool) -> DebugMessage {
     if !success {
         let reason = response
             .get("message")
@@ -1130,7 +1234,10 @@ fn parse_data_breakpoint_info(
         };
     }
     let body = &response["body"];
-    let data_id = body.get("dataId").and_then(Value::as_str).map(str::to_string);
+    let data_id = body
+        .get("dataId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let access_types = body
         .get("accessTypes")
         .and_then(Value::as_array)
@@ -1412,8 +1519,8 @@ fn parse_instruction(instruction: &Value) -> Option<Instruction> {
             .and_then(Value::as_str)
             .filter(|symbol| !symbol.is_empty())
             .map(str::to_string),
-     })
- }
+    })
+}
 
 fn translate_response(
     response: &Value,
@@ -1524,7 +1631,10 @@ fn translate_response(
                 _ => 0,
             };
             let variables = parse_variables(response);
-            let _ = messages.send(DebugMessage::Variables { reference, variables });
+            let _ = messages.send(DebugMessage::Variables {
+                reference,
+                variables,
+            });
         }
         "readMemory" => {
             if !success {
@@ -1571,7 +1681,10 @@ fn translate_response(
         }
         "threads" => {
             if !success {
-                let _ = messages.send(DebugMessage::Error(format!("获取线程列表失败: {}", error())));
+                let _ = messages.send(DebugMessage::Error(format!(
+                    "获取线程列表失败: {}",
+                    error()
+                )));
                 return;
             }
             let threads = response["body"]["threads"]
@@ -1611,10 +1724,7 @@ fn translate_response(
                 .and_then(Value::as_str)
                 .unwrap_or("<无结果>")
                 .to_string();
-            let type_name = body
-                .get("type")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let type_name = body.get("type").and_then(Value::as_str).map(str::to_string);
             // `scope` is only identification for the UI; the evaluated message
             // carries the expression so the caller can match it.
             let _ = scope;
@@ -1646,10 +1756,7 @@ fn translate_response(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let type_name = body
-                .get("type")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let type_name = body.get("type").and_then(Value::as_str).map(str::to_string);
             let _ = messages.send(DebugMessage::VariableSet {
                 variables_reference,
                 name,
@@ -1657,41 +1764,35 @@ fn translate_response(
                 type_name,
             });
         }
-        "writeMemory" => {
-            match pending_take(pending, request_seq) {
-                Some(PendingRequest::TraceConfigured(trace)) => {
-                    if !success {
-                        let _ = messages.send(DebugMessage::Error(format!(
-                            "trace 寄存器写入失败: {}",
-                            error()
-                        )));
-                    } else {
-                        let _ = messages.send(DebugMessage::TraceConfigured {
-                            config: trace,
-                        });
-                    }
+        "writeMemory" => match pending_take(pending, request_seq) {
+            Some(PendingRequest::TraceConfigured(trace)) => {
+                if !success {
+                    let _ = messages.send(DebugMessage::Error(format!(
+                        "trace 寄存器写入失败: {}",
+                        error()
+                    )));
+                } else {
+                    let _ = messages.send(DebugMessage::TraceConfigured { config: trace });
                 }
-                Some(PendingRequest::MemoryWrite { address }) => {
-                    if success {
-                        let bytes = response
-                            .get("body")
-                            .and_then(|body| body.get("bytesWritten"))
-                            .and_then(|value| value.as_u64())
-                            .unwrap_or(0);
-                        let _ = messages.send(DebugMessage::MemoryWritten {
-                            address,
-                            bytes: bytes as usize,
-                        });
-                    } else {
-                        let _ = messages.send(DebugMessage::Error(format!(
-                            "内存写入失败: {}",
-                            error()
-                        )));
-                    }
-                }
-                _ => {}
             }
-        }
+            Some(PendingRequest::MemoryWrite { address }) => {
+                if success {
+                    let bytes = response
+                        .get("body")
+                        .and_then(|body| body.get("bytesWritten"))
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    let _ = messages.send(DebugMessage::MemoryWritten {
+                        address,
+                        bytes: bytes as usize,
+                    });
+                } else {
+                    let _ =
+                        messages.send(DebugMessage::Error(format!("内存写入失败: {}", error())));
+                }
+            }
+            _ => {}
+        },
         "disconnect" => {
             // Termination is reported via the "terminated"/"exited" event.
         }
@@ -1708,8 +1809,10 @@ fn translate_response(
                 Some(PendingRequest::DataBreakpoints(expressions)) => expressions,
                 _ => {
                     if !success {
-                        let _ =
-                            messages.send(DebugMessage::Error(format!("设置数据断点失败: {}", error())));
+                        let _ = messages.send(DebugMessage::Error(format!(
+                            "设置数据断点失败: {}",
+                            error()
+                        )));
                     }
                     return;
                 }
@@ -1761,7 +1864,10 @@ mod tests {
         assert_eq!(
             grouped[0].1,
             vec![
-                DebugBreakpointLocation { line: 4, ..Default::default() },
+                DebugBreakpointLocation {
+                    line: 4,
+                    ..Default::default()
+                },
                 DebugBreakpointLocation {
                     line: 9,
                     condition: Some("x == 1".into()),
@@ -1770,17 +1876,37 @@ mod tests {
             ]
         );
         assert_eq!(grouped[1].0, "src/b.c");
-        assert_eq!(grouped[1].1, vec![DebugBreakpointLocation { line: 3, ..Default::default() }]);
+        assert_eq!(
+            grouped[1].1,
+            vec![DebugBreakpointLocation {
+                line: 3,
+                ..Default::default()
+            }]
+        );
     }
 
     #[test]
     fn duplicate_breakpoints_are_deduplicated() {
         let breakpoints = vec![
-            DebugBreakpoint { path: "src/a.c".into(), line: 4, ..Default::default() },
-            DebugBreakpoint { path: "src/a.c".into(), line: 4, ..Default::default() },
+            DebugBreakpoint {
+                path: "src/a.c".into(),
+                line: 4,
+                ..Default::default()
+            },
+            DebugBreakpoint {
+                path: "src/a.c".into(),
+                line: 4,
+                ..Default::default()
+            },
         ];
         let grouped = group_breakpoints(&breakpoints);
-        assert_eq!(grouped[0].1, vec![DebugBreakpointLocation { line: 4, ..Default::default() }]);
+        assert_eq!(
+            grouped[0].1,
+            vec![DebugBreakpointLocation {
+                line: 4,
+                ..Default::default()
+            }]
+        );
     }
 
     #[test]
@@ -1800,7 +1926,11 @@ mod tests {
         assert_eq!(
             parsed,
             vec![
-                DebugBreakpointResult { line: 4, verified: true, reason: String::new() },
+                DebugBreakpointResult {
+                    line: 4,
+                    verified: true,
+                    reason: String::new()
+                },
                 DebugBreakpointResult {
                     line: 7,
                     verified: false,
@@ -1859,7 +1989,10 @@ mod tests {
             &tx,
             &pending(),
         );
-        assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
     }
 
     #[test]
@@ -1981,7 +2114,13 @@ mod tests {
         );
         match rx.try_recv().unwrap() {
             DebugMessage::Threads { threads } => {
-                assert_eq!(threads, vec![ThreadInfo { id: 1, name: "main".into() }]);
+                assert_eq!(
+                    threads,
+                    vec![ThreadInfo {
+                        id: 1,
+                        name: "main".into()
+                    }]
+                );
             }
             other => panic!("unexpected message: {other:?}"),
         }
@@ -2004,7 +2143,10 @@ mod tests {
             rx.try_recv().unwrap(),
             DebugMessage::WatchpointHit { description } if description == "watchpoint 2"
         ));
-        assert!(matches!(rx.try_recv().unwrap(), DebugMessage::Stopped { .. }));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            DebugMessage::Stopped { .. }
+        ));
     }
 
     #[test]
@@ -2088,7 +2230,11 @@ mod tests {
             &pending,
         );
         match rx.try_recv().unwrap() {
-            DebugMessage::DataBreakpointInfo { data_id, access_types, .. } => {
+            DebugMessage::DataBreakpointInfo {
+                data_id,
+                access_types,
+                ..
+            } => {
                 assert_eq!(data_id, None);
                 assert!(access_types.is_empty());
             }
@@ -2110,7 +2256,10 @@ mod tests {
             &tx,
             &pending(),
         );
-        assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
     }
 
     #[test]
@@ -2228,7 +2377,11 @@ mod tests {
         );
         assert!(!terminated);
         match rx.try_recv().unwrap() {
-            DebugMessage::Stopped { reason, thread_id, description } => {
+            DebugMessage::Stopped {
+                reason,
+                thread_id,
+                description,
+            } => {
                 assert_eq!(reason, "breakpoint");
                 assert_eq!(thread_id, 42);
                 assert!(description.is_none());
@@ -2304,7 +2457,10 @@ mod tests {
     fn translates_scopes_response_with_pending_frame() {
         let (tx, rx) = mpsc::channel();
         let pending = pending();
-        pending.lock().unwrap().insert(11, PendingRequest::Scopes(524_288));
+        pending
+            .lock()
+            .unwrap()
+            .insert(11, PendingRequest::Scopes(524_288));
         translate_response(
             &json!({
                 "type": "response",
@@ -2335,7 +2491,10 @@ mod tests {
     fn translates_variables_response_with_pending_reference() {
         let (tx, rx) = mpsc::channel();
         let pending = pending();
-        pending.lock().unwrap().insert(7, PendingRequest::Variables(3));
+        pending
+            .lock()
+            .unwrap()
+            .insert(7, PendingRequest::Variables(3));
         translate_response(
             &json!({
                 "type": "response",
@@ -2352,7 +2511,10 @@ mod tests {
             &pending,
         );
         match rx.try_recv().unwrap() {
-            DebugMessage::Variables { reference, variables } => {
+            DebugMessage::Variables {
+                reference,
+                variables,
+            } => {
                 assert_eq!(reference, 3);
                 assert_eq!(variables.len(), 1);
                 assert_eq!(variables[0].variables_reference, 4);
@@ -2388,10 +2550,12 @@ mod tests {
     fn translates_write_memory_response() {
         let (tx, rx) = mpsc::channel();
         let pending = pending();
-        pending
-            .lock()
-            .unwrap()
-            .insert(9, PendingRequest::MemoryWrite { address: 0x2000_0010 });
+        pending.lock().unwrap().insert(
+            9,
+            PendingRequest::MemoryWrite {
+                address: 0x2000_0010,
+            },
+        );
         translate_response(
             &json!({
                 "type": "response",
@@ -2416,10 +2580,12 @@ mod tests {
     fn write_memory_reports_failure() {
         let (tx, rx) = mpsc::channel();
         let pending = pending();
-        pending
-            .lock()
-            .unwrap()
-            .insert(9, PendingRequest::MemoryWrite { address: 0x2000_0010 });
+        pending.lock().unwrap().insert(
+            9,
+            PendingRequest::MemoryWrite {
+                address: 0x2000_0010,
+            },
+        );
         translate_response(
             &json!({
                 "type": "response",
@@ -2544,9 +2710,7 @@ mod tests {
             &mut terminated,
         );
         match rx.try_recv().unwrap() {
-            DebugMessage::Output {
-                source, line, ..
-            } => {
+            DebugMessage::Output { source, line, .. } => {
                 assert_eq!(source, None);
                 assert_eq!(line, None);
             }

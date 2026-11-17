@@ -24,8 +24,7 @@ struct RecentFile {
 }
 
 pub fn config_dir() -> Option<PathBuf> {
-    ProjectDirs::from("dev", "nsummer", "ns-embed-ide")
-        .map(|dirs| dirs.config_dir().to_path_buf())
+    ProjectDirs::from("dev", "nsummer", "ns-embed-ide").map(|dirs| dirs.config_dir().to_path_buf())
 }
 
 pub fn load_recents() -> Vec<RecentProject> {
@@ -54,7 +53,11 @@ pub fn remember_project(root: &Path, name: &str) -> Result<()> {
     let mut projects = load_recents();
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     projects.retain(|recent| {
-        recent.path.canonicalize().unwrap_or_else(|_| recent.path.clone()) != canonical
+        recent
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| recent.path.clone())
+            != canonical
     });
     projects.insert(
         0,
@@ -68,8 +71,8 @@ pub fn remember_project(root: &Path, name: &str) -> Result<()> {
         },
     );
     projects.truncate(MAX_RECENTS);
-    let contents = serde_json::to_string_pretty(&RecentFile { projects })
-        .context("序列化最近项目失败")?;
+    let contents =
+        serde_json::to_string_pretty(&RecentFile { projects }).context("序列化最近项目失败")?;
     fs::write(&path, contents).with_context(|| format!("写入 {} 失败", path.display()))
 }
 
@@ -79,8 +82,8 @@ pub fn forget_project(root: &Path) -> Result<()> {
         return Ok(());
     };
     let projects = remove_from_recents(load_recents(), root);
-    let contents = serde_json::to_string_pretty(&RecentFile { projects })
-        .context("序列化最近项目失败")?;
+    let contents =
+        serde_json::to_string_pretty(&RecentFile { projects }).context("序列化最近项目失败")?;
     fs::write(&path, contents).with_context(|| format!("写入 {} 失败", path.display()))
 }
 
@@ -90,7 +93,11 @@ fn remove_from_recents(projects: Vec<RecentProject>, root: &Path) -> Vec<RecentP
     projects
         .into_iter()
         .filter(|recent| {
-            recent.path.canonicalize().unwrap_or_else(|_| recent.path.clone()) != canonical
+            recent
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| recent.path.clone())
+                != canonical
         })
         .collect()
 }
@@ -136,8 +143,16 @@ mod tests {
         fs::create_dir_all(&keep).unwrap();
         fs::create_dir_all(&drop).unwrap();
         let projects = vec![
-            RecentProject { path: keep.clone(), name: "keep".into(), opened_at: 1 },
-            RecentProject { path: drop.clone(), name: "drop".into(), opened_at: 2 },
+            RecentProject {
+                path: keep.clone(),
+                name: "keep".into(),
+                opened_at: 1,
+            },
+            RecentProject {
+                path: drop.clone(),
+                name: "drop".into(),
+                opened_at: 2,
+            },
         ];
         let remaining = remove_from_recents(projects, &drop);
         assert_eq!(remaining.len(), 1);

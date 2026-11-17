@@ -48,19 +48,36 @@ pub struct Psw {
 
 impl Default for Psw {
     fn default() -> Self {
-        Psw { c: false, z: false, s: false, o: false, i: 0, u: false }
+        Psw {
+            c: false,
+            z: false,
+            s: false,
+            o: false,
+            i: 0,
+            u: false,
+        }
     }
 }
 
 impl Psw {
     fn to_u32(&self) -> u32 {
         let mut v = 0u32;
-        if self.c { v |= 1 << 0; }
-        if self.z { v |= 1 << 1; }
-        if self.s { v |= 1 << 2; }
-        if self.o { v |= 1 << 3; }
+        if self.c {
+            v |= 1 << 0;
+        }
+        if self.z {
+            v |= 1 << 1;
+        }
+        if self.s {
+            v |= 1 << 2;
+        }
+        if self.o {
+            v |= 1 << 3;
+        }
         v |= (self.i as u32 & 0x7) << 4;
-        if self.u { v |= 1 << 8; }
+        if self.u {
+            v |= 1 << 8;
+        }
         v
     }
 
@@ -262,16 +279,16 @@ impl RxCore {
 
     fn cond_true(&self, cond: u8) -> bool {
         match cond & 0x0F {
-            0x0 => self.psz(),            // EQ / Z
-            0x1 => !self.psz(),           // NE / NZ
-            0x2 => self.psc(),            // C
-            0x3 => !self.psc(),           // NC
-            0x4 => self.pss(),            // N
-            0x5 => !self.pss(),           // P (>= 0)
-            0x6 => self.pso(),            // O
-            0x7 => !self.pso(),           // NO
-            0x8 => self.pss() && !self.pso(), // LE
-            0x9 => !self.pss() && self.pso(), // LT (signed <)
+            0x0 => self.psz(),                 // EQ / Z
+            0x1 => !self.psz(),                // NE / NZ
+            0x2 => self.psc(),                 // C
+            0x3 => !self.psc(),                // NC
+            0x4 => self.pss(),                 // N
+            0x5 => !self.pss(),                // P (>= 0)
+            0x6 => self.pso(),                 // O
+            0x7 => !self.pso(),                // NO
+            0x8 => self.pss() && !self.pso(),  // LE
+            0x9 => !self.pss() && self.pso(),  // LT (signed <)
             0xA => !self.pss() && !self.pso(), // GT
             0xB => self.pss() && self.pso(),   // GE (signed >=)
             0xC => self.psz() && !self.psc(),  // HI (unsigned >)
@@ -282,10 +299,18 @@ impl RxCore {
         }
     }
 
-    fn psz(&self) -> bool { self.psw.z }
-    fn psc(&self) -> bool { self.psw.c }
-    fn pss(&self) -> bool { self.psw.s }
-    fn pso(&self) -> bool { self.psw.o }
+    fn psz(&self) -> bool {
+        self.psw.z
+    }
+    fn psc(&self) -> bool {
+        self.psw.c
+    }
+    fn pss(&self) -> bool {
+        self.psw.s
+    }
+    fn pso(&self) -> bool {
+        self.psw.o
+    }
 
     // ---- Stack ----
 
@@ -321,9 +346,7 @@ impl RxCore {
     fn load_u(&self, addr: u32, sz: u8) -> u32 {
         match sz {
             0 => self.read_u8(addr) as u32,
-            1 => {
-                (self.read_u8(addr) as u32) | ((self.read_u8(addr + 1) as u32) << 8)
-            }
+            1 => (self.read_u8(addr) as u32) | ((self.read_u8(addr + 1) as u32) << 8),
             _ => self.read_u32(addr),
         }
     }
@@ -655,12 +678,16 @@ impl RxCore {
             let rd = (low & 0x0F) as usize;
             let v = self.regs[rd];
             let (result, carry) = if left {
-                if imm == 0 { (v, self.psw.c) } else {
+                if imm == 0 {
+                    (v, self.psw.c)
+                } else {
                     let c = ((v >> (32 - imm)) & 1) != 0;
                     (v << imm, c)
                 }
             } else {
-                if imm == 0 { (v, self.psw.c) } else {
+                if imm == 0 {
+                    (v, self.psw.c)
+                } else {
                     let c = ((v >> (imm - 1)) & 1) != 0;
                     (v >> imm, c)
                 }
@@ -687,7 +714,9 @@ impl RxCore {
             let mut r = rd2;
             while r >= rd && r < 16 {
                 self.regs[r] = self.pop();
-                if r == 0 { break; }
+                if r == 0 {
+                    break;
+                }
                 r -= 1;
             }
             return;
@@ -744,12 +773,18 @@ impl RxCore {
             let v = self.regs[rd];
             let bit = 1u32 << (imm & 0x1F);
             match kind {
-                0 => { self.regs[rd] = v | bit; }
-                1 => { self.regs[rd] = v & !bit; }
+                0 => {
+                    self.regs[rd] = v | bit;
+                }
+                1 => {
+                    self.regs[rd] = v & !bit;
+                }
                 2 => {
                     self.psw.z = (v & bit) == 0;
                 }
-                _ => { self.regs[rd] = v | bit; }
+                _ => {
+                    self.regs[rd] = v | bit;
+                }
             }
             return;
         }
@@ -776,15 +811,23 @@ impl RxCore {
                 2 => {
                     // ABS rd
                     let v = self.regs[rd];
-                    let r = if (v as i32) < 0 { self.sub_flags(0, v, 0) } else { v };
+                    let r = if (v as i32) < 0 {
+                        self.sub_flags(0, v, 0)
+                    } else {
+                        v
+                    };
                     self.regs[rd] = r;
                 }
                 3 => {
                     // SAT rd (clamp to 0x7FFFFFFF / 0x80000000)
                     let v = self.regs[rd];
-                    let r = if (v as i32) > i32::MAX { 0x7FFF_FFFF }
-                            else if (v as i32) < i32::MIN { 0x8000_0000 }
-                            else { v };
+                    let r = if (v as i32) > i32::MAX {
+                        0x7FFF_FFFF
+                    } else if (v as i32) < i32::MIN {
+                        0x8000_0000
+                    } else {
+                        v
+                    };
                     self.regs[rd] = r;
                 }
                 4 => {
@@ -835,13 +878,17 @@ impl RxCore {
             let kind = (low >> 4) & 0x0F;
             let rs = (low & 0x0F) as usize;
             match kind {
-                0 => { self.pc = self.regs[rs] & !1; }
+                0 => {
+                    self.pc = self.regs[rs] & !1;
+                }
                 1 => {
                     let ret = self.pc;
                     self.push(ret);
                     self.pc = self.regs[rs] & !1;
                 }
-                4 => { self.pc = self.regs[rs] & !1; }
+                4 => {
+                    self.pc = self.regs[rs] & !1;
+                }
                 5 => {
                     let ret = self.pc;
                     self.push(ret);
@@ -1469,10 +1516,18 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     let op = ((insn >> 8) & 0xFF) as u8;
     let low = (insn & 0xFF) as u8;
 
-    if insn == 0x0000 { return "brk".to_string(); }
-    if insn == 0x0002 { return "rts".to_string(); }
-    if insn == 0x0003 { return "nop".to_string(); }
-    if insn == 0x7996 { return "wait".to_string(); }
+    if insn == 0x0000 {
+        return "brk".to_string();
+    }
+    if insn == 0x0002 {
+        return "rts".to_string();
+    }
+    if insn == 0x0003 {
+        return "nop".to_string();
+    }
+    if insn == 0x7996 {
+        return "wait".to_string();
+    }
     if (insn & 0xF800) == 0x0800 {
         let dsp = sign7(insn & 0x7F);
         return format!("bra.s {:+}", dsp);
@@ -1542,14 +1597,23 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
         let sub = (op >> 2) & 0x03;
         let imm = ((insn >> 4) & 0x0F) as u32;
         let rd = (low & 0x0F) as usize;
-        let m = match sub { 0 => "sub", 1 => "cmp", 2 => "add", _ => "mul" };
+        let m = match sub {
+            0 => "sub",
+            1 => "cmp",
+            2 => "add",
+            _ => "mul",
+        };
         return format!("{} #0x{:x}, r{}", m, imm, rd);
     }
     if (op & 0xFC) == 0x64 {
         let kind = (op >> 2) & 0x03;
         let imm = ((insn >> 4) & 0x0F) as u32;
         let rd = (low & 0x0F) as usize;
-        let m = match kind { 0 => "and", 1 => "or", _ => "mov" };
+        let m = match kind {
+            0 => "and",
+            1 => "or",
+            _ => "mov",
+        };
         return format!("{} #0x{:x}, r{}", m, imm, rd);
     }
     if (op & 0xFC) == 0x68 || (op & 0xFC) == 0x6C {
@@ -1578,26 +1642,52 @@ pub fn disassemble(pc: u32, read: &dyn Fn(u32) -> u8) -> String {
     if (op & 0xFC) == 0x74 {
         let kind = op & 0x03;
         let rd = (low & 0x0F) as usize;
-        let m = match kind { 0 => "cmp", 1 => "mul", 2 => "and", _ => "or" };
-        return format!("{} #0x{:04x}, r{}", m, read(pc + 2) as u16 | ((read(pc + 3) as u16) << 8), rd);
+        let m = match kind {
+            0 => "cmp",
+            1 => "mul",
+            2 => "and",
+            _ => "or",
+        };
+        return format!(
+            "{} #0x{:04x}, r{}",
+            m,
+            read(pc + 2) as u16 | ((read(pc + 3) as u16) << 8),
+            rd
+        );
     }
     if (op & 0xFE) == 0x78 {
         let kind = (op >> 1) & 0x03;
         let imm = ((insn >> 8) & 0x1F) as u32;
         let rd = (low & 0x0F) as usize;
-        let m = match kind { 0 => "bset", 1 => "bclr", 2 => "btst", _ => "bset" };
+        let m = match kind {
+            0 => "bset",
+            1 => "bclr",
+            2 => "btst",
+            _ => "bset",
+        };
         return format!("{} #0x{:x}, r{}", m, imm, rd);
     }
     if (op & 0xFC) == 0x7C {
         let kind = op & 0x03;
         let rd = (low & 0x0F) as usize;
-        let m = match kind { 0 => "not", 1 => "neg", 2 => "abs", _ => "pushc" };
+        let m = match kind {
+            0 => "not",
+            1 => "neg",
+            2 => "abs",
+            _ => "pushc",
+        };
         return format!("{} r{}", m, rd);
     }
     if (op & 0xFE) == 0x7E {
         let kind = op & 0x0F;
         let rs = (low & 0x0F) as usize;
-        let m = match kind { 0 => "jmp", 1 => "jsr", 4 => "bra.l", 5 => "bsr.l", _ => "?" };
+        let m = match kind {
+            0 => "jmp",
+            1 => "jsr",
+            4 => "bra.l",
+            5 => "bsr.l",
+            _ => "?",
+        };
         return format!("{} r{}", m, rs);
     }
     format!("0x{:04x}", insn)
@@ -1651,7 +1741,6 @@ mod tests {
         assert_eq!(r, RxStep::Advanced);
         assert_eq!(c.pc, 0x1002);
     }
-
 
     #[test]
     fn mov_uimm4_rd() {

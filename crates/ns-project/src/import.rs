@@ -17,22 +17,22 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::Language;
 use crate::project::{
     BuildSection, CompilerSection, DebuggerSection, FlasherSection, ProjectConfig, ProjectSection,
     SimSection,
 };
-use crate::Language;
 
- /// The result of parsing a vendor project file.
- #[derive(Debug, Clone)]
- pub struct ImportedProject {
-     /// Best-effort `project.toml` config derived from the vendor file.
-     pub config: ProjectConfig,
+/// The result of parsing a vendor project file.
+#[derive(Debug, Clone)]
+pub struct ImportedProject {
+    /// Best-effort `project.toml` config derived from the vendor file.
+    pub config: ProjectConfig,
     /// Absolute paths of source files found in the vendor project.
-     pub sources: Vec<PathBuf>,
-     /// Human-readable notes about what was inferred / left at defaults.
-     pub notes: Vec<String>,
- }
+    pub sources: Vec<PathBuf>,
+    /// Human-readable notes about what was inferred / left at defaults.
+    pub notes: Vec<String>,
+}
 
 /// Detect the vendor format from a project-file extension and parse it.
 pub fn parse_import(path: &Path) -> Result<ImportedProject> {
@@ -78,15 +78,17 @@ pub fn detect_target(path: &Path) -> Option<String> {
 /// A simple non-allocating XML tag scanner used by the IAR/Keil parsers.
 /// Returns (tag, inner) for the first tag matching `name` at depth 1 after a
 /// given byte offset. Used by the parsers to walk `<name>...</name>` blocks.
- fn find_tag<'a>(text: &'a str, name: &str, from: usize) -> Option<(usize, &'a str)> {
-     let open = format!("<{name}");
-     let close = format!("</{name}>");
-     let mut pos = from;
-     while pos < text.len() {
-         let rest = &text[pos..];
-         let Some(start) = rest.find(&open) else { return None };
-         let abs_start = pos + start;
-         let after_open = abs_start + open.len();
+fn find_tag<'a>(text: &'a str, name: &str, from: usize) -> Option<(usize, &'a str)> {
+    let open = format!("<{name}");
+    let close = format!("</{name}>");
+    let mut pos = from;
+    while pos < text.len() {
+        let rest = &text[pos..];
+        let Some(start) = rest.find(&open) else {
+            return None;
+        };
+        let abs_start = pos + start;
+        let after_open = abs_start + open.len();
         // Require a tag boundary after the name: `<File>` matches, but
         // `<FilePath>` does not (the next char must be `>`, space, `/`, or end).
         let boundary = text[after_open..].chars().next();
@@ -96,23 +98,25 @@ pub fn detect_target(path: &Path) -> Option<String> {
                 continue;
             }
         }
-         // Skip self-closing tags (`<name/>`).
-         let Some(gt) = text[after_open..].find('>') else {
-             return None;
-         };
-         let abs_gt = after_open + gt;
-         if text[abs_gt - 1..abs_gt].as_bytes().first() == Some(&b'/') {
-             pos = abs_gt + 1;
-             continue;
-         }
-         // Find the matching close tag from the end of the open tag.
-         let Some(end) = text[abs_gt..].find(&close) else { return None };
-         let inner_start = abs_gt + 1;
-         let inner_end = abs_gt + end;
-         return Some((abs_gt + 1, &text[inner_start..inner_end]));
-     }
-     None
- }
+        // Skip self-closing tags (`<name/>`).
+        let Some(gt) = text[after_open..].find('>') else {
+            return None;
+        };
+        let abs_gt = after_open + gt;
+        if text[abs_gt - 1..abs_gt].as_bytes().first() == Some(&b'/') {
+            pos = abs_gt + 1;
+            continue;
+        }
+        // Find the matching close tag from the end of the open tag.
+        let Some(end) = text[abs_gt..].find(&close) else {
+            return None;
+        };
+        let inner_start = abs_gt + 1;
+        let inner_end = abs_gt + end;
+        return Some((abs_gt + 1, &text[inner_start..inner_end]));
+    }
+    None
+}
 
 /// Walk every `inner` of a repeated tag (e.g. all `<file>` entries).
 fn find_all_tags<'a>(text: &'a str, name: &str) -> Vec<&'a str> {
@@ -125,16 +129,16 @@ fn find_all_tags<'a>(text: &'a str, name: &str) -> Vec<&'a str> {
     out
 }
 
- /// Extract the text of a child element within `inner`, e.g. `<name>foo</name>`.
- fn child_text<'a>(inner: &'a str, child: &str) -> Option<&'a str> {
+/// Extract the text of a child element within `inner`, e.g. `<name>foo</name>`.
+fn child_text<'a>(inner: &'a str, child: &str) -> Option<&'a str> {
     let (_, text) = find_tag(inner, child, 0)?;
     Some(text.trim())
 }
 
- /// Normalize a backslash path to forward slashes.
- fn norm_path(raw: &str) -> String {
-     raw.trim().replace('\\', "/")
- }
+/// Normalize a backslash path to forward slashes.
+fn norm_path(raw: &str) -> String {
+    raw.trim().replace('\\', "/")
+}
 
 /// Strip a `$PROJ_DIR$` prefix and leading `./` / `/` from a normalized path.
 /// `$PROJ_DIR$` is IAR's project-directory variable; Keil uses `..\` relative
@@ -148,7 +152,6 @@ fn strip_proj_dir(normalized: &str) -> String {
     let s = s.trim_start_matches('/');
     s.to_string()
 }
-
 
 /// Strip leading `../` / `..\` segments from a normalized path, so a vendor
 /// include dir like `..\include` becomes `include` (relative to the project
@@ -188,8 +191,8 @@ fn lexical_join(base: &Path, rel: &str) -> PathBuf {
 
 /// Parse an IAR Embedded Workbench `.ewp` file.
 fn parse_ewp(path: &Path) -> Result<ImportedProject> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("读取 {} 失败", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("读取 {} 失败", path.display()))?;
     let mut config = base_config();
 
     let mut notes = Vec::new();
@@ -203,33 +206,32 @@ fn parse_ewp(path: &Path) -> Result<ImportedProject> {
 
     // IAR projects are XML: sources live under `<file>` with a `<name>` child,
     // include dirs under `<option><state>...` with `$PROJ_DIR$` paths.
-     let root = path.parent().unwrap_or(Path::new("."));
-     let mut sources = Vec::new();
-     for file in find_all_tags(&text, "file") {
-         if let Some(name) = child_text(file, "name") {
-             let normalized = norm_path(name);
-             let cleaned = strip_proj_dir(&normalized);
-             if is_source(&cleaned) {
-                 let rel = lexical_join(root, &cleaned);
-                 if rel.exists() {
-                     sources.push(rel);
-                 }
-             }
-         }
-     }
- 
-     // Include paths: `<state>$PROJ_DIR$\include</state>`.
+    let root = path.parent().unwrap_or(Path::new("."));
+    let mut sources = Vec::new();
+    for file in find_all_tags(&text, "file") {
+        if let Some(name) = child_text(file, "name") {
+            let normalized = norm_path(name);
+            let cleaned = strip_proj_dir(&normalized);
+            if is_source(&cleaned) {
+                let rel = lexical_join(root, &cleaned);
+                if rel.exists() {
+                    sources.push(rel);
+                }
+            }
+        }
+    }
+
+    // Include paths: `<state>$PROJ_DIR$\include</state>`.
     let mut includes = Vec::new();
     for state in find_all_tags(&text, "state") {
         let value = norm_path(state);
-         if value.starts_with("$PROJ_DIR$") || value.starts_with("..") || value.starts_with("./") {
+        if value.starts_with("$PROJ_DIR$") || value.starts_with("..") || value.starts_with("./") {
             let cleaned = strip_leading_dotdot(&strip_proj_dir(&value));
             if !cleaned.is_empty() && !includes.contains(&cleaned) {
                 includes.push(cleaned);
-             }
-         }
-
-     }
+            }
+        }
+    }
     if !includes.is_empty() {
         config.compiler.includes = includes;
     }
@@ -246,8 +248,8 @@ fn parse_ewp(path: &Path) -> Result<ImportedProject> {
 
 /// Parse a Keil MDK `.uvprojx` file.
 fn parse_uvprojx(path: &Path) -> Result<ImportedProject> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("读取 {} 失败", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("读取 {} 失败", path.display()))?;
     let mut config = base_config();
     let mut notes = Vec::new();
 
@@ -265,31 +267,31 @@ fn parse_uvprojx(path: &Path) -> Result<ImportedProject> {
     for file in find_all_tags(&text, "File") {
         let file_path = child_text(file, "FilePath").or_else(|| child_text(file, "FileName"));
         if let Some(file_path) = file_path {
-             let normalized = norm_path(file_path);
+            let normalized = norm_path(file_path);
             let cleaned = strip_proj_dir(&normalized);
             if is_source(&cleaned) {
                 let rel = lexical_join(root, &cleaned);
-                 if rel.exists() {
+                if rel.exists() {
                     sources.push(rel);
-                 }
-             }
+                }
+            }
         }
     }
 
     // Include paths in `<IncludePath>...</IncludePath>` (semicolon-separated).
     let mut includes = Vec::new();
     for inc in find_all_tags(&text, "IncludePath") {
-         for part in inc.split(';') {
+        for part in inc.split(';') {
             let normalized = norm_path(part);
             let cleaned = strip_leading_dotdot(&normalized);
             if !cleaned.is_empty() && !includes.contains(&cleaned) {
                 includes.push(cleaned);
-             }
-         }
-     }
-     if !includes.is_empty() {
+            }
+        }
+    }
+    if !includes.is_empty() {
         config.compiler.includes = includes;
-     }
+    }
 
     notes.push("Keil .uvprojx 已解析：编译器/调试器/烧写器需在 project.toml 选择可用工具（如 arm-none-eabi-gcc + openocd）".to_string());
     Ok(ImportedProject {
@@ -301,8 +303,8 @@ fn parse_uvprojx(path: &Path) -> Result<ImportedProject> {
 
 /// Parse an STM32CubeMX `.ioc` file (INI-like key=value lines).
 fn parse_ioc(path: &Path) -> Result<ImportedProject> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("读取 {} 失败", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("读取 {} 失败", path.display()))?;
     let mut config = base_config();
     let mut notes = Vec::new();
 
@@ -354,7 +356,9 @@ fn parse_ioc(path: &Path) -> Result<ImportedProject> {
 fn mcu_to_target(mcu: &str) -> String {
     let lower = mcu.to_lowercase();
     for key in [
+        "stm32f103c6",
         "stm32f103c8",
+        "stm32f103cb",
         "stm32f407vg",
         "stm32g431rb",
         "stm32f103",
@@ -369,7 +373,8 @@ fn mcu_to_target(mcu: &str) -> String {
         }
     }
     // Best effort: strip the package suffix (Tx/...).
-    lower.trim_end_matches(|c: char| c.is_ascii_alphabetic() && c.is_ascii_lowercase())
+    lower
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic() && c.is_ascii_lowercase())
         .to_string()
 }
 
@@ -441,7 +446,13 @@ mod tests {
 
         let imported = parse_import(&ewp_path).unwrap();
         assert!(imported.sources.iter().any(|s| s.ends_with("src/main.c")));
-        assert!(imported.config.compiler.includes.contains(&"include".to_string()));
+        assert!(
+            imported
+                .config
+                .compiler
+                .includes
+                .contains(&"include".to_string())
+        );
         assert_eq!(imported.config.project.compiler, "arm-none-eabi-gcc");
         assert_eq!(imported.config.build.system, "auto");
         let _ = std::fs::remove_dir_all(&dir);
@@ -449,13 +460,12 @@ mod tests {
 
     #[test]
     fn parses_keil_uvprojx_sources_and_includes() {
-         let dir = std::env::temp_dir().join(format!("ns-import-keil-{}", std::process::id()));
-         std::fs::create_dir_all(dir.join("MDK-ARM")).unwrap();
-         std::fs::create_dir_all(dir.join("src")).unwrap();
-         std::fs::write(dir.join("src/app.c"), "void app(void){}\n").unwrap();
+        let dir = std::env::temp_dir().join(format!("ns-import-keil-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("MDK-ARM")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/app.c"), "void app(void){}\n").unwrap();
 
-
-         let uvprojx = r#"<?xml version="1.0" encoding="UTF-8"?>
+        let uvprojx = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Project>
   <Groups>
     <Group>
@@ -480,8 +490,20 @@ mod tests {
 
         let imported = parse_import(&path).unwrap();
         assert!(imported.sources.iter().any(|s| s.ends_with("src/app.c")));
-        assert!(imported.config.compiler.includes.contains(&"include".to_string()));
-        assert!(imported.config.compiler.includes.contains(&"drivers".to_string()));
+        assert!(
+            imported
+                .config
+                .compiler
+                .includes
+                .contains(&"include".to_string())
+        );
+        assert!(
+            imported
+                .config
+                .compiler
+                .includes
+                .contains(&"drivers".to_string())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -500,6 +522,25 @@ Mcu.IP1=USART1\n";
         assert_eq!(imported.config.project.target, "stm32f103c8");
         assert!(imported.notes.iter().any(|n| n.contains("2 个外设")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn maps_cubemx_f103_lqfp48_variants_to_catalog_keys() {
+        for (mcu, key) in [
+            ("STM32F103C6Tx", "stm32f103c6"),
+            ("STM32F103C8Tx", "stm32f103c8"),
+            ("STM32F103CBTx", "stm32f103cb"),
+        ] {
+            let dir = std::env::temp_dir().join(format!("ns-import-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let ioc =
+                format!("#MicroXplorer Configuration settings - do not modify\nMcu.Name={mcu}\n");
+            let path = dir.join("app.ioc");
+            std::fs::write(&path, ioc).unwrap();
+            let imported = parse_import(&path).unwrap();
+            assert_eq!(imported.config.project.target, key, "{mcu}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

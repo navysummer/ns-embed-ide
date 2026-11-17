@@ -111,7 +111,6 @@ impl Default for CompilerSection {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebuggerSection {
@@ -190,16 +189,16 @@ impl Default for BuildSection {
     }
 }
 
- #[derive(Debug, Clone, Serialize, Deserialize, Default)]
- #[serde(default)]
- pub struct SimSection {
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SimSection {
     pub cpu: String,
     pub period: u64,
-     /// Nominal CPU clock in Hz, used to display sim time and frequency.
-     /// `0` = unknown (no frequency readout).
-     #[serde(default)]
-     pub clock_hz: u64,
-  }
+    /// Nominal CPU clock in Hz, used to display sim time and frequency.
+    /// `0` = unknown (no frequency readout).
+    #[serde(default)]
+    pub clock_hz: u64,
+}
 
 /// Debug launch configuration (`[launch]` in `project.toml`): the arguments,
 /// environment variables and working directory passed to the debuggee when a
@@ -296,10 +295,7 @@ impl Project {
         if name.is_empty() {
             bail!("项目名称不能为空");
         }
-        if name
-            .chars()
-            .any(|ch| matches!(ch, '/' | '\\' | ':' | '\0'))
-        {
+        if name.chars().any(|ch| matches!(ch, '/' | '\\' | ':' | '\0')) {
             bail!("项目名称不能包含路径分隔符");
         }
 
@@ -307,8 +303,8 @@ impl Project {
             .with_context(|| format!("创建目录 {} 失败", spec.location.display()))?;
         let root = spec.location.join(name);
         if root.exists() {
-            let mut entries = fs::read_dir(&root)
-                .with_context(|| format!("读取 {} 失败", root.display()))?;
+            let mut entries =
+                fs::read_dir(&root).with_context(|| format!("读取 {} 失败", root.display()))?;
             if entries.next().is_some() {
                 bail!("目标目录已存在且不为空: {}", root.display());
             }
@@ -329,9 +325,7 @@ impl Project {
         config.project.flasher = spec.flasher;
         config.compiler.std = spec.language.default_std().to_string();
 
-        let (source_path, source) = spec
-            .language
-            .starter_source_for_template(spec.c_template);
+        let (source_path, source) = spec.language.starter_source_for_template(spec.c_template);
         write_file(&root.join(source_path), source)?;
 
         if let Some((path, contents)) = spec.language.starter_build_file() {
@@ -570,16 +564,11 @@ fn write_file(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("写入 {} 失败", path.display()))
 }
 
-fn collect_sources(
-    dir: &Path,
-    language: Language,
-    result: &mut Vec<PathBuf>,
-) -> Result<()> {
+fn collect_sources(dir: &Path, language: Language, result: &mut Vec<PathBuf>) -> Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
-    for entry in
-        fs::read_dir(dir).with_context(|| format!("读取目录 {} 失败", dir.display()))?
+    for entry in fs::read_dir(dir).with_context(|| format!("读取目录 {} 失败", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
@@ -660,10 +649,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "ns-embed-ide-test-{name}-{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("ns-embed-ide-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
@@ -699,10 +686,7 @@ mod tests {
         let reopened = Project::open(&project.root).unwrap();
         assert_eq!(reopened.config.project.name, "blinky");
         assert_eq!(reopened.config.project.target, "stm32f103c8");
-        assert_eq!(
-            reopened.config.project.simulator.as_str(),
-            "ns-sim"
-        );
+        assert_eq!(reopened.config.project.simulator.as_str(), "ns-sim");
         let _ = fs::remove_dir_all(base);
     }
 
@@ -781,7 +765,11 @@ mod tests {
             name: "toolok".into(),
             location: base.clone(),
             language: Language::C,
-            compiler: if cfg!(unix) { "sh".into() } else { String::new() },
+            compiler: if cfg!(unix) {
+                "sh".into()
+            } else {
+                String::new()
+            },
             simulator: String::new(),
             debugger: String::new(),
             flasher: String::new(),
@@ -837,7 +825,8 @@ mod tests {
         assert_eq!(reopened.config.build.config, "release");
         assert_eq!(reopened.config.build.out_dir, "out");
         // `[compiler] link_flags` round-trips (quick-fix and settings modal).
-        project.config.compiler.link_flags = vec!["-lm".to_string(), "-Wl,--gc-sections".to_string()];
+        project.config.compiler.link_flags =
+            vec!["-lm".to_string(), "-Wl,--gc-sections".to_string()];
         project.save_config().unwrap();
         let reopened = Project::open(base.join("cfgproj").join(CONFIG_FILE)).unwrap();
         assert_eq!(
@@ -848,7 +837,6 @@ mod tests {
         assert_eq!(reopened.config.launch.args, vec!["--port", "8080"]);
         assert_eq!(reopened.config.launch.env, vec!["DEBUG=1"]);
         assert_eq!(reopened.config.launch.cwd, "run");
-
 
         let _ = fs::remove_dir_all(base);
     }
@@ -923,7 +911,10 @@ mod tests {
             .unwrap();
             let path = project.artifact_path();
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            assert_eq!(ext, expect_ext, "target {target}: artifact ext must be {expect_ext}");
+            assert_eq!(
+                ext, expect_ext,
+                "target {target}: artifact ext must be {expect_ext}"
+            );
         }
         let _ = fs::remove_dir_all(base);
     }

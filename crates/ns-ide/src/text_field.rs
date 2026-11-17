@@ -111,7 +111,6 @@ impl TextField {
         self.on_change = Some(Box::new(callback));
     }
 
-
     fn emit_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(callback) = self.on_change.as_ref() {
             let text = self.content.to_string();
@@ -206,7 +205,12 @@ impl TextField {
         }
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.is_selecting = true;
         window.focus(&self.focus_handle);
         if event.modifiers.shift {
@@ -220,7 +224,12 @@ impl TextField {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_selecting {
             self.select_to(self.index_for_mouse_position(event.position), cx);
         }
@@ -384,7 +393,6 @@ impl EntityInputHandler for TextField {
         self.emit_change(window, cx);
         cx.notify();
     }
-
 
     fn replace_and_mark_text_in_range(
         &mut self,
@@ -643,9 +651,7 @@ impl Render for TextField {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key.as_str() == "enter"
-                    && !event.keystroke.modifiers.shift
-                {
+                if event.keystroke.key.as_str() == "enter" && !event.keystroke.modifiers.shift {
                     this.submit(window, cx);
                 }
             }))

@@ -56,8 +56,7 @@ impl ThemeSettings {
         let Some(dir) = config_dir() else {
             anyhow::bail!("无法确定用户配置目录");
         };
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("创建配置目录 {} 失败", dir.display()))?;
+        fs::create_dir_all(&dir).with_context(|| format!("创建配置目录 {} 失败", dir.display()))?;
         let path = dir.join(THEME_FILE);
         let text = serde_json::to_string_pretty(self).context("序列化 theme.json 失败")?;
         fs::write(&path, text).with_context(|| format!("写入 {} 失败", path.display()))
@@ -75,8 +74,7 @@ mod tests {
     fn dark_is_default_when_missing_or_invalid() {
         let settings = ThemeSettings::default();
         assert_eq!(settings.mode, ThemeMode::Dark);
-        let invalid: ThemeSettings =
-            serde_json::from_str("not json").unwrap_or_default();
+        let invalid: ThemeSettings = serde_json::from_str("not json").unwrap_or_default();
         assert_eq!(invalid.mode, ThemeMode::Dark);
     }
 

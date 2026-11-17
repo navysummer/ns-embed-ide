@@ -105,8 +105,11 @@ mod tests {
     #[test]
     fn frame_roundtrip() {
         let mut bytes = Vec::new();
-        write_message(&mut bytes, &serde_json::json!({"seq": 7, "type": "response"}))
-            .unwrap();
+        write_message(
+            &mut bytes,
+            &serde_json::json!({"seq": 7, "type": "response"}),
+        )
+        .unwrap();
         let mut reader = BufReader::new(&bytes[..]);
         let message = read_message(&mut reader).unwrap();
         assert_eq!(message["seq"], 7);

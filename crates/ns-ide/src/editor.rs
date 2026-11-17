@@ -6,8 +6,8 @@ use gpui::{
     Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId,
     InspectorElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollWheelEvent, ShapedLine, SharedString,
-    Style, TextRun, UTF16Selection, Window, actions, div, fill, font, prelude::*, px,
-    relative, size,
+    Style, TextRun, UTF16Selection, Window, actions, div, fill, font, prelude::*, px, relative,
+    size,
 };
 use ns_project::Language;
 use unicode_segmentation::UnicodeSegmentation;
@@ -120,15 +120,13 @@ actions!(
         ToggleBookmark,
         ToggleFold,
         ToggleMinimap,
-
-
-         AddCursorUp,
-         AddCursorDown,
-         ClearSecondary,
-         SelectNextOccurrence,
+        AddCursorUp,
+        AddCursorDown,
+        ClearSecondary,
+        SelectNextOccurrence,
         ExpandSelection,
         ShrinkSelection,
-         ToggleComment,
+        ToggleComment,
         DuplicateLine,
         DeleteLine,
         MoveLineUp,
@@ -182,15 +180,15 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-alt-down", AddCursorDown, Some("Editor")),
         KeyBinding::new("cmd-d", SelectNextOccurrence, Some("Editor")),
         KeyBinding::new("ctrl-d", SelectNextOccurrence, Some("Editor")),
-         KeyBinding::new("escape", ClearSecondary, Some("Editor")),
+        KeyBinding::new("escape", ClearSecondary, Some("Editor")),
         KeyBinding::new("cmd-/", ToggleComment, Some("Editor")),
         KeyBinding::new("ctrl-/", ToggleComment, Some("Editor")),
         KeyBinding::new("cmd-shift-k", DeleteLine, Some("Editor")),
         KeyBinding::new("ctrl-shift-k", DeleteLine, Some("Editor")),
         KeyBinding::new("cmd-shift-d", DuplicateLine, Some("Editor")),
         KeyBinding::new("ctrl-shift-d", DuplicateLine, Some("Editor")),
-         KeyBinding::new("alt-up", MoveLineUp, Some("Editor")),
-         KeyBinding::new("alt-down", MoveLineDown, Some("Editor")),
+        KeyBinding::new("alt-up", MoveLineUp, Some("Editor")),
+        KeyBinding::new("alt-down", MoveLineDown, Some("Editor")),
         KeyBinding::new("cmd-alt-shift-right", ExpandSelection, Some("Editor")),
         KeyBinding::new("ctrl-alt-shift-right", ExpandSelection, Some("Editor")),
         KeyBinding::new("cmd-alt-shift-left", ShrinkSelection, Some("Editor")),
@@ -205,10 +203,10 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-s", SortLines, Some("Editor")),
         KeyBinding::new("cmd-alt-t", TrimTrailingWhitespace, Some("Editor")),
         KeyBinding::new("ctrl-alt-t", TrimTrailingWhitespace, Some("Editor")),
-     ]
- }
- pub struct Editor {
-     focus_handle: FocusHandle,
+    ]
+}
+pub struct Editor {
+    focus_handle: FocusHandle,
     text: String,
     language: Option<Language>,
     cursor: usize,
@@ -277,13 +275,8 @@ pub fn bindings() -> Vec<KeyBinding> {
     wrap_cache_width: f32,
 }
 
-
 impl Editor {
-    pub fn new(
-        text: String,
-        language: Option<Language>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(text: String, language: Option<Language>, cx: &mut Context<Self>) -> Self {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let cursor = text.len();
         Self {
@@ -322,8 +315,8 @@ impl Editor {
             semantic: Vec::new(),
             inlay_hints: Vec::new(),
             show_minimap: true,
-             secondary: Vec::new(),
-             diagnostics: Vec::new(),
+            secondary: Vec::new(),
+            diagnostics: Vec::new(),
             hovered_diagnostic: None,
             hovered_word: None,
             coverage: Vec::new(),
@@ -332,9 +325,6 @@ impl Editor {
             wrap_cache_width: 0.0,
         }
     }
-
-
-
 
     /// Replace the whole buffer with `new_text` (e.g. reload from disk after an
     /// external change). Resets cursor/selection and edit history; breakpoints
@@ -371,8 +361,8 @@ impl Editor {
         self.coverage = hits;
         cx.notify();
     }
- 
-     /// Set the semantic token overlays (0-based line, start char, length, kind index).
+
+    /// Set the semantic token overlays (0-based line, start char, length, kind index).
     pub fn set_semantic_tokens(&mut self, spans: Vec<SemanticSpan>, cx: &mut Context<Self>) {
         self.semantic = spans;
         cx.notify();
@@ -405,7 +395,6 @@ impl Editor {
         let end = starts.get(line + 1).copied().unwrap_or(self.text.len());
         Some(&self.text[start..end])
     }
-
 
     pub fn selected_text(&self) -> String {
         if self.selection.is_empty() {
@@ -689,7 +678,6 @@ impl Editor {
         cx.notify();
     }
 
-
     fn toggle_bookmark_line(&mut self, line: usize, cx: &mut Context<Self>) {
         if line == 0 {
             return;
@@ -707,7 +695,6 @@ impl Editor {
         let (line, column) = self.line_col(self.cursor);
         (line + 1, column + 1)
     }
-
 
     /// Insert a completion at the cursor. When `replace_prefix` is true the
     /// word prefix before the cursor (letters/digits/underscore, as typed by
@@ -743,7 +730,10 @@ impl Editor {
         ranges.push(primary_range.clone());
         for extra in &self.secondary {
             let extra = clamp_range(&self.text, extra.clone());
-            if !ranges.iter().any(|r| r.start == extra.start && r.end == extra.end) {
+            if !ranges
+                .iter()
+                .any(|r| r.start == extra.start && r.end == extra.end)
+            {
                 ranges.push(extra);
             }
         }
@@ -764,7 +754,9 @@ impl Editor {
     }
     pub fn set_cursor_line(&mut self, line_number: usize, cx: &mut Context<Self>) {
         let starts = line_starts(&self.text);
-        let line = line_number.saturating_sub(1).min(starts.len().saturating_sub(1));
+        let line = line_number
+            .saturating_sub(1)
+            .min(starts.len().saturating_sub(1));
         let offset = starts.get(line).copied().unwrap_or(0);
         self.reveal_line(line);
         self.move_to(offset, cx);
@@ -777,10 +769,7 @@ impl Editor {
         let starts = line_starts(&self.text);
         let line = line.saturating_sub(1).min(starts.len().saturating_sub(1));
         let line_start = starts.get(line).copied().unwrap_or(0);
-        let line_end = starts
-            .get(line + 1)
-            .copied()
-            .unwrap_or(self.text.len());
+        let line_end = starts.get(line + 1).copied().unwrap_or(self.text.len());
         // Clamp the column to the line length (excluding the trailing newline).
         let line_len = line_end.saturating_sub(line_start);
         let col = column.min(line_len);
@@ -868,16 +857,12 @@ impl Editor {
                 selected.push(extra.clone());
             }
         }
-        let last_end = selected
-            .iter()
-            .map(|r| r.end)
-            .max()
-            .unwrap_or(self.cursor);
-         let mut found = find_occurrence_after(&self.text, &search, last_end, &selected);
-         if found.is_none() {
-             found = find_occurrence_after(&self.text, &search, 0, &selected);
-         }
-         let Some(range) = found else {
+        let last_end = selected.iter().map(|r| r.end).max().unwrap_or(self.cursor);
+        let mut found = find_occurrence_after(&self.text, &search, last_end, &selected);
+        if found.is_none() {
+            found = find_occurrence_after(&self.text, &search, 0, &selected);
+        }
+        let Some(range) = found else {
             // Every occurrence is already selected: reset to the first one
             // only (VS Code's wrap behaviour), so repeated presses cycle.
             let first = find_occurrence_after(&self.text, &search, 0, &[]);
@@ -893,7 +878,7 @@ impl Editor {
                 cx.notify();
             }
             return;
-         };
+        };
         // Move the previous primary selection into `secondary` (if any), then
         // make the new occurrence the primary selection/cursor.
         if !self.selection.is_empty() {
@@ -908,8 +893,6 @@ impl Editor {
         self.reveal_line(line);
         cx.notify();
     }
-
-
 
     /// Fold or unfold the region at `line` (0-based). Returns whether any fold
     /// state changed.
@@ -927,7 +910,6 @@ impl Editor {
             }
         }
     }
-
 
     /// Map a document line to its visible line, accounting for folded regions.
     /// Returns `(visible_line, is_hidden)`.
@@ -972,17 +954,10 @@ impl Editor {
     /// diagnostics, coverage) on the correct visual row.
     pub fn visual_row_for_line(&self, line: usize) -> Option<usize> {
         if self.word_wrap && !self.wrap_rows.is_empty() {
-            return self
-                .wrap_rows
-                .iter()
-                .position(|wr| wr.line == line);
+            return self.wrap_rows.iter().position(|wr| wr.line == line);
         }
         let (visible, hidden) = self.visible_line(line);
-        if hidden {
-            None
-        } else {
-            Some(visible)
-        }
+        if hidden { None } else { Some(visible) }
     }
 
     /// Number of logical lines in the document (1-based count; empty text = 1).
@@ -1042,7 +1017,9 @@ impl Editor {
                 });
                 field
             });
-            field.update(cx, |field, _cx| field.set_text(self.find_query.clone(), _cx));
+            field.update(cx, |field, _cx| {
+                field.set_text(self.find_query.clone(), _cx)
+            });
             self.find_query_field = Some(field);
         }
         if self.find_replace_field.is_none() {
@@ -1069,8 +1046,6 @@ impl Editor {
         self.find_current = 0;
         cx.notify();
     }
-
-
 
     pub fn find_match_count(&self) -> usize {
         self.find_matches.len()
@@ -1140,9 +1115,7 @@ impl Editor {
         let range = self.find_matches[self.find_current].clone();
         let replacement = self.find_replace.clone();
         self.snapshot();
-        self.text = self.text[0..range.start].to_owned()
-            + &replacement
-            + &self.text[range.end..];
+        self.text = self.text[0..range.start].to_owned() + &replacement + &self.text[range.end..];
         self.dirty = true;
         self.refresh_find(cx);
         let count = self.find_matches.len();
@@ -1240,7 +1213,9 @@ impl Editor {
     fn line_col(&self, offset: usize) -> (usize, usize) {
         let offset = clamp_boundary(&self.text, offset);
         let starts = self.line_starts();
-        let line = starts.partition_point(|start| *start <= offset).saturating_sub(1);
+        let line = starts
+            .partition_point(|start| *start <= offset)
+            .saturating_sub(1);
         let start = starts[line];
         let line_end = self.line_end(line, &starts);
         (line, offset.min(line_end) - start)
@@ -1464,15 +1439,15 @@ impl Editor {
         }
         self.cursor = (self.cursor + self.indent_width * line_offsets.len()).min(self.text.len());
         self.selection = self.cursor..self.cursor;
-         self.dirty = true;
-         cx.notify();
-     }
- 
+        self.dirty = true;
+        cx.notify();
+    }
+
     /// Toggle line comments over the selection (or the current line when the
     /// selection is empty or single-line). If every targeted line is already
     /// commented, remove the comment prefix; otherwise add it. Uses the
     /// language's `//` prefix; assembly/unknown languages are a no-op.
-     fn toggle_comment(&mut self, cx: &mut Context<Self>) {
+    fn toggle_comment(&mut self, cx: &mut Context<Self>) {
         let Some(prefix) = self.language.and_then(|lang| lang.line_comment()) else {
             return;
         };
@@ -1486,24 +1461,24 @@ impl Editor {
         if lines.is_empty() {
             return;
         }
-         // Decide: comment if any targeted line is not already commented.
-         // Blank lines are ignored (they are not commented and do not count
-         // against an all-commented decision).
-         let non_blank: Vec<usize> = lines
-             .iter()
+        // Decide: comment if any targeted line is not already commented.
+        // Blank lines are ignored (they are not commented and do not count
+        // against an all-commented decision).
+        let non_blank: Vec<usize> = lines
+            .iter()
             .copied()
             .filter(|line| {
                 self.line_text(*line)
                     .map(|text| !text.trim().is_empty())
                     .unwrap_or(false)
             })
-             .collect();
+            .collect();
         let all_commented = non_blank.iter().all(|line| {
-             self.line_text(*line)
-                 .map(|text| text.trim_start().starts_with(prefix))
-                 .unwrap_or(false)
-         });
-         self.snapshot();
+            self.line_text(*line)
+                .map(|text| text.trim_start().starts_with(prefix))
+                .unwrap_or(false)
+        });
+        self.snapshot();
         if all_commented {
             // Remove `//` from each line (after leading whitespace).
             let mut offsets: Vec<usize> = Vec::new();
@@ -1517,31 +1492,31 @@ impl Editor {
                     offsets.push(at);
                 }
             }
-             offsets.sort_by_key(|offset| std::cmp::Reverse(*offset));
-             for offset in offsets {
+            offsets.sort_by_key(|offset| std::cmp::Reverse(*offset));
+            for offset in offsets {
                 // Remove the prefix plus one trailing space (the `// ` we add).
                 let mut end = (offset + prefix.len()).min(self.text.len());
                 if self.text[end..].starts_with(' ') {
                     end += 1;
                 }
-                 self.text.replace_range(offset..end, "");
-             }
+                self.text.replace_range(offset..end, "");
+            }
             self.cursor = self.cursor.min(self.text.len());
         } else {
             // Insert `// ` at the start of each targeted line (after indent).
-             let mut inserts: Vec<usize> = Vec::new();
-             for line in &lines {
-                 if let Some(start) = starts.get(*line) {
-                     let text = self.line_text(*line).unwrap_or("");
+            let mut inserts: Vec<usize> = Vec::new();
+            for line in &lines {
+                if let Some(start) = starts.get(*line) {
+                    let text = self.line_text(*line).unwrap_or("");
                     // Skip blank lines: commenting an empty line would leave a
                     // dangling `// ` with no content.
                     if text.trim().is_empty() {
                         continue;
                     }
-                     let leading = text.len() - text.trim_start().len();
-                     inserts.push(*start + leading);
-                 }
-             }
+                    let leading = text.len() - text.trim_start().len();
+                    inserts.push(*start + leading);
+                }
+            }
             inserts.sort_by_key(|offset| std::cmp::Reverse(*offset));
             let mut added = 0;
             for offset in inserts {
@@ -1558,7 +1533,7 @@ impl Editor {
 
     /// Duplicate the current line (or every line covered by the selection),
     /// placing the copy below the original.
-     fn duplicate_line(&mut self, cx: &mut Context<Self>) {
+    fn duplicate_line(&mut self, cx: &mut Context<Self>) {
         let selection = clamp_range(&self.text, self.selection.clone());
         let (start_line, _) = self.line_col(selection.start);
         let (end_line, _) = self.line_col(selection.end);
@@ -1589,7 +1564,7 @@ impl Editor {
     }
 
     /// Delete the current line (or every line covered by the selection).
-     fn delete_line(&mut self, cx: &mut Context<Self>) {
+    fn delete_line(&mut self, cx: &mut Context<Self>) {
         let selection = clamp_range(&self.text, self.selection.clone());
         let (start_line, _) = self.line_col(selection.start);
         let (end_line, _) = self.line_col(selection.end);
@@ -1618,11 +1593,11 @@ impl Editor {
 
     /// Move the current line (or the selected block) up/down by `delta` lines,
     /// swapping with the adjacent line(s). `delta` is -1 (up) or 1 (down).
-     fn move_line(&mut self, delta: isize, cx: &mut Context<Self>) {
-         let selection = clamp_range(&self.text, self.selection.clone());
-         let (start_line, _) = self.line_col(selection.start);
-         let (end_line, _) = self.line_col(selection.end);
-         let starts = self.line_starts();
+    fn move_line(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let selection = clamp_range(&self.text, self.selection.clone());
+        let (start_line, _) = self.line_col(selection.start);
+        let (end_line, _) = self.line_col(selection.end);
+        let starts = self.line_starts();
         // The trailing newline creates a final empty "line" entry; the last
         // real content line is one before it when the text ends with `\n`.
         let content_last_line = if self.text.ends_with('\n') {
@@ -1630,63 +1605,63 @@ impl Editor {
         } else {
             starts.len().saturating_sub(1)
         };
-         if start_line >= starts.len() {
-             return;
-         }
-         if delta < 0 && start_line == 0 {
-             return;
-         }
+        if start_line >= starts.len() {
+            return;
+        }
+        if delta < 0 && start_line == 0 {
+            return;
+        }
         if delta > 0 && end_line >= content_last_line {
-             return;
-         }
-         let first_start = starts[start_line];
-         let mut last_end = self.line_end(end_line, &starts);
-         if let Some(&next) = starts.get(end_line + 1) {
-             if next > last_end && self.text[last_end..next].starts_with('\n') {
-                 last_end = next;
-             }
-         }
-         let block = self.text[first_start..last_end].to_string();
-         if delta < 0 {
-             // Swap with the line above: previous block then moving block.
-             let prev_start = starts[start_line - 1];
-             let prev_end = starts[start_line];
-             let prev_block = self.text[prev_start..prev_end].to_string();
-             let moving_end = first_start + block.len();
-             self.snapshot();
-             let mut new_text = String::with_capacity(self.text.len());
-             new_text.push_str(&self.text[..prev_start]);
-             new_text.push_str(&block);
-             new_text.push_str(&prev_block);
-             new_text.push_str(&self.text[moving_end..]);
-             self.text = new_text;
-             self.cursor = prev_start;
-         } else {
-             // Swap with the line below: next block then moving block.
-             let next_start = starts[end_line + 1];
-             let mut next_end = self.line_end(end_line + 1, &starts);
-             if let Some(&after) = starts.get(end_line + 2) {
-                 if after > next_end && self.text[next_end..after].starts_with('\n') {
-                     next_end = after;
-                 }
-             }
-             let next_block = self.text[next_start..next_end].to_string();
-             self.snapshot();
-             let mut new_text = String::with_capacity(self.text.len());
-             new_text.push_str(&self.text[..first_start]);
-             new_text.push_str(&next_block);
-             new_text.push_str(&block);
+            return;
+        }
+        let first_start = starts[start_line];
+        let mut last_end = self.line_end(end_line, &starts);
+        if let Some(&next) = starts.get(end_line + 1) {
+            if next > last_end && self.text[last_end..next].starts_with('\n') {
+                last_end = next;
+            }
+        }
+        let block = self.text[first_start..last_end].to_string();
+        if delta < 0 {
+            // Swap with the line above: previous block then moving block.
+            let prev_start = starts[start_line - 1];
+            let prev_end = starts[start_line];
+            let prev_block = self.text[prev_start..prev_end].to_string();
+            let moving_end = first_start + block.len();
+            self.snapshot();
+            let mut new_text = String::with_capacity(self.text.len());
+            new_text.push_str(&self.text[..prev_start]);
+            new_text.push_str(&block);
+            new_text.push_str(&prev_block);
+            new_text.push_str(&self.text[moving_end..]);
+            self.text = new_text;
+            self.cursor = prev_start;
+        } else {
+            // Swap with the line below: next block then moving block.
+            let next_start = starts[end_line + 1];
+            let mut next_end = self.line_end(end_line + 1, &starts);
+            if let Some(&after) = starts.get(end_line + 2) {
+                if after > next_end && self.text[next_end..after].starts_with('\n') {
+                    next_end = after;
+                }
+            }
+            let next_block = self.text[next_start..next_end].to_string();
+            self.snapshot();
+            let mut new_text = String::with_capacity(self.text.len());
+            new_text.push_str(&self.text[..first_start]);
+            new_text.push_str(&next_block);
+            new_text.push_str(&block);
             new_text.push_str(&self.text[next_end..]);
-             self.text = new_text;
-             self.cursor = first_start + next_block.len();
-         }
-         self.cursor = self.cursor.min(self.text.len());
-         self.selection = self.cursor..self.cursor;
-         self.secondary.clear();
-         self.dirty = true;
-         cx.notify();
-     }
- 
+            self.text = new_text;
+            self.cursor = first_start + next_block.len();
+        }
+        self.cursor = self.cursor.min(self.text.len());
+        self.selection = self.cursor..self.cursor;
+        self.secondary.clear();
+        self.dirty = true;
+        cx.notify();
+    }
+
     /// Expand (or shrink) the current selection to the next word boundary on
     /// the active side. `expand` grows toward the cursor's end (right) or
     /// start (left); shrinking pulls the selection back to the prior boundary.
@@ -1708,20 +1683,20 @@ impl Editor {
         } else {
             // Shrink: pull the cursor-side boundary back one word.
             let at_end = self.cursor == selection.end;
-             if at_end {
-                 let new_end = self.previous_word_end(selection.end);
-                 if new_end > selection.start {
-                     self.selection = selection.start..new_end;
-                     self.cursor = new_end;
-                 }
-             } else {
-                 let new_start = self.next_word_start(selection.start);
-                 if new_start < selection.end {
-                     self.selection = new_start..selection.end;
-                     self.cursor = new_start;
-                 }
-             }
-         }
+            if at_end {
+                let new_end = self.previous_word_end(selection.end);
+                if new_end > selection.start {
+                    self.selection = selection.start..new_end;
+                    self.cursor = new_end;
+                }
+            } else {
+                let new_start = self.next_word_start(selection.start);
+                if new_start < selection.end {
+                    self.selection = new_start..selection.end;
+                    self.cursor = new_start;
+                }
+            }
+        }
         self.selection_reversed = false;
         self.secondary.clear();
         cx.notify();
@@ -1754,31 +1729,31 @@ impl Editor {
         while i > 0 && is_word_byte(bytes[i - 1]) {
             i -= 1;
         }
-         i
-     }
- 
+        i
+    }
+
     /// The end of the word preceding `offset`, skipping any delimiter between
     /// it and `offset`. Used to shrink a selection from its right edge so the
     /// result excludes the trailing separator (e.g. "hello world" → "hello").
     fn previous_word_end(&self, offset: usize) -> usize {
         let bytes = self.text.as_bytes();
         let mut i = offset.min(bytes.len());
-         // Skip a trailing delimiter run, then the word run, then the delimiter
-         // before it so the result is the end of the previous word (excludes
-         // the separator that the expansion added).
-         while i > 0 && !is_word_byte(bytes[i - 1]) {
-             i -= 1;
-         }
-         while i > 0 && is_word_byte(bytes[i - 1]) {
-             i -= 1;
-         }
+        // Skip a trailing delimiter run, then the word run, then the delimiter
+        // before it so the result is the end of the previous word (excludes
+        // the separator that the expansion added).
         while i > 0 && !is_word_byte(bytes[i - 1]) {
             i -= 1;
         }
-         i
-     }
- 
-     /// The start of the word after `offset`, skipping any delimiter between it
+        while i > 0 && is_word_byte(bytes[i - 1]) {
+            i -= 1;
+        }
+        while i > 0 && !is_word_byte(bytes[i - 1]) {
+            i -= 1;
+        }
+        i
+    }
+
+    /// The start of the word after `offset`, skipping any delimiter between it
     fn next_word_start(&self, offset: usize) -> usize {
         let bytes = self.text.as_bytes();
         let len = bytes.len();
@@ -1789,7 +1764,7 @@ impl Editor {
         i
     }
 
-     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         let Some(previous) = self.undo.pop() else {
             return;
         };
@@ -1860,22 +1835,12 @@ impl Editor {
     pub fn select_all_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.select_all(&SelectAll, window, cx);
     }
-    fn toggle_breakpoint(
-        &mut self,
-        _: &ToggleBreakpoint,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn toggle_breakpoint(&mut self, _: &ToggleBreakpoint, _: &mut Window, cx: &mut Context<Self>) {
         let (line, _) = self.line_col(self.cursor);
         self.toggle_breakpoint_line(line + 1, cx);
     }
 
-    fn toggle_bookmark(
-        &mut self,
-        _: &ToggleBookmark,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn toggle_bookmark(&mut self, _: &ToggleBookmark, _: &mut Window, cx: &mut Context<Self>) {
         let (line, _) = self.line_col(self.cursor);
         self.toggle_bookmark_line(line + 1, cx);
     }
@@ -1892,11 +1857,21 @@ impl Editor {
         self.add_cursor_vertical(-1, cx);
     }
 
-    fn add_cursor_down_action(&mut self, _: &AddCursorDown, _: &mut Window, cx: &mut Context<Self>) {
+    fn add_cursor_down_action(
+        &mut self,
+        _: &AddCursorDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.add_cursor_vertical(1, cx);
     }
 
-    fn clear_secondary_action(&mut self, _: &ClearSecondary, _: &mut Window, cx: &mut Context<Self>) {
+    fn clear_secondary_action(
+        &mut self,
+        _: &ClearSecondary,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.clear_secondary(cx);
     }
 
@@ -1905,54 +1880,29 @@ impl Editor {
         _: &SelectNextOccurrence,
         _: &mut Window,
         cx: &mut Context<Self>,
-     ) {
-         self.select_next_occurrence(cx);
-     }
- 
-    fn toggle_comment_action(
-        &mut self,
-        _: &ToggleComment,
-        _: &mut Window,
-        cx: &mut Context<Self>,
     ) {
+        self.select_next_occurrence(cx);
+    }
+
+    fn toggle_comment_action(&mut self, _: &ToggleComment, _: &mut Window, cx: &mut Context<Self>) {
         self.toggle_comment(cx);
     }
 
-    fn duplicate_line_action(
-        &mut self,
-        _: &DuplicateLine,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn duplicate_line_action(&mut self, _: &DuplicateLine, _: &mut Window, cx: &mut Context<Self>) {
         self.duplicate_line(cx);
     }
 
-    fn delete_line_action(
-        &mut self,
-        _: &DeleteLine,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn delete_line_action(&mut self, _: &DeleteLine, _: &mut Window, cx: &mut Context<Self>) {
         self.delete_line(cx);
     }
 
-    fn move_line_up_action(
-        &mut self,
-        _: &MoveLineUp,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn move_line_up_action(&mut self, _: &MoveLineUp, _: &mut Window, cx: &mut Context<Self>) {
         self.move_line(-1, cx);
     }
 
-    fn move_line_down_action(
-        &mut self,
-        _: &MoveLineDown,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-         self.move_line(1, cx);
-     }
+    fn move_line_down_action(&mut self, _: &MoveLineDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_line(1, cx);
+    }
 
     fn transform_uppercase_action(
         &mut self,
@@ -2006,7 +1956,7 @@ impl Editor {
         self.expand_or_shrink_selection(false, cx);
     }
 
-     fn on_right_mouse_down(
+    fn on_right_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
@@ -2042,7 +1992,12 @@ impl Editor {
         cx.notify();
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.focus_handle);
 
         if let Some(bounds) = self.last_bounds {
@@ -2064,7 +2019,8 @@ impl Editor {
                 // bookmark; plain click toggles a breakpoint.
                 if event.position.x < bounds.left() + px(10.) {
                     self.toggle_fold(line.saturating_sub(1), cx);
-                } else if event.modifiers.platform || event.modifiers.control || event.modifiers.alt {
+                } else if event.modifiers.platform || event.modifiers.control || event.modifiers.alt
+                {
                     self.toggle_bookmark_line(line, cx);
                 } else {
                     self.toggle_breakpoint_line(line, cx);
@@ -2082,7 +2038,10 @@ impl Editor {
             self.move_to(offset, cx);
             let index = offset.min(self.text.len());
             let (row, column) = self.cursor_index_to_row_column(index);
-            cx.emit(DefinitionRequested { line: row + 1, column });
+            cx.emit(DefinitionRequested {
+                line: row + 1,
+                column,
+            });
             self.is_selecting = false;
             return;
         }
@@ -2132,7 +2091,12 @@ impl Editor {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_selecting {
             let offset = self.index_for_mouse_position(event.position);
             self.select_to(offset, cx);
@@ -2174,7 +2138,9 @@ impl Editor {
         let visual = ((position.y - bounds.top() + px(self.scroll_y)) / px(self.line_height()))
             .floor()
             .max(0.0) as usize;
-        let line = visible_lines_in(&self.text, &self.folded).get(visual).copied()?;
+        let line = visible_lines_in(&self.text, &self.folded)
+            .get(visual)
+            .copied()?;
         let local_x = position.x - bounds.left() - px(GUTTER_WIDTH);
         let column = self
             .last_line_shapes
@@ -2208,7 +2174,9 @@ impl Editor {
         let visual = ((position.y - bounds.top() + px(self.scroll_y)) / px(self.line_height()))
             .floor()
             .max(0.0) as usize;
-        let line = visible_lines_in(&self.text, &self.folded).get(visual).copied();
+        let line = visible_lines_in(&self.text, &self.folded)
+            .get(visual)
+            .copied();
         let Some(line) = line else {
             return None;
         };
@@ -2218,13 +2186,10 @@ impl Editor {
             .get(visual)
             .and_then(|shape| shape.index_for_x(local_x))
             .unwrap_or(0);
-        self.diagnostics
-            .iter()
-            .position(|m| {
-                m.line == line
-                    && (m.start_col == m.end_col
-                        || (column >= m.start_col && column < m.end_col))
-            })
+        self.diagnostics.iter().position(|m| {
+            m.line == line
+                && (m.start_col == m.end_col || (column >= m.start_col && column < m.end_col))
+        })
     }
 
     /// Map a click `y` to a 1-based document line, honouring folded regions so
@@ -2300,7 +2265,8 @@ impl Editor {
     fn transform_selection_case(&mut self, uppercase: bool, cx: &mut Context<Self>) {
         let range = if self.selection.is_empty() {
             // Word under cursor (or the single char if no word found).
-            self.word_range_at(self.cursor).unwrap_or(self.cursor..self.cursor + 1)
+            self.word_range_at(self.cursor)
+                .unwrap_or(self.cursor..self.cursor + 1)
         } else {
             self.selection.clone()
         };
@@ -2393,7 +2359,11 @@ impl Editor {
         // A trailing `\n` produces a phantom empty element; keep it as the
         // terminator so it does not sort to the front as a blank line.
         let trailing_newline = slice.ends_with('\n');
-        let body = if trailing_newline { &slice[..slice.len() - 1] } else { slice };
+        let body = if trailing_newline {
+            &slice[..slice.len() - 1]
+        } else {
+            slice
+        };
         let mut lines: Vec<&str> = body.split('\n').collect();
         let stable = lines.clone();
         lines.sort();
@@ -2424,7 +2394,11 @@ impl Editor {
         let starts = self.line_starts();
         let (first_line, _) = self.line_col(self.selection.start);
         let (last_line, _) = self.line_col(self.selection.end.max(self.selection.start));
-        let first = if self.selection.is_empty() { 0 } else { first_line };
+        let first = if self.selection.is_empty() {
+            0
+        } else {
+            first_line
+        };
         let last = if self.selection.is_empty() {
             starts.len().saturating_sub(1)
         } else {
@@ -2497,8 +2471,6 @@ impl EntityInputHandler for Editor {
         self.marked_range = None;
     }
 
-
-
     fn replace_text_in_range(
         &mut self,
         range_utf16: Option<Range<usize>>,
@@ -2506,7 +2478,6 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-
         let range = range_utf16
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -2517,7 +2488,10 @@ impl EntityInputHandler for Editor {
         let mut ranges = vec![range.clone()];
         for extra in &self.secondary {
             let extra = clamp_range(&self.text, extra.clone());
-            if !ranges.iter().any(|r| r.start == extra.start && r.end == extra.end) {
+            if !ranges
+                .iter()
+                .any(|r| r.start == extra.start && r.end == extra.end)
+            {
                 ranges.push(extra);
             }
         }
@@ -2525,12 +2499,8 @@ impl EntityInputHandler for Editor {
             return;
         }
         // Auto-close brackets/quotes (single opening char, no selection).
-        let (insert_text, cursor_offset) = auto_close_insert(
-            &self.text,
-            &range,
-            new_text,
-            ranges.len() == 1,
-        );
+        let (insert_text, cursor_offset) =
+            auto_close_insert(&self.text, &range, new_text, ranges.len() == 1);
         self.snapshot();
         // Apply edits from the highest offset down so earlier offsets stay valid.
         ranges.sort_by_key(|r| std::cmp::Reverse(r.start));
@@ -2564,9 +2534,7 @@ impl EntityInputHandler for Editor {
             .unwrap_or(self.selection.clone());
         let range = clamp_range(&self.text, range);
         self.snapshot();
-        self.text = self.text[0..range.start].to_owned()
-            + new_text
-            + &self.text[range.end..];
+        self.text = self.text[0..range.start].to_owned() + new_text + &self.text[range.end..];
         if !new_text.is_empty() {
             self.marked_range = Some(range.start..range.start + new_text.len());
         } else {
@@ -2599,8 +2567,14 @@ impl EntityInputHandler for Editor {
         let shape = self.last_line_shapes.get(line)?;
         let line_start = starts[line];
         let line_end = self.line_end(line, &starts);
-        let local_start = range.start.saturating_sub(line_start).min(line_end - line_start);
-        let local_end = range.end.saturating_sub(line_start).min(line_end - line_start);
+        let local_start = range
+            .start
+            .saturating_sub(line_start)
+            .min(line_end - line_start);
+        let local_end = range
+            .end
+            .saturating_sub(line_start)
+            .min(line_end - line_start);
         let top = bounds.top() - px(self.scroll_y);
         Some(Bounds::from_corners(
             Point::new(
@@ -2674,13 +2648,13 @@ impl Render for Editor {
             .on_action(cx.listener(Self::toggle_minimap_action))
             .on_action(cx.listener(Self::add_cursor_up_action))
             .on_action(cx.listener(Self::add_cursor_down_action))
-             .on_action(cx.listener(Self::clear_secondary_action))
-             .on_action(cx.listener(Self::select_next_occurrence_action))
+            .on_action(cx.listener(Self::clear_secondary_action))
+            .on_action(cx.listener(Self::select_next_occurrence_action))
             .on_action(cx.listener(Self::toggle_comment_action))
             .on_action(cx.listener(Self::duplicate_line_action))
             .on_action(cx.listener(Self::delete_line_action))
             .on_action(cx.listener(Self::move_line_up_action))
-             .on_action(cx.listener(Self::move_line_down_action))
+            .on_action(cx.listener(Self::move_line_down_action))
             .on_action(cx.listener(Self::expand_selection_action))
             .on_action(cx.listener(Self::shrink_selection_action))
             .on_action(cx.listener(Self::transform_uppercase_action))
@@ -2726,7 +2700,6 @@ struct MinimapElement {
     editor: Entity<Editor>,
 }
 
-
 /// A semantic token overlay from the LSP: 0-based line, start character,
 /// length in characters, and a semantic token type index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2745,7 +2718,6 @@ pub struct InlayHint {
     pub label: String,
 }
 
-
 struct CodeElement {
     editor: Entity<Editor>,
 }
@@ -2757,9 +2729,9 @@ struct PrepaintState {
     bookmarks: Vec<PaintQuad>,
     selections: Vec<PaintQuad>,
     find_matches: Vec<PaintQuad>,
-      debug_line: Option<PaintQuad>,
+    debug_line: Option<PaintQuad>,
     debug_marker: Option<ShapedLine>,
-     cursor: Option<PaintQuad>,
+    cursor: Option<PaintQuad>,
     /// Vertical bars for secondary (multi-) cursors.
     secondary_cursors: Vec<PaintQuad>,
     fold_quads: Vec<PaintQuad>,
@@ -2768,8 +2740,8 @@ struct PrepaintState {
     inlays: Vec<(Pixels, Pixels, ShapedLine)>,
     /// Diagnostic underlines (line bottom bar) — error/warning color per row.
     diagnostics: Vec<PaintQuad>,
-     /// Diagnostic gutter ticks (small square left of the line number).
-     diagnostic_gutter: Vec<PaintQuad>,
+    /// Diagnostic gutter ticks (small square left of the line number).
+    diagnostic_gutter: Vec<PaintQuad>,
     /// Coverage markers (uncovered lines get a red gutter bar; covered lines a
     /// green bar). Drawn left of the line number, inside the gutter.
     coverage_quads: Vec<PaintQuad>,
@@ -2779,8 +2751,7 @@ struct PrepaintState {
     /// span). Written back to the editor in `paint` for coordinate mapping.
     wrap_rows: Vec<WrapRow>,
     wrap_cache_width: f32,
- }
-
+}
 
 impl IntoElement for CodeElement {
     type Element = Self;
@@ -2827,15 +2798,14 @@ impl Element for CodeElement {
         let editor = self.editor.read(cx);
         let text = editor.text.clone();
         let language = editor.language;
-         let selection = editor.selection.clone();
-         let cursor = editor.cursor;
+        let selection = editor.selection.clone();
+        let cursor = editor.cursor;
         let find_matches = editor.find_matches.clone();
         let find_current = editor.find_current;
-          let secondary = editor.secondary.clone();
+        let secondary = editor.secondary.clone();
         let breakpoints = editor.breakpoints.clone();
         let debug_line = editor.debug_line;
         let mut inlays = Vec::new();
-
 
         let code_left = bounds.left() + px(GUTTER_WIDTH);
         let visible_lines = editor.visible_lines();
@@ -2854,15 +2824,14 @@ impl Element for CodeElement {
         let wrap_rows = if wrap_on {
             let mut rows = Vec::new();
             for &line_index in &visible_lines {
-                for (byte_start, byte_end) in wrap_line_segments(
-                    &text,
-                    line_index,
-                    wrap_width,
-                    font_size,
-                    &code_font,
-                    window,
-                ) {
-                    rows.push(WrapRow { line: line_index, byte_start, byte_end });
+                for (byte_start, byte_end) in
+                    wrap_line_segments(&text, line_index, wrap_width, font_size, &code_font, window)
+                {
+                    rows.push(WrapRow {
+                        line: line_index,
+                        byte_start,
+                        byte_end,
+                    });
                 }
             }
             rows
@@ -2909,7 +2878,11 @@ impl Element for CodeElement {
                 .iter()
                 .copied()
                 .map(|line_index| {
-                    (line_index, text.split('\n').nth(line_index).unwrap_or(""), 0)
+                    (
+                        line_index,
+                        text.split('\n').nth(line_index).unwrap_or(""),
+                        0,
+                    )
                 })
                 .collect()
         };
@@ -2977,9 +2950,7 @@ impl Element for CodeElement {
                 ));
             }
 
-            let sel_visible = |r: &Range<usize>| {
-                r.start < slice_end && r.end > slice_start
-            };
+            let sel_visible = |r: &Range<usize>| r.start < slice_end && r.end > slice_start;
             if selection.start < selection.end && sel_visible(&selection) {
                 let sel_start = selection.start.max(slice_start);
                 let sel_end = selection.end.min(slice_end);
@@ -2987,10 +2958,7 @@ impl Element for CodeElement {
                 let x_end = shape.x_for_index(sel_end - slice_start);
                 selections.push(fill(
                     Bounds::new(
-                        Point::new(
-                            code_left + x_start,
-                            top + px(row as f32 * line_height),
-                        ),
+                        Point::new(code_left + x_start, top + px(row as f32 * line_height)),
                         size((x_end - x_start).max(px(2.)), px(line_height)),
                     ),
                     theme::alpha(theme::ACCENT, 0.2),
@@ -3006,10 +2974,7 @@ impl Element for CodeElement {
                 let x_end = shape.x_for_index(sel_end - slice_start);
                 selections.push(fill(
                     Bounds::new(
-                        Point::new(
-                            code_left + x_start,
-                            top + px(row as f32 * line_height),
-                        ),
+                        Point::new(code_left + x_start, top + px(row as f32 * line_height)),
                         size((x_end - x_start).max(px(2.)), px(line_height)),
                     ),
                     theme::alpha(theme::ACCENT, 0.2),
@@ -3030,10 +2995,7 @@ impl Element for CodeElement {
                 let is_current = match_index == find_current;
                 find_match_quads.push(fill(
                     Bounds::new(
-                        Point::new(
-                            code_left + x_start,
-                            top + px(row as f32 * line_height),
-                        ),
+                        Point::new(code_left + x_start, top + px(row as f32 * line_height)),
                         size((x_end - x_start).max(px(2.)), px(line_height)),
                     ),
                     if is_current {
@@ -3046,7 +3008,11 @@ impl Element for CodeElement {
 
             // Inlay hints only on the first visual row of their line.
             if is_first_row {
-                for hint in editor.inlay_hints.iter().filter(|hint| hint.line == line_index) {
+                for hint in editor
+                    .inlay_hints
+                    .iter()
+                    .filter(|hint| hint.line == line_index)
+                {
                     let hint_x = shape.x_for_index(hint.start.min(line.len()));
                     let hint_run = TextRun {
                         len: hint.label.len(),
@@ -3120,7 +3086,7 @@ impl Element for CodeElement {
             .filter(|line| *line >= 1)
             .and_then(|line| {
                 let visible = editor.visual_row_for_line(line - 1)?;
-                 let y = top + px(visible as f32 * line_height);
+                let y = top + px(visible as f32 * line_height);
                 let quad = fill(
                     Bounds::new(
                         Point::new(bounds.left(), y),
@@ -3193,13 +3159,11 @@ impl Element for CodeElement {
         // region's start line, plus a horizontal indicator line.
         let mut fold_quads = Vec::new();
 
-
-
         for (start, _end) in folded.iter() {
             let Some(visible) = editor.visual_row_for_line(*start) else {
                 continue;
             };
-             let y = top + px(visible as f32 * line_height);
+            let y = top + px(visible as f32 * line_height);
             fold_quads.push(fill(
                 Bounds::new(
                     Point::new(bounds.left() + px(2.), y + px((line_height - 8.) / 2.)),
@@ -3225,13 +3189,10 @@ impl Element for CodeElement {
                 if let Some(shape) = line_shapes.get(visible) {
                     let x = code_left + shape.x_for_index(column);
                     let y = top + px(visible as f32 * line_height);
-                    let width = (shape.x_for_index(column + 1) - shape.x_for_index(column))
-                        .max(px(6.));
+                    let width =
+                        (shape.x_for_index(column + 1) - shape.x_for_index(column)).max(px(6.));
                     bracket_quads.push(fill(
-                        Bounds::new(
-                            Point::new(x - px(1.), y),
-                            size(width, px(line_height)),
-                        ),
+                        Bounds::new(Point::new(x - px(1.), y), size(width, px(line_height))),
                         theme::alpha(theme::ACCENT, 0.18),
                     ));
                 }
@@ -3270,7 +3231,14 @@ impl Element for CodeElement {
                     Point::new(start_x, y + px(line_height - 2.0)),
                     size(width, px(2.0)),
                 ),
-                theme::alpha(if mark.is_error { theme::DANGER } else { theme::ACCENT }, 0.7),
+                theme::alpha(
+                    if mark.is_error {
+                        theme::DANGER
+                    } else {
+                        theme::ACCENT
+                    },
+                    0.7,
+                ),
             ));
             // Gutter tick left of the line number for quick scanning.
             diagnostic_gutter.push(
@@ -3296,7 +3264,11 @@ impl Element for CodeElement {
                     continue;
                 };
                 let y = top + px(visible as f32 * line_height);
-                let color = if *hits == 0 { theme::DANGER } else { theme::JADE };
+                let color = if *hits == 0 {
+                    theme::DANGER
+                } else {
+                    theme::JADE
+                };
                 coverage_quads.push(
                     fill(
                         Bounds::new(
@@ -3309,28 +3281,28 @@ impl Element for CodeElement {
                 );
             }
         }
- 
-         PrepaintState {
+
+        PrepaintState {
             lines: line_shapes,
             line_numbers,
             breakpoints: breakpoint_quads,
             bookmarks: bookmark_quads,
             selections,
             find_matches: find_match_quads,
-             debug_line,
+            debug_line,
             debug_marker,
             cursor: cursor_quad,
             secondary_cursors,
             fold_quads,
             bracket_quads,
             inlays,
-             diagnostics: diagnostic_quads,
-             diagnostic_gutter,
+            diagnostics: diagnostic_quads,
+            diagnostic_gutter,
             coverage_quads,
             current_line,
             wrap_rows,
             wrap_cache_width: wrap_width.into(),
-         }
+        }
     }
 
     fn paint(
@@ -3343,7 +3315,6 @@ impl Element for CodeElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-
         let focus_handle = self.editor.read(cx).focus_handle.clone();
         window.handle_input(
             &focus_handle,
@@ -3351,7 +3322,11 @@ impl Element for CodeElement {
             cx,
         );
 
-        let scroll_y = self.editor.read(cx).scroll_y.clamp(0.0, self.editor.read(cx).max_scroll());
+        let scroll_y = self
+            .editor
+            .read(cx)
+            .scroll_y
+            .clamp(0.0, self.editor.read(cx).max_scroll());
         let top = bounds.top() - px(scroll_y);
         let code_left = bounds.left() + px(GUTTER_WIDTH);
         let line_height = self.editor.read(cx).line_height();
@@ -3385,21 +3360,21 @@ impl Element for CodeElement {
             window.paint_quad(diagnostic);
         }
 
-         for marker in prepaint.diagnostic_gutter.drain(..) {
-             window.paint_quad(marker);
-         }
+        for marker in prepaint.diagnostic_gutter.drain(..) {
+            window.paint_quad(marker);
+        }
 
         for quad in prepaint.coverage_quads.drain(..) {
             window.paint_quad(quad);
         }
-         for selection in prepaint.selections.drain(..) {
-             window.paint_quad(selection);
-         }
+        for selection in prepaint.selections.drain(..) {
+            window.paint_quad(selection);
+        }
 
         for find_match in prepaint.find_matches.drain(..) {
             window.paint_quad(find_match);
         }
- 
+
         for breakpoint in prepaint.breakpoints.drain(..) {
             window.paint_quad(breakpoint);
         }
@@ -3413,7 +3388,11 @@ impl Element for CodeElement {
 
         if let Some(marker) = prepaint.debug_marker.take() {
             if let Some(line) = self.editor.read(cx).debug_line {
-                if let Some(visible) = self.editor.read(cx).visual_row_for_line(line.saturating_sub(1)) {
+                if let Some(visible) = self
+                    .editor
+                    .read(cx)
+                    .visual_row_for_line(line.saturating_sub(1))
+                {
                     let y = top + px(visible as f32 * line_height);
                     marker
                         .paint(
@@ -3434,10 +3413,7 @@ impl Element for CodeElement {
             }
             number
                 .paint(
-                    Point::new(
-                        code_left - px(12.) - number.width,
-                        line_top,
-                    ),
+                    Point::new(code_left - px(12.) - number.width, line_top),
                     px(line_height),
                     window,
                     cx,
@@ -3450,20 +3426,15 @@ impl Element for CodeElement {
             if line_top + px(line_height) <= bounds.top() || line_top >= bounds.bottom() {
                 continue;
             }
-            line.paint(
-                Point::new(code_left, line_top),
-                px(line_height),
-                window,
-                cx,
-            )
-            .ok();
+            line.paint(Point::new(code_left, line_top), px(line_height), window, cx)
+                .ok();
         }
 
         // Draw inlay hints on top of the line text.
         for (x, y, hint) in prepaint.inlays.drain(..) {
-            hint.paint(Point::new(x, y), px(line_height), window, cx).ok();
+            hint.paint(Point::new(x, y), px(line_height), window, cx)
+                .ok();
         }
-
 
         if focus_handle.is_focused(window) {
             if let Some(cursor) = prepaint.cursor.take() {
@@ -3614,8 +3585,6 @@ impl Element for MinimapElement {
     }
 }
 
-
-
 fn build_runs(line: &str, spans: &[HighlightSpan], font: &gpui::Font) -> Vec<TextRun> {
     if line.is_empty() || spans.is_empty() {
         return vec![TextRun {
@@ -3718,13 +3687,13 @@ fn build_runs_with_semantic(
 
 fn semantic_token_color(token_type: usize) -> gpui::Hsla {
     match token_type {
-        1 => theme::color(theme::JADE),          // type
-        2 | 4 | 5 => theme::color(0xe8d5ab),     // enum/struct/function/method
-        7 => theme::color(theme::ACCENT),        // keyword
-        9 => theme::color(theme::TEXT_FAINT),    // comment
-        10 => theme::color(0xa8b57a),            // string
-        11 => theme::color(theme::ACCENT_3),     // number
-        _ => theme::color(theme::TEXT),          // plain
+        1 => theme::color(theme::JADE),       // type
+        2 | 4 | 5 => theme::color(0xe8d5ab),  // enum/struct/function/method
+        7 => theme::color(theme::ACCENT),     // keyword
+        9 => theme::color(theme::TEXT_FAINT), // comment
+        10 => theme::color(0xa8b57a),         // string
+        11 => theme::color(theme::ACCENT_3),  // number
+        _ => theme::color(theme::TEXT),       // plain
     }
 }
 
@@ -3775,8 +3744,8 @@ fn find_matches_in(
         }
         let is_whole = if whole_word {
             let bytes = text.as_bytes();
-            let before_ok =
-                start == 0 || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+            let before_ok = start == 0
+                || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
             let after_ok =
                 end >= bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
             before_ok && after_ok
@@ -3810,9 +3779,7 @@ fn find_occurrence_after(
         if end > text.len() {
             return None;
         }
-        let overlaps = selected
-            .iter()
-            .any(|r| start < r.end && end > r.start);
+        let overlaps = selected.iter().any(|r| start < r.end && end > r.start);
         if !overlaps {
             return Some(start..end);
         }
@@ -3892,7 +3859,9 @@ fn line_starts(text: &str) -> Vec<usize> {
 
 fn line_col_in(text: &str, starts: &[usize], offset: usize) -> (usize, usize) {
     let offset = clamp_boundary(text, offset);
-    let line = starts.partition_point(|start| *start <= offset).saturating_sub(1);
+    let line = starts
+        .partition_point(|start| *start <= offset)
+        .saturating_sub(1);
     let start = starts[line];
     let end = starts
         .get(line + 1)
@@ -3925,15 +3894,15 @@ fn clamp_boundary(text: &str, offset: usize) -> usize {
         offset -= 1;
     }
     offset
- }
- 
+}
+
 /// Whether a byte is part of a word (alphanumeric or underscore). Word
 /// boundaries for selection expansion/shrink are delimited by these.
 fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
- fn clamp_range(text: &str, range: Range<usize>) -> Range<usize> {
+fn clamp_range(text: &str, range: Range<usize>) -> Range<usize> {
     let start = clamp_boundary(text, range.start);
     let end = clamp_boundary(text, range.end.max(start));
     start..end
@@ -3966,7 +3935,11 @@ fn matching_bracket_in(text: &str, offset: usize) -> Option<usize> {
         b'}' => (b'{', b'}', -1),
         _ => return None,
     };
-    let (seek, nest) = if direction == 1 { (close, open) } else { (open, close) };
+    let (seek, nest) = if direction == 1 {
+        (close, open)
+    } else {
+        (open, close)
+    };
     let mut depth = 0i32;
     let mut index = offset as isize;
     loop {
@@ -4072,7 +4045,10 @@ fn visible_line_in(text: &str, folded: &[(usize, usize)], line: usize) -> (usize
     let map_to = hidden_at.unwrap_or(line);
     let mut visible = 0usize;
     for index in 0..map_to {
-        if !folded.iter().any(|(start, end)| index > *start && index <= *end) {
+        if !folded
+            .iter()
+            .any(|(start, end)| index > *start && index <= *end)
+        {
             visible += 1;
         }
     }
@@ -4083,7 +4059,10 @@ fn visible_lines_in(text: &str, folded: &[(usize, usize)]) -> Vec<usize> {
     let total = text.split('\n').count();
     let mut lines = Vec::new();
     for index in 0..total {
-        if folded.iter().any(|(start, end)| index > *start && index <= *end) {
+        if folded
+            .iter()
+            .any(|(start, end)| index > *start && index <= *end)
+        {
             continue;
         }
         lines.push(index);
@@ -4122,7 +4101,9 @@ fn wrap_line_segments(
     }
     // Use gpui's line wrapper to compute the byte index of each visual break.
     // `Boundary.ix` is the index of the last character before a wrap.
-    let mut wrapper = window.text_system().line_wrapper(font.clone(), px(font_size));
+    let mut wrapper = window
+        .text_system()
+        .line_wrapper(font.clone(), px(font_size));
     let boundaries: Vec<usize> = wrapper
         .wrap_line(&[gpui::LineFragment::text(slice)], width)
         .map(|b| b.ix)
@@ -4176,8 +4157,10 @@ mod tests {
         let mut cx = gpui::TestAppContext::single();
         let editor = cx.new(|cx| {
             let mut e = Editor::new("a\nb\nc\n".to_string(), None, cx);
-            e.last_bounds =
-                Some(Bounds::new(Point::new(px(0.), px(0.)), size(px(600.), px(200.))));
+            e.last_bounds = Some(Bounds::new(
+                Point::new(px(0.), px(0.)),
+                size(px(600.), px(200.)),
+            ));
             e.diagnostics = vec![DiagnosticMark {
                 line: 1,
                 start_col: 0,
@@ -4239,8 +4222,10 @@ mod tests {
         let mut cx = gpui::TestAppContext::single();
         let editor = cx.new(|cx| {
             let mut e = Editor::new("int counter = 5;\n".to_string(), None, cx);
-            e.last_bounds =
-                Some(Bounds::new(Point::new(px(0.), px(0.)), size(px(600.), px(200.))));
+            e.last_bounds = Some(Bounds::new(
+                Point::new(px(0.), px(0.)),
+                size(px(600.), px(200.)),
+            ));
             e
         });
         cx.update(|cx| {
@@ -4270,11 +4255,11 @@ mod tests {
                 editor.set_coverage(vec![], cx);
                 assert!(editor.coverage.is_empty());
             });
-         });
+        });
     }
- 
-     #[test]
-     fn line_starts_and_columns() {
+
+    #[test]
+    fn line_starts_and_columns() {
         let text = "abc\ndef\n";
         let starts = line_starts(text);
         assert_eq!(starts, vec![0, 4, 8]);
@@ -4376,8 +4361,6 @@ mod tests {
             });
         });
     }
-
-
 
     #[test]
     fn bracket_matching_pairs() {
@@ -4523,7 +4506,7 @@ mod tests {
         // Non-overlapping: "aaaa" with "aa" yields two matches (0..2, 2..4).
         assert_eq!(find_matches_in("aaaa", "aa", true, false), vec![0..2, 2..4]);
         assert!(find_matches_in("text", "", true, false).is_empty());
-     }
+    }
 
     /// Setting a find query populates the match ranges the renderer highlights,
     /// and `find_next` cycles the current match (rendered stronger).
@@ -4534,25 +4517,25 @@ mod tests {
         cx.update(|cx| {
             editor.update(cx, |editor, cx| {
                 editor.set_find_query("a", cx);
-                 assert_eq!(editor.find_matches, vec![4..5, 19..20, 23..24]);
+                assert_eq!(editor.find_matches, vec![4..5, 19..20, 23..24]);
                 assert_eq!(editor.find_current, 0);
 
-                 editor.find_next(false, cx);
-                 assert_eq!(editor.find_current, 1);
-                 editor.find_next(false, cx);
-                 assert_eq!(editor.find_current, 2);
-                 // Forward wraps back to the first match (3 matches, index 2 -> 0).
-                 editor.find_next(false, cx);
-                 assert_eq!(editor.find_current, 0);
+                editor.find_next(false, cx);
+                assert_eq!(editor.find_current, 1);
+                editor.find_next(false, cx);
+                assert_eq!(editor.find_current, 2);
+                // Forward wraps back to the first match (3 matches, index 2 -> 0).
+                editor.find_next(false, cx);
+                assert_eq!(editor.find_current, 0);
 
-                 // Backwards from the first match wraps to the last match.
-                 editor.find_next(true, cx);
-                 assert_eq!(editor.find_current, 2);
+                // Backwards from the first match wraps to the last match.
+                editor.find_next(true, cx);
+                assert_eq!(editor.find_current, 2);
             });
         });
     }
- 
-     #[test]
+
+    #[test]
     fn clamps_folded_regions_to_document() {
         // total = 4 lines: only regions fully inside 0..=3 survive.
         let regions = vec![(0, 3), (1, 2), (3, 4), (2, 1), (5, 6)];
@@ -4709,26 +4692,26 @@ mod tests {
     /// and a selection must be reused verbatim as the search string.
     #[test]
     fn select_next_occurrence_uses_selection_and_skips_nonwords() {
-         let mut cx = gpui::TestAppContext::single();
-         let editor = cx.new(|cx| {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| {
             let mut e = Editor::new("foo  foo\n".to_string(), None, cx);
             e.move_to(4, cx); // on the space between the two words
-             e
-         });
-         cx.update(|cx| {
-             editor.update(cx, |editor, cx| {
-                 editor.select_next_occurrence(cx);
+            e
+        });
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.select_next_occurrence(cx);
                 // A collapsed cursor on a space has no word to select.
-                 assert!(editor.selection.is_empty());
-                 // Seed an explicit selection and search for it.
-                 editor.selection = 0..3;
-                 editor.cursor = 3;
-                 editor.select_next_occurrence(cx);
+                assert!(editor.selection.is_empty());
+                // Seed an explicit selection and search for it.
+                editor.selection = 0..3;
+                editor.cursor = 3;
+                editor.select_next_occurrence(cx);
                 assert_eq!(editor.selection, 5..8);
-                 assert_eq!(editor.secondary, vec![0..3]);
-             });
-         });
-     }
+                assert_eq!(editor.secondary, vec![0..3]);
+            });
+        });
+    }
 
     /// `apply_text_edit` must replace a 0-based LSP range and mark the document
     /// dirty, leaving a single collapsed cursor after the inserted text.
@@ -4760,7 +4743,6 @@ mod tests {
             });
         });
     }
-
 
     #[test]
     fn auto_close_inserts_pair_and_places_cursor_inside() {
@@ -4818,9 +4800,21 @@ mod tests {
                 // Simulate a wrap model: line 0 wraps into two rows at byte 9
                 // ("aaaa bbbb" | " cccc"), line 1 is one row.
                 editor.wrap_rows = vec![
-                    WrapRow { line: 0, byte_start: 0, byte_end: 9 },
-                    WrapRow { line: 0, byte_start: 9, byte_end: 14 },
-                    WrapRow { line: 1, byte_start: 15, byte_end: 17 },
+                    WrapRow {
+                        line: 0,
+                        byte_start: 0,
+                        byte_end: 9,
+                    },
+                    WrapRow {
+                        line: 0,
+                        byte_start: 9,
+                        byte_end: 14,
+                    },
+                    WrapRow {
+                        line: 1,
+                        byte_start: 15,
+                        byte_end: 17,
+                    },
                 ];
                 assert_eq!(editor.visual_row_count(), 3);
                 // Offset 3 (inside "aaaa") → row 0, in-row byte 3.
@@ -4851,138 +4845,164 @@ mod tests {
             editor.update(cx, |editor, cx| {
                 editor.set_inlay_hints(
                     vec![
-                        InlayHint { line: 0, start: 4, label: "a".into() },
-                        InlayHint { line: 0, start: 4, label: "a".into() },
-                        InlayHint { line: 0, start: 9, label: "b".into() },
+                        InlayHint {
+                            line: 0,
+                            start: 4,
+                            label: "a".into(),
+                        },
+                        InlayHint {
+                            line: 0,
+                            start: 4,
+                            label: "a".into(),
+                        },
+                        InlayHint {
+                            line: 0,
+                            start: 9,
+                            label: "b".into(),
+                        },
                     ],
                     cx,
                 );
                 assert_eq!(editor.inlay_hints.len(), 2);
-                assert_eq!(editor.inlay_hints[0], InlayHint { line: 0, start: 4, label: "a".into() });
-                assert_eq!(editor.inlay_hints[1], InlayHint { line: 0, start: 9, label: "b".into() });
+                assert_eq!(
+                    editor.inlay_hints[0],
+                    InlayHint {
+                        line: 0,
+                        start: 4,
+                        label: "a".into()
+                    }
+                );
+                assert_eq!(
+                    editor.inlay_hints[1],
+                    InlayHint {
+                        line: 0,
+                        start: 9,
+                        label: "b".into()
+                    }
+                );
             });
         });
     }
-     /// `toggle_comment` adds `// ` to a single line and removes it on the
-     /// second invocation (round trip).
-     #[test]
-     fn toggle_comment_round_trips() {
-         let mut cx = gpui::TestAppContext::single();
-         let editor = cx.new(|cx| Editor::new("foo\nbar\n".to_string(), Some(Language::Rust), cx));
-         cx.update(|cx| {
-             editor.update(cx, |editor, cx| {
-                 editor.cursor = 0;
-                 editor.selection = 0..0;
-                 editor.toggle_comment(cx);
-                 assert_eq!(editor.text, "// foo\nbar\n");
-                 editor.toggle_comment(cx);
-                 assert_eq!(editor.text, "foo\nbar\n");
-             });
-         });
-     }
- 
-     /// `toggle_comment` over a multi-line selection comments every line and
-     /// uncomments them on the second invocation.
-     #[test]
-     fn toggle_comment_multi_line() {
-         let mut cx = gpui::TestAppContext::single();
-         let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), Some(Language::C), cx));
-         cx.update(|cx| {
-             editor.update(cx, |editor, cx| {
-                 editor.cursor = 4;
-                 editor.selection = 2..6; // spans lines 1..=2 (b, c)
-                 editor.toggle_comment(cx);
-                 assert_eq!(editor.text, "a\n// b\n// c\n");
+    /// `toggle_comment` adds `// ` to a single line and removes it on the
+    /// second invocation (round trip).
+    #[test]
+    fn toggle_comment_round_trips() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("foo\nbar\n".to_string(), Some(Language::Rust), cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cursor = 0;
+                editor.selection = 0..0;
+                editor.toggle_comment(cx);
+                assert_eq!(editor.text, "// foo\nbar\n");
+                editor.toggle_comment(cx);
+                assert_eq!(editor.text, "foo\nbar\n");
+            });
+        });
+    }
+
+    /// `toggle_comment` over a multi-line selection comments every line and
+    /// uncomments them on the second invocation.
+    #[test]
+    fn toggle_comment_multi_line() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), Some(Language::C), cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cursor = 4;
+                editor.selection = 2..6; // spans lines 1..=2 (b, c)
+                editor.toggle_comment(cx);
+                assert_eq!(editor.text, "a\n// b\n// c\n");
                 // The first pass grew the text; reset the selection so the
                 // uncomment pass covers both commented lines.
                 editor.selection = 2..12;
-                 editor.toggle_comment(cx);
-                 assert_eq!(editor.text, "a\nb\nc\n");
-             });
-         });
-     }
- 
-     /// `toggle_comment` is a no-op for assembly (no `//` line comment).
-     #[test]
-     fn toggle_comment_noop_for_asm() {
-         let mut cx = gpui::TestAppContext::single();
-         let editor = cx.new(|cx| Editor::new("ldr r0, r1\n".to_string(), Some(Language::Asm), cx));
-         cx.update(|cx| {
-             editor.update(cx, |editor, cx| {
-                 editor.cursor = 0;
-                 editor.selection = 0..0;
-                 editor.toggle_comment(cx);
-                 assert_eq!(editor.text, "ldr r0, r1\n");
-             });
-         });
-     }
- 
-     /// `duplicate_line` copies the current line below itself.
-     #[test]
-     fn duplicate_line_copies_below() {
-         let mut cx = gpui::TestAppContext::single();
-         let editor = cx.new(|cx| Editor::new("a\nb\n".to_string(), None, cx));
-         cx.update(|cx| {
-             editor.update(cx, |editor, cx| {
-                 editor.cursor = 2; // on "b"
-                 editor.selection = 2..2;
-                 editor.duplicate_line(cx);
-                 assert_eq!(editor.text, "a\nb\nb\n");
-                 assert_eq!(editor.cursor, 4);
-             });
-         });
-     }
- 
-     /// `delete_line` removes the current line including its newline.
-     #[test]
-     fn delete_line_removes_line() {
-         let mut cx = gpui::TestAppContext::single();
-         let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), None, cx));
-         cx.update(|cx| {
-             editor.update(cx, |editor, cx| {
-                 editor.cursor = 2; // on "b"
-                 editor.selection = 2..2;
-                 editor.delete_line(cx);
-                 assert_eq!(editor.text, "a\nc\n");
-             });
-         });
-     }
- 
-     /// `move_line` swaps the current line with the one above/below.
-     #[test]
-     fn move_line_swaps() {
-         let mut cx = gpui::TestAppContext::single();
-         let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), None, cx));
-         cx.update(|cx| {
-             editor.update(cx, |editor, cx| {
-                 editor.cursor = 2; // on "b"
-                 editor.selection = 2..2;
-                 editor.move_line(-1, cx);
-                 assert_eq!(editor.text, "b\na\nc\n");
-                 editor.move_line(1, cx);
-                 assert_eq!(editor.text, "a\nb\nc\n");
-             });
-         });
-     }
- 
-     /// `move_line` refuses to move the first line up or the last line down.
-     #[test]
-     fn move_line_respects_bounds() {
-         let mut cx = gpui::TestAppContext::single();
-         let editor = cx.new(|cx| Editor::new("a\nb\n".to_string(), None, cx));
-         cx.update(|cx| {
-             editor.update(cx, |editor, cx| {
-                 editor.cursor = 0;
-                 editor.selection = 0..0;
-                 editor.move_line(-1, cx);
-                 assert_eq!(editor.text, "a\nb\n");
-                 editor.cursor = 2;
+                editor.toggle_comment(cx);
+                assert_eq!(editor.text, "a\nb\nc\n");
+            });
+        });
+    }
+
+    /// `toggle_comment` is a no-op for assembly (no `//` line comment).
+    #[test]
+    fn toggle_comment_noop_for_asm() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("ldr r0, r1\n".to_string(), Some(Language::Asm), cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cursor = 0;
+                editor.selection = 0..0;
+                editor.toggle_comment(cx);
+                assert_eq!(editor.text, "ldr r0, r1\n");
+            });
+        });
+    }
+
+    /// `duplicate_line` copies the current line below itself.
+    #[test]
+    fn duplicate_line_copies_below() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("a\nb\n".to_string(), None, cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cursor = 2; // on "b"
                 editor.selection = 2..2;
-                 editor.move_line(1, cx);
-                 assert_eq!(editor.text, "a\nb\n");
-             });
-         });
-     }
+                editor.duplicate_line(cx);
+                assert_eq!(editor.text, "a\nb\nb\n");
+                assert_eq!(editor.cursor, 4);
+            });
+        });
+    }
+
+    /// `delete_line` removes the current line including its newline.
+    #[test]
+    fn delete_line_removes_line() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), None, cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cursor = 2; // on "b"
+                editor.selection = 2..2;
+                editor.delete_line(cx);
+                assert_eq!(editor.text, "a\nc\n");
+            });
+        });
+    }
+
+    /// `move_line` swaps the current line with the one above/below.
+    #[test]
+    fn move_line_swaps() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("a\nb\nc\n".to_string(), None, cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cursor = 2; // on "b"
+                editor.selection = 2..2;
+                editor.move_line(-1, cx);
+                assert_eq!(editor.text, "b\na\nc\n");
+                editor.move_line(1, cx);
+                assert_eq!(editor.text, "a\nb\nc\n");
+            });
+        });
+    }
+
+    /// `move_line` refuses to move the first line up or the last line down.
+    #[test]
+    fn move_line_respects_bounds() {
+        let mut cx = gpui::TestAppContext::single();
+        let editor = cx.new(|cx| Editor::new("a\nb\n".to_string(), None, cx));
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cursor = 0;
+                editor.selection = 0..0;
+                editor.move_line(-1, cx);
+                assert_eq!(editor.text, "a\nb\n");
+                editor.cursor = 2;
+                editor.selection = 2..2;
+                editor.move_line(1, cx);
+                assert_eq!(editor.text, "a\nb\n");
+            });
+        });
+    }
 
     /// `expand_or_shrink_selection` grows the selection to word boundaries and
     /// shrinks it back.
@@ -5037,7 +5057,6 @@ mod tests {
         });
     }
 
-
     /// Toggling a bookmark line flips membership in the editor's bookmark set;
     /// line 0 is a no-op.
     #[test]
@@ -5083,9 +5102,7 @@ mod tests {
     #[test]
     fn join_lines_merges_with_spaces() {
         let mut cx = gpui::TestAppContext::single();
-        let editor = cx.new(|cx| {
-            Editor::new("alpha\n  beta  \n\ngamma\n".to_string(), None, cx)
-        });
+        let editor = cx.new(|cx| Editor::new("alpha\n  beta  \n\ngamma\n".to_string(), None, cx));
         cx.update(|cx| {
             editor.update(cx, |editor, cx| {
                 editor.selection = 0..18; // covers alpha..gamma
@@ -5101,9 +5118,7 @@ mod tests {
     #[test]
     fn sort_lines_orders_and_skips_sorted() {
         let mut cx = gpui::TestAppContext::single();
-        let editor = cx.new(|cx| {
-            Editor::new("banana\napple\ncherry\n".to_string(), None, cx)
-        });
+        let editor = cx.new(|cx| Editor::new("banana\napple\ncherry\n".to_string(), None, cx));
         cx.update(|cx| {
             editor.update(cx, |editor, cx| {
                 editor.selection = 0..editor.text().len();
@@ -5119,9 +5134,7 @@ mod tests {
     #[test]
     fn trim_trailing_whitespace_trims_lines() {
         let mut cx = gpui::TestAppContext::single();
-        let editor = cx.new(|cx| {
-            Editor::new("a  \nb\t\nc\n".to_string(), None, cx)
-        });
+        let editor = cx.new(|cx| Editor::new("a  \nb\t\nc\n".to_string(), None, cx));
         cx.update(|cx| {
             editor.update(cx, |editor, cx| {
                 editor.trim_trailing_whitespace(cx);
@@ -5149,4 +5162,4 @@ mod tests {
             });
         });
     }
- }
+}

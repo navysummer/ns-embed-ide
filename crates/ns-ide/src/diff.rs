@@ -76,11 +76,7 @@ pub fn diff_lines(left: &str, right: &str) -> Vec<DiffOp> {
 /// while the diff remains correct (if coarser than the LCS path).
 fn coarse_diff(left: &[&str], right: &[&str]) -> Vec<DiffOp> {
     let mut ops = Vec::new();
-    let prefix = left
-        .iter()
-        .zip(right)
-        .take_while(|(a, b)| a == b)
-        .count();
+    let prefix = left.iter().zip(right).take_while(|(a, b)| a == b).count();
     let suffix = left[prefix..]
         .iter()
         .rev()

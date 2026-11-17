@@ -508,10 +508,247 @@ FLM 解析此前已接入 OpenOCD；本轮把 FLM 几何与项目 target 扩展�
 > 执行顺序：P1 → P31 已完成。迭代 16 新增 **P35（Git 分支操作与状态解析修正）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
 >
 
+## P36 · 时钟树图形化配置（F11）
+
+GAP_ANALYSIS E2 的「时钟树/引脚映射图（CubeMX 式）」缺口：既有外设配置模态只有列表勾选 + GPIO 引脚模式循环，无时钟树。本次新增独立时钟树模态。
+
+| 任务 | 状态 | 验收 |
+|---|---|---|
+| `ClockConfig`/`ClockSource` 模型 | ✅ | 源 HSI/HSE/PLL、HSE 频率、PLL ×2…×16、AHB/APB1/APB2 预分频；`sysclk_hz`/`ahb_hz`/`apb1_hz`/`apb2_hz`/`pll_hz` 实时计算 |
+| `stm32f1_clock_registers` | ✅ | `RCC->CR`（HSEON/PLLON）+ `RCC->CFGR`（SW、PLLMUL、HPRE、PPRE1/PPRE2 位域）；单测 `stm32f1_clock_registers_encodes_source_and_prescalers` |
+| 时钟树模态 | ✅ | 命令面板「时钟树配置（图形化，CubeMX 式）…」（`clock-tree-gui`）→ `clock-tree-modal`；`render_clock_tree` 可点击源/倍频/预分频，SYSCLK/APB 及示例外设时钟实时刷新 |
+| F4 扩展 | ✅ | `render_f4_clock_tree` + `stm32f4_clock_registers`（`RCC->PLLCFGR` 的 PLLM/PLLN/PLLP/PLLSRC/PLLQ）；`stm32f407vg.svd` 补齐 `PLLCFGR`/`CFGR`；`open_clock_tree` 按 `stm32f1*`/`stm32f4*` 选 `ClockFamily` |
+| 代码生成 | ✅ | 「生成代码」写 `src/clock_init.c`：`rcc_clock_init()` 发出真实 `RCC->CR`/`RCC->CFGR`（F4 另写 `RCC->PLLCFGR`）；无项目/无 RCC 目标如实提示 |
+| 单测 | ✅ | F1 4 项 + F4 3 项（ns-ide）+ F407 SVD 1 项（ns-device）；workspace **665 项全绿** |
+
+**已完成**：时钟树图形化配置（独立模态 + 真实 RCC 寄存器生成），覆盖 STM32F1 与 STM32F4。E2 剩余子项（引脚映射图）见 P37；E3 多核调试为长期增强。
+
+> 执行顺序：P1 → P36 已完成。迭代 17 新增 **P36（时钟树图形化配置）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+## P37 · 引脚映射图（F11，E2 剩余子项）
+
+GAP_ANALYSIS E2 剩余缺口：既有 GPIO 引脚图只循环 GPIO 模式，无法把 USART/SPI/I2C/TIMER
+外设功能按 AF 表分配到物理引脚。本次新增独立引脚映射模态（内置 STM32F103C6/C8/CB LQFP48
+中密度 AF 表——三者同封装同外设，仅 Flash/RAM 不同）。
+
+| 任务 | 状态 | 验收 |
+|---|---|---|
+| `PinSignal`/`PinMapDialog` 模型 | ✅ | GPIO 输出/输入、USART1/2/3、SPI1（NSS/SCK/MISO/MOSI）、I2C1（SCL/SDA）、TIM2（CH1/CH2）；PA0-15、PB0-15、PC13-15；`stm32f1_allowed_signals` 每引脚可用 AF（含重映射） |
+| 引脚映射模态 | ✅ | 命令面板「引脚映射图（外设功能 → 物理引脚，CubeMX 式）…」（`pin-map-gui`）→ `pin-map-modal`；`render_pin_map` 点击循环、家族着色、重映射红点、冲突消息 |
+| 冲突校验 | ✅ | `validate_pin_mapping` 拒绝重复信号与默认/重映射混用；`pin_map_validates_duplicate_and_mixed_remap` |
+| 寄存器打包 | ✅ | `stm32f1_pin_registers` 按物理引脚号填 16 位表打包 `CRL`/`CRH`；`stm32f1_pin_clocks` 计算 APB2/APB1；`stm32f1_remap_bits` 计算 MAPR |
+| 代码生成 | ✅ | 「生成代码」写 `src/pin_mapping.c`：`pin_mapping_init()` 写入 `GPIOx->CRL/CRH`、`RCC->APBxENR`、`AFIO->MAPR`；头注释带实际目标 |
+| 目标扩展 | ✅ | `stm32f103c6`（32KB/10KB）与 `stm32f103cb`（128KB/20KB）加入设备目录与向导目标列表；CubeMX `.ioc` 对应名正确映射；`pin_map_gui_opens_for_other_lqfp48_variants` |
+| 单测 | ✅ | 6 项（ns-ide 引脚映射）+ ns-device 目录变体 + ns-project CubeMX 映射；workspace **661 项全绿** |
+
+**已完成**：引脚映射图（独立模态 + 真实 GPIO/AFIO 寄存器生成），覆盖 STM32F103C6/C8/CB LQFP48
+中密度；其他 STM32 封装/系列 AF 表扩展为后续增强。
+
+## P38 · STM32F407 引脚映射图扩展（F11，E2 子项）
+
+STM32F4 与 F1 的 AF 机制不同：每个引脚经 `GPIOx->AFRL`/`AFRH` 独立选择 AF0-15，无 AFIO
+`MAPR` 重映射位。本次为 STM32F407（LQFP100）补齐同一模态的 F4 分支。
+
+| 任务 | 状态 | 验收 |
+|---|---|---|
+| F4 引脚模型 | ✅ | `PinMapFamily::F1/F4` + `F4PinSignal`（GPIO、USART1/2/3、SPI1/2、I2C1/2、TIM1-5、USB、CAN1、SWD，`af()` AF0-15）；`stm32f4_allowed_signals` PA0-15/PB0-15 |
+| F4 图形化界面 | ✅ | `render_pin_map` 按 `family` 分派到 `render_f4_pin_map`；点击循环、家族着色；无 AFIO 红点，提示 AFRL/AFRH |
+| F4 冲突校验 | ✅ | `validate_f4_pin_mapping` 拒绝重复信号与同外设 AF 号不一致 |
+| F4 寄存器打包 | ✅ | `stm32f4_port_registers`：`MODER`（2 位/引脚）+ `OTYPER`（I2C 开漏）+ `AFRL`/`AFRH`（4 位/引脚）；`stm32f4_pin_clock_bit` AHB1ENR 位 |
+| F4 代码生成 | ✅ | 「生成代码」写 `src/pin_mapping.c`：`pin_mapping_init()` 写入 `RCC->AHB1ENR`、`GPIOx->MODER`、`GPIOx->OTYPER`、`GPIOx->AFRL`、`GPIOx->AFRH` |
+| F4 SVD 补齐 | ✅ | `stm32f407vg.svd` 的 GPIOA/GPIOB 增加 `OTYPER`/`AFRL`/`AFRH`；`f407_gpio_exposes_af_registers_for_pin_mapping` |
+| 单测 | ✅ | `stm32f4_pin_mapping_packs_moder_afrl_afrh`、`f4_pin_map_validates_duplicate_and_af_consistency`、`pin_map_gui_opens_cycles_and_generates_f4`、`renders_f4_pin_map_modal_without_panicking` + ns-device 1 项；workspace **670 项全绿** |
+
+**已完成**：STM32F407 引脚映射图（真实 MODER/OTYPER/AFRL/AFRH 生成），复用独立引脚映射模态；
+其他 STM32 封装/系列 AF 表扩展为后续增强；GPIOA..GPIOE 端口补齐见 P39。
+
+> 执行顺序：P1 → P38 已完成。迭代 18 新增 **P37（引脚映射图 F103）**、迭代 19 新增 **P38（引脚映射图 F407）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+## P39 · STM32F407 引脚映射图端口补齐（F11，E2 子项）
+
+P38 的 F407 引脚映射只覆盖 GPIOA/GPIOB，但 LQFP100 实际还有 GPIOC/GPIOD/GPIOE。
+本次扩到全部五个端口，并补齐端口 C/D/E 常用外设 AF。
+
+| 任务 | 状态 | 验收 |
+|---|---|---|
+| 端口扩展 | ✅ | `for_f4_target` 的 `f4_ports` 扩到 **GPIOA..GPIOE（5 端口、每端口 16 引脚）**；`stm32f4_pin_clock_bit` 扩到 C/D/E（AHB1ENR 位 2/3/4） |
+| 新信号变体 | ✅ | `F4PinSignal` 新增 **SPI3**（AF6）、**USART6**（AF8）、**TIM8**（AF3）、**TIM1_CH4/CH1N/CH2N/CH3N/BKIN/ETR**（AF1）；`af()`/`group()`/`color()` 同步 |
+| C/D/E AF 表 | ✅ | `stm32f4_allowed_signals` 覆盖 PC（PC6-9 TIM3/TIM8/USART6、PC10-12 USART3/SPI3）、PD（PD0-1 CAN1、PD3-7 USART2、PD8-13 USART3、PD12-15 TIM4）、PE（PE7-15 TIM1）；PA15/PB3-5 补 SPI3 |
+| SVD 补齐 | ✅ | `stm32f407vg.svd` 新增 GPIOC/GPIOD/GPIOE（MODER/OTYPER/AFRL/AFRH）+ AHB1ENR GPIOCEN/GPIODEN/GPIOEEN |
+| 单测 | ✅ | `f4_pin_map_covers_ports_cde_af_table_and_code` + `pin_map_gui_opens_cycles_and_generates_f4`（5 端口/GPIOC 写）+ ns-device SVD 扩展；workspace **671 项全绿** |
+
+**已完成**：STM32F407（LQFP100）引脚映射图覆盖 GPIOA..GPIOE，生成真实 MODER/OTYPER/AFRL/AFRH
+与 AHB1ENR 时钟使能；SDIO/TIM9-11 外设补齐见 P40，I2C3/TIM12-14 见 P41，尚未建模的 DCMI/FMC 留作后续增强。
+
+> 执行顺序：P1 → P39 已完成。迭代 20 新增 **P39（引脚映射图 F407 端口补齐）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+## P40 · STM32F407 引脚映射图外设补齐（F11，E2 子项）
+
+P39 之后 F407 仍有常用外设未建模（SDIO、TIM9/10/11）。本次复用现有 F4 基础设施补齐，
+不新增端口、不新增外设族。
+
+| 任务 | 状态 | 验收 |
+|---|---|---|
+| 新信号变体 | ✅ | `F4PinSignal` 新增 **SDIO**（`SdioCmd`/`SdioCk`/`SdioD0-D7`，AF12）与 **TIM9/10/11**（`Tim9Ch1/Ch2`/`Tim10Ch1`/`Tim11Ch1`，AF3）；`af()`/`group()`/`color()` 同步 |
+| C/D AF 表 | ✅ | `stm32f4_allowed_signals` 覆盖 PC8-11（SDIO_D0-D3）、PC12（SDIO_CK）、PD2（SDIO_CMD）、PD6-9（SDIO_D4-D7）、PA2/PA3（TIM9）、PB8（TIM10）、PB9（TIM11） |
+| 校验与生成 | ✅ | 整条 10 线 SDIO 总线同属 AF12 组，`validate_f4_pin_mapping` 通过；生成真实 `GPIOC->AFRH`、`GPIOD->AFRL/AFRH` 与 AHB1ENR 位 |
+| 单测 | ✅ | `f4_pin_map_adds_sdio_and_tim9_11_af`（AF 号、允许信号、SDIO 全总线校验、MODER/AFRL/AFRH 精确值、AHB1ENR 位）；workspace **672 项全绿** |
+
+**已完成**：STM32F407 引脚映射图补 SDIO（AF12）与 TIM9/10/11（AF3），复用端口与代码生成路径；
+I2C3/TIM12-14 见 P41，尚未建模的 DCMI/FMC 留作后续增强。
+
+> 执行顺序：P1 → P40 已完成。迭代 21 新增 **P40（引脚映射图 F407 外设补齐 SDIO/TIM9-11）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+## P41 · STM32F407 引脚映射图外设补齐（续：I2C3 + TIM12-14）（F11，E2 子项）
+
+P40 之后 F407 仅剩的常规外设缺口是 I2C3 与通用定时器 TIM12/13/14；DCMI/FMC 无可靠引脚表，不建模。
+
+| 任务 | 状态 | 验收 |
+|---|---|---|
+| 新信号变体 | ✅ | `F4PinSignal` 新增 **I2C3**（`I2c3Scl`/`I2c3Sda`，AF4，开漏）与 **TIM12/13/14**（`Tim12Ch1`/`Tim12Ch2`、`Tim13Ch1`、`Tim14Ch1`，AF9）；`af()`/`group()`/`color()`/`mode()` 同步 |
+| AF 表 | ✅ | `stm32f4_allowed_signals` 覆盖 PA6（TIM13_CH1）、PA7（TIM14_CH1）、PA8（I2C3_SCL）、PB14（TIM12_CH1）、PB15（TIM12_CH2）、PC9（I2C3_SDA）、PC12（I2C3_SCL） |
+| 校验与生成 | ✅ | I2C3 经开漏路径写入 `GPIOC->OTYPER` 位 9/12，AF4 写入 `AFRH`（pin9=nibble1、pin12=nibble4）；TIM12-14 不置 OTYPER；`validate_f4_pin_mapping` 对组合校验通过 |
+| 单测 | ✅ | `f4_pin_map_adds_i2c3_and_tim12_13_14_af`（AF 号、开漏模式、允许信号表、组合校验、MODER/OTYPER/AFRL/AFRH 精确值）；workspace **673 项全绿** |
+
+**已完成**：STM32F407 引脚映射补 I2C3（AF4）与 TIM12/13/14（AF9）；DCMI/FMC 无可靠引脚表，留作后续增强。
+
+> 执行顺序：P1 → P41 已完成。迭代 22 新增 **P41（引脚映射图 F407 外设补齐 I2C3/TIM12-14）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+## P42 · STM32F407 引脚映射 GPIO 输入模式与 `OSPEEDR`/`PUPDR`（F11，E2 子项）
+
+P41 之后 F407 引脚映射只剩两类工程细节缺口：输入脚无法选择上拉/下拉，生成代码缺少 `OSPEEDR`（输出速度）
+与 `PUPDR`（上下拉），两者与 `MODER` 同属标准 GPIO 寄存器。
+
+| 任务 | 状态 | 验收 |
+|---|---|---|
+| 新信号变体 | ✅ | `F4PinSignal` 新增 `GpioInputPull`（输入·上拉）/`GpioInputPullDown`（输入·下拉）（`mode()` = `InputPull`/`InputPullDown`，`af()`=None、group=GPIO、独立颜色）；`stm32f4_allowed_signals` 全部引脚与回退分支统一追加，点击循环追加两档输入 |
+| 速度/上拉编码 | ✅ | `stm32f4_speed_bits`（输出/复用 = 高速 0b10、输入 = 2 MHz 默认档 0b00）、`stm32f4_pull_bits`（上拉 0b01、下拉 0b10），沿用 MODER 的 2 位/引脚布局 |
+| 寄存器打包 | ✅ | `stm32f4_port_registers` 返回 `MODER`/`OTYPER`/`OSPEEDR`/`PUPDR`/`AFRL`/`AFRH`；生成 `src/pin_mapping.c` 每端口新增真实 `GPIOx->OSPEEDR` 与 `GPIOx->PUPDR` 写入 |
+| SVD 补齐 | ✅ | `stm32f407vg.svd` 的 GPIOA..GPIOE 新增 `OSPEEDR`(0x8)/`PUPDR`(0xC) |
+| 单测 | ✅ | `f4_pin_map_packs_pupdr_and_ospeedr_for_input_and_af_pins`（AF/浮空/上拉/下拉/输出混合映射的 5 个寄存器精确值 + 生成代码字符串）+ 既有 F4 打包/GUI 生成测试补 `OSPEEDR`/`PUPDR` 断言；workspace **674 项全绿** |
+
+**已完成**：STM32F407 引脚映射支持 GPIO 输入上拉/下拉，生成代码携带完整 GPIO 配置（速度 + 上下拉）；
+DCMI/FMC 无可靠引脚表，留作后续增强。
+
+> 执行顺序：P1 → P42 已完成。迭代 23 新增 **P42（引脚映射图 F407 输入模式 + OSPEEDR/PUPDR）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+### P43 · 引脚映射方案保存/载入（迭代 24）
+
+P42 之后引脚映射图仍是**一次性**的：关掉模态或换项目就丢，重新配置要一遍一遍点引脚。
+本轮按仓库既有的 `.ns-ide/*.json` 持久化约定（`watch.json` / `register-snapshot.json` / `bookmarks.json` 同构）补齐方案的保存与恢复。
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| F4PIN-27 | 方案模型 | `PinMapScheme`（`target`/`family`）+ `PinMapSchemeEntry`（`port`/`pin`/`signal`），`serde` derive；信号以**人类可读 label** 存储，enum 顺序变动后仍可读 |
+| F4PIN-28 | 快照与恢复 | `PinMapDialog::to_scheme` 收集全部已分配引脚；`apply_scheme` 先清空全部引脚，再按 label 在 `stm32f1_allowed_signals`/`stm32f4_allowed_signals` 中查该引脚的合法信号，返回（应用数, 跳过数） |
+| F4PIN-29 | 保存 | `save_pin_map_scheme` 写 `.ns-ide/pin_map.json`（pretty JSON）；无项目/模态未打开/空分配/`validate_pin_mapping` 有冲突/建目录或写文件失败分别提示 |
+| F4PIN-30 | 载入 | `load_pin_map_scheme`：文件缺失、JSON 损坏、`target`/`family` 与当前目标不符分别提示；成功后模态显示「已恢复 N 个引脚，跳过 M 个非法项」 |
+| F4PIN-31 | 单测 | `pin_map_scheme_saves_and_loads_per_target`（F4 保存→清除→载入恢复 PA9/PB14、非法项跳过、损坏文件、目标不符拒绝、F1 同路径往返） |
+
+**验证**：`cargo fmt --all -- --check` 无输出；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **675 项全绿**。
+
+> 执行顺序：P1 → P43 已完成。迭代 24 新增 **P43（引脚映射方案保存/载入）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+### P44 · STM32F407 TIM2_CH3/CH4 补齐 + 外设分组一键分配/取消（迭代 25）
+
+P43 解决了方案的留存，但两个 F407 常规缺口仍在：TIM2 的 CH3/CH4（PA6/PA7，F407 常用 PWM 脚）在
+AF 表中缺失；分组配置（如整套 I2C1 或 TIM2）仍需逐个引脚点击，10 个引脚要点 10 次。
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| F4PIN-32 | AF 表补齐 | `F4PinSignal` 新增 `Tim2Ch3`（PA6）/`Tim2Ch4`（PA7）：`af()`=`Some(1)`、label `TIM2_CH3`/`TIM2_CH4`、`group()`=`TIM2`、颜色并入 TIMER 分支；`stm32f4_allowed_signals` 的 `('A',6)`/`('A',7)` 追加两变体，与既有 `Tim1Ch1N/Ch2N`、`Tim12Ch1/Ch2`、`Tim13Ch1`/`Tim14Ch1` 共存 |
+| F4PIN-33 | 分组枚举 | `PinMapDialog::group_names()`：按当前 AF 表信号顺序去重出分组名（`TIM2`/`I2C1`/…），排除 `GPIO`（无 AF、不参与分组） |
+| F4PIN-34 | 一键分配/取消 | `is_group_present(group)` 判断该组是否已分配；`toggle_group(group) -> (cleared, changed, untouched)`：已分配 → 整组清除；否则把该组每个引脚设为其合法信号，**已被其他功能占用的引脚不动**，同一信号（如 `I2c1Scl` 同时在 PB6/PB8）**只分配一次**（`used_f1`/`used_f4` 去重），重复项计入 `untouched` |
+| F4PIN-35 | 界面 | `render_pin_map_groups` 在引脚网格上方渲染分组 chip 行（`pin-map-group-<GROUP>`，已分配分组玉色高亮）+ 说明文案；`IdeApp::toggle_pin_map_group` 按结果写 `dialog.message` 与状态栏（占用/冲突如实报告） |
+| F4PIN-36 | 单测 | `f4_pin_map_group_toggle_assigns_and_clears`：I2C1 `(changed, untouched) == (2, 2)`（PB6/PB7 分配、PB8/PB9 因信号重复保持 `None`）；二次 toggle `cleared=true`、`changed=2`、`assigned_count()==0`；TIM2 `changed=5`（PA0/PA1/PA5=CH1_ETR/PA6=CH3/PA7=CH4）；TIM3 在 TIM2 之后 `changed=4`、`untouched=4`、PC9 保持 `None` |
+
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **676 项全绿**。
+
+> 执行顺序：P1 → P44 已完成。迭代 25 新增 **P44（F407 TIM2_CH3/CH4 + 外设分组一键分配/取消）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+### P45 · 引脚映射图导入 CubeMX `.ioc`（迭代 26）
+
+P43 的方案保存/载入只解决了**自己**方案的留存；用户手上最常见的既有配置来自 CubeMX——一份 `.ioc`
+有几十行引脚设置，逐个点要几十次。工程导入路径（`ns_project::import`）只取 `Mcu.Name`/`Mcu.IP`，不读引脚。
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| F4PIN-37 | 解析器 | 新增 `crates/ns-ide/src/pin_ioc.rs`（纯函数）：`IocPinEntry{port,pin,raw}` + `IocPinMap{mcu,entries}`；`parse()` 只认 `P?[A-EI]N.Signal<N>` / `PA9.Mode` 形态，`Mcu.PartNumber`/`Mcu.Name`/`Mcu.Pin` 取 MCU 名，`Mcu.IP_*`/`ProjectManager.*`/`PA1.Lock`/注释/段标题一律忽略；`split_pin` 要求前缀以 `P` 开头、端口限 A–E/I、引脚 ≤ 15 |
+| F4PIN-38 | 同引脚多记录 | 同一引脚的 `Mode` 与 `Signal0` 合并后取**最后一个非 `GPIO` 的值**（CubeMX 对 GPIO 脚同时写 `Signal0=GPIO` 与 `Mode=GPIO_Output`）；只有裸 `Signal0=GPIO` 时保留 `GPIO`，由 label 映射判为「不是分配」并计入跳过 |
+| F4PIN-39 | 命名映射 | `ioc_label()`：`SYS_JTMS-SWO`→`SWDIO`、`SYS_JTCK-SWCLK`→`SWCLK`、`USB_OTG_FS_DM/DP` 与 `USB_OTG_HS_DM/DP`→`USB_DM`/`USB_DP`、`GPIO_Output`→`GPIO 输出`、`GPIO_Input_Pu`/`Pd`→`GPIO 输入·上拉`/`输入·下拉`（F1 回退 `GPIO 输入`）；`USART1_TX`/`TIM2_CH3` 等复用名原样透传后仍须通过该引脚合法信号校验 |
+| F4PIN-40 | 应用 | `PinMapDialog::apply_ioc(mcu, entries)` 复用 `apply_scheme`（先清空再逐项恢复）；MCU 名不含当前目标时**整体拒绝**并保留原分配；导入后仍跑 `validate_pin_mapping`，重复信号如实报冲突 |
+| F4PIN-41 | 界面 | 按钮行新增**「导入 .ioc」**（`pin-map-import-ioc`，紧随「保存方案」「载入方案」）；`import_pin_map_ioc` 弹文件选择后走 `import_pin_map_ioc_text`；未开模态/读文件失败/选择器报错分别如实提示 |
+| F4PIN-42 | 单测 | `pin_ioc::tests`（3 项）+ `pin_map_imports_cubemx_ioc_and_reports_conflicts`（F407 导入 15 脚含 `SYS_JTMS-SWO`→SWDIO、`ETH_MII_CRS` 与裸 `GPIO` 各跳过 1 项；F103 `.ioc` 被拒且原分配不动；PB6/PB8 重复信号报冲突；F1 家族同路径导入 4 脚） |
+
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **680 项全绿**。
+
+> 执行顺序：P1 → P45 已完成。迭代 26 新增 **P45（引脚映射图导入 CubeMX `.ioc`）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+### P46 · 引脚映射图导出 CubeMX `.ioc` + 导入格式校正（迭代 27）
+
+P45 的导入器只认 `PA9.Signal0=…`/`PA0.Mode=…` 兼容形态，但 CubeMX 实际写 `Mode.PA9=GPIO` /
+`Signal.PA9=USART1_TX` / `SignalMode.PA9=AS` / `Pull.PA9=PUp`（字段名在点前）；且导出方向完全没有。
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| F4PIN-43 | 原生格式解析 | `pin_ioc::parse` 双形态：原生 `Signal`/`Mode`/`SignalMode`/`Pull` 前缀与兼容 `PA9.Signal<N>`/`PA9.Mode` 同源合并进 `PinFields`；取值优先级外设信号 > GPIO 模式 > `SignalMode`/`Pull` 合成（`RegularOutput`→`GPIO_Output`、`Input`→`GPIO_Input`、`Pull=PUp/PDown`→`GPIO_Input_Pu/Pd`）；裸 `GPIO` 解析阶段剔除 |
+| F4PIN-44 | MCU 名 | `parse` 增认 `McuName`；`mcu_identity(target)`→`(McuType,McuPackage,McuName)`；`pin_name(port,pin)`→`PA9`/`PC13` |
+| F4PIN-45 | 导出 | `PinMapDialog::to_ioc()` 写 CubeMX 风格 `.ioc` 引脚段；`ioc_export_signal`/`ioc_export_pull` 逆映射（`SWDIO`→`SYS_JTMS-SWO`、`USB_DM`→`USB_OTG_FS_DM`、`GPIO 输出`→`RegularOutput`、输入·上拉/下拉→`Pull=PUp/PDown`）；`export_pin_map_ioc` 写项目根 `pin_map.ioc`，空分配/冲突/未知目标分别如实拒绝 |
+| F4PIN-46 | 界面 | 按钮行新增「导出 .ioc」（`pin-map-export-ioc`）；模态渲染测试覆盖新按钮 |
+| F4PIN-47 | 单测 | `parses_native_cubemx_pin_lines`（原生 5 引脚、`SignalMode`/`Pull` 合成、`Locked`/`Pull`-only 不建条目）+ `pin_map_exports_ioc_and_roundtrips_through_import`（导出→清空→导入无损恢复 4 脚、空分配拒绝且不写文件）；既有导入用例夹具改原生格式 |
+
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **682 项全绿**。
+
+> 执行顺序：P1 → P46 已完成。迭代 27 新增 **P46（导出 `.ioc` + 导入格式校正）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+### P47 · STM32F407 引脚映射生成代码外设时钟使能（迭代 28）
+
+P44 起 F407 生成代码只写 GPIO 端口的 `AHB1ENR`；复用脚对应的外设（USART/TIM/I2C/SPI/SDIO/CAN/USB）
+没有使能自己的时钟，生成的 `pin_mapping_init()` 在目标上不工作。
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| F4PIN-48 | 时钟位汇总 | `stm32f4_peripheral_clocks(dialog) -> (ahb1, apb1, apb2)` 按已分配信号的 `group()` 汇总：APB2（USART1 bit4、USART6 bit5、SPI1 bit12、TIM1 bit0、TIM8 bit1、TIM9-11 bit16-18、SDIO bit11）、APB1（USART2/3 bit17/18、SPI2/3 bit14/15、I2C1/2/3 bit21/22/23、TIM2-5 bit0-3、TIM12-14 bit6-8、CAN1 bit25）、AHB1（USB_OTG_FS bit7）；GPIO 与 SWD 不参与 |
+| F4PIN-49 | 代码输出 | 每端口 `RCC->AHB1ENR |= (GPIO 位 | USB 位)`，循环后按需写 `RCC->APB1ENR |= …` / `RCC->APB2ENR |= …`（仅非零才发），头注释同步 |
+| F4PIN-50 | 单测 | `f4_pin_mapping_code_enables_peripheral_clocks`：USART1+SDIO→`APB2ENR |= 0x00000810`、I2C1+TIM2→`APB1ENR |= 0x00200001`、GPIOA+USB→`AHB1ENR |= 0x00000081`、SWD 不触发时钟 |
+
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **683 项全绿**。
+
+> 执行顺序：P1 → P47 已完成。迭代 28 新增 **P47（F407 生成代码外设时钟使能）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+### P48 · 引脚映射生成代码自包含寄存器定义（迭代 29）
+
+§1f/§1h 起生成的 `src/pin_mapping.c` 引用 `GPIOA->…`/`RCC->…`/`AFIO->…`，但从未定义寄存器视图或
+基址——文件无法独立编译；§1q 补 `APB1ENR`/`APB2ENR` 后未定义引用更多。
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| F4PIN-51 | F1 前奏 | `STM32F1_REGISTER_PRELUDE`：`ns_gpio_f1_t`/`ns_afio_t`/`ns_rcc_f1_t`（APB2ENR@0x18/APB1ENR@0x1C），`#ifndef` 保护 `GPIOA/B/C`/`RCC`/`AFIO` 基址宏 |
+| F4PIN-52 | F4 前奏 | `STM32F4_REGISTER_PRELUDE`：`ns_gpio_t`/`ns_rcc_t`（AHB1ENR@0x20/APB1ENR@0x28/APB2ENR@0x2C），`#ifndef` 保护 `GPIOA..GPIOE`/`RCC` 基址宏 |
+| F4PIN-53 | 接入 | F1/F4 `pin_mapping_code` 在 `#include <stdint.h>` 后注入前奏；`ns_` 前缀避免 CMSIS 撞名，`#ifndef` 让已含厂商头的项目由厂商宏获胜，未含时独立可编译 |
+| F4PIN-54 | 单测 | `pin_mapping_code_is_self_contained`：F1 含 `ns_gpio_f1_t`/`ns_rcc_f1_t`/`#define AFIO`/`#ifndef GPIOA`；F4 含 `ns_gpio_t`/`ns_rcc_t`/`#define GPIOE`/`#ifndef RCC` |
+
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **684 项全绿**。
+
+> 执行顺序：P1 → P48 已完成。迭代 29 新增 **P48（生成代码自包含寄存器定义）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+### P49 · 时钟树生成代码自包含 RCC 定义（迭代 30）
+
+§1e/§1g 的 `generate_clock_tree_code` 生成 `src/clock_init.c`，引用 `RCC->CR`/`RCC->PLLCFGR`/`RCC->CFGR`
+却无寄存器定义——与 P48 修好的 `pin_mapping.c` 同缺口，文件无法独立编译。
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| F4PIN-55 | F1 前奏 | `STM32F1_CLOCK_PRELUDE`：`ns_rcc_f1_t`（APB2ENR@0x18/APB1ENR@0x1C）＋ `#ifndef RCC`（0x40021000） |
+| F4PIN-56 | F4 前奏 | `STM32F4_CLOCK_PRELUDE`：`ns_rcc_t`（PLLCFGR@0x04/APB1ENR@0x28/APB2ENR@0x2C）＋ `#ifndef RCC`（0x40023800），与 `pin_mapping.c` 布局一致 |
+| F4PIN-57 | 接入 | `generate_clock_tree_code` 在 `#include <stdint.h>` 后按家族注入前奏；`ns_` 前缀避免 CMSIS 撞名，`#ifndef` 让已含厂商头的项目由厂商宏获胜 |
+| F4PIN-58 | 单测 | 既有 F1/F4 时钟生成测试补断言 `ns_rcc_f1_t`/`ns_rcc_t` 与 `#ifndef RCC` |
+
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **684 项全绿**。
+
+> 执行顺序：P1 → P49 已完成。迭代 30 新增 **P49（时钟树生成代码自包含 RCC）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
 1. `cargo check --workspace` 0 警告 0 错误；禁止 `#[allow(dead_code)]` 等掩盖。
 2. 功能完整实现，禁止 `todo!()`/占位/假数据/「仅演示路径」。
 3. 提交前本机实际运行验证关键路径。
 4. 文档与代码同步。
-
-
-
