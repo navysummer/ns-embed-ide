@@ -57,7 +57,6 @@ impl SpiCpolCpha {
             (false, true) => Self::Mode1,
             (true, false) => Self::Mode2,
             (true, true) => Self::Mode3,
-            _ => unreachable!(),
         }
     }
 
@@ -392,7 +391,9 @@ mod tests {
     fn spi_read_status_after_write() {
         let spi = SpiPeripheral::new(0x4001_3000);
         let sr = spi.read_reg(0x08).unwrap();
-        assert_eq!(sr & 0x03, 0x03); // TXE=1, RXNE=0
+        // Status bits: OVR=bit5, BSY=bit6, TXE=bit1, RXNE=bit0
+        assert_eq!(sr & (1 << 1), 1 << 1); // TXE should be set
+        assert_eq!(sr & 1, 0); // RXNE should be clear
     }
 
     #[test]
@@ -450,8 +451,8 @@ mod tests {
     fn spi_contains_range() {
         let spi = SpiPeripheral::new(0x4001_3000);
         assert!(spi.contains(0x4001_3000));
-        assert!(spi.contains(0x4001_300C));
-        assert!(!spi.contains(0x4001_300F));
+        assert!(spi.contains(0x4001_300C)); // SS_VAL register at offset 0x0C
+        assert!(!spi.contains(0x4001_3010)); // Just past end
         assert!(!spi.contains(0x4001_2FFF));
     }
 

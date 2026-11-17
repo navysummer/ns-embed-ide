@@ -2397,8 +2397,7 @@ fn pin_signal_is_remap(signal: PinSignal, port: char, pin: usize) -> bool {
         (PinSignal::Usart1Tx | PinSignal::Usart1Rx, 'B', 6..=7) => true,
         (PinSignal::Usart3Tx | PinSignal::Usart3Rx, 'C', 10..=11) => true,
         // TIM2 partial remap: CH1_ETR → PA15, CH2 → PB3, CH3/CH4 → PB10/PB11.
-        (PinSignal::Tim2Ch1Etr, 'A', 15)
-        | (PinSignal::Tim2Ch2, 'B', 3) => true,
+        (PinSignal::Tim2Ch1Etr, 'A', 15) | (PinSignal::Tim2Ch2, 'B', 3) => true,
         // TIM3 partial remap: CH1/CH2 → PB4/PB5.
         (PinSignal::Tim3Ch1 | PinSignal::Tim3Ch2, 'B', 4..=5) => true,
         // CAN1 remap: RX/TX → PB8/PB9.
@@ -2603,26 +2602,32 @@ fn stm32f1_pin_clocks(dialog: &PinMapDialog) -> (u32, u32) {
                 | PinSignal::Usart3Ck
                 | PinSignal::Usart3Cts
                 | PinSignal::Usart3Rts => apb1 |= 1 << 18, // USART3EN
-                PinSignal::I2c1Scl | PinSignal::I2c1Sda => apb1 |= 1 << 21,   // I2C1EN
+                PinSignal::I2c1Scl | PinSignal::I2c1Sda => apb1 |= 1 << 21, // I2C1EN
                 PinSignal::Tim2Ch1
                 | PinSignal::Tim2Ch2
                 | PinSignal::Tim2Ch3
                 | PinSignal::Tim2Ch4
-                | PinSignal::Tim2Ch1Etr => apb1 |= 1 << 0,    // TIM2EN
+                | PinSignal::Tim2Ch1Etr => apb1 |= 1 << 0, // TIM2EN
                 PinSignal::Tim1Ch1
                 | PinSignal::Tim1Ch2
                 | PinSignal::Tim1Ch3
                 | PinSignal::Tim1Ch4
                 | PinSignal::Tim1Bkin
-                | PinSignal::Tim1Etr => apb2 |= 1 << 11,   // TIM1EN
-                PinSignal::Tim3Ch1 | PinSignal::Tim3Ch2 | PinSignal::Tim3Ch3 | PinSignal::Tim3Ch4 => {
+                | PinSignal::Tim1Etr => apb2 |= 1 << 11, // TIM1EN
+                PinSignal::Tim3Ch1
+                | PinSignal::Tim3Ch2
+                | PinSignal::Tim3Ch3
+                | PinSignal::Tim3Ch4 => {
                     apb1 |= 1 << 1; // TIM3EN
                 }
-                PinSignal::Tim4Ch1 | PinSignal::Tim4Ch2 | PinSignal::Tim4Ch3 | PinSignal::Tim4Ch4 => {
+                PinSignal::Tim4Ch1
+                | PinSignal::Tim4Ch2
+                | PinSignal::Tim4Ch3
+                | PinSignal::Tim4Ch4 => {
                     apb1 |= 1 << 2; // TIM4EN
                 }
-                PinSignal::Can1Rx | PinSignal::Can1Tx => apb1 |= 1 << 25,    // CAN1EN
-                PinSignal::UsbDm | PinSignal::UsbDp => apb1 |= 1 << 23,      // USBFSEN / USBIP
+                PinSignal::Can1Rx | PinSignal::Can1Tx => apb1 |= 1 << 25, // CAN1EN
+                PinSignal::UsbDm | PinSignal::UsbDp => apb1 |= 1 << 23,   // USBFSEN / USBIP
             }
         }
     }

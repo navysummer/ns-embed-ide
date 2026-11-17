@@ -30,6 +30,8 @@ pub mod rx;
 pub mod rl78;
 pub mod spi;
 
+pub use spi::{SpiPeripheral, SpiCpolCpha, SpiPrescaler};
+
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
 pub const MEMORY_SIZE: usize = 64 * 1024; // 64 KiB simulated RAM
@@ -215,6 +217,8 @@ pub struct VirtualPeripherals {
     pub watchdog: Option<Watchdog>,
     /// Pending interrupt lines asserted by peripherals.
     pub irq_pending: [bool; 16],
+    /// Registered SPI peripherals for memory-mapped access.
+    pub spi_peripherals: Vec<SpiPeripheral>,
 }
 
 /// A virtual watchdog timer. When enabled, it counts core cycles; if the
@@ -323,6 +327,7 @@ impl VirtualPeripherals {
             timers: Vec::new(),
             watchdog: None,
             irq_pending: [false; 16],
+            spi_peripherals: Vec::new(),
         }
     }
 }
@@ -2413,6 +2418,7 @@ impl Simulator {
         self.gpio_write(address);
         self.timer_write(address);
         self.watchdog_write(address);
+        self.spi_write(address);
     }
 
     /// Handle watchdog register writes: base+0x00 feed (0xAA55 resets the
@@ -2484,6 +2490,18 @@ impl Simulator {
         }
     }
 
+    /// Route writes to registered SPI peripherals.
+    fn spi_write(&mut self, address: u32) {
+        let value = self.read_u32(address);
+        for spi in self.peripherals.spi_peripherals.iter_mut() {
+            if spi.contains(address) {
+                let offset = spi.offset(address);
+                spi.write_reg(offset, value);
+                return;
+            }
+        }
+    }
+
     /// Handle timer register writes (CR, PSC, CNT, ARR, SR).
     fn timer_write(&mut self, address: u32) {
         let value = self.read_u32(address);
@@ -2515,6 +2533,12 @@ impl Simulator {
                 0x08 => self.peripherals.gpio_dir,
                 _ => 0,
             });
+        }
+        for spi in &self.peripherals.spi_peripherals {
+            if spi.contains(address) {
+                let offset = spi.offset(address);
+                return spi.read_reg(offset);
+            }
         }
         for timer in &self.peripherals.timers {
             let offset = address.wrapping_sub(timer.base);
