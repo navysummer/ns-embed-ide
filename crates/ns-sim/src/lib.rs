@@ -3819,6 +3819,36 @@ impl Simulator {
         Ok(path.to_string())
     }
     
+    /// Search memory for a byte pattern starting at `start`.
+    /// Returns all matching addresses (0-indexed, physical address space).
+    /// Uses naive O(n*m) substring search; suitable for typical embedded RAM sizes.
+    pub fn memsearch(&self, start: u64, length: u64, pattern: &[u8]) -> Vec<u64> {
+        if pattern.is_empty() || length == 0 {
+            return Vec::new();
+        }
+        let mut matches = Vec::new();
+        // Read up to `length` bytes from `start` and search for pattern
+        for offset in 0..length.saturating_sub(pattern.len() as u64 + 1) {
+            let addr = start + offset;
+            // Try to read each byte of pattern at consecutive addresses
+            let mut found = true;
+            for (i, &pat_byte) in pattern.iter().enumerate() {
+                let read_addr = addr + i as u64;
+                match self.read_u8(read_addr as u32) {
+                    val if val == pat_byte => continue,
+                    _ => {
+                        found = false;
+                        break;
+                    }
+                }
+            }
+            if found {
+                matches.push(addr);
+            }
+        }
+        matches
+    }
+
     /// Load simulator state from a previously saved JSON file.
     pub fn load_snapshot(&mut self, path: &str) -> Result<(), String> {
         let content = std::fs::read_to_string(path)
