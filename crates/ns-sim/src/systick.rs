@@ -240,11 +240,13 @@ mod tests {
     #[test]
     fn systick_contains_range() {
         let systick = SysTickPeripheral::new(0xE000_E010);
-        assert!(systick.contains(0xE000_E010));
-        assert!(systick.contains(0xE000_E018)); // CVR at offset 0x0C
-        assert!(systick.contains(0xE000_E01C)); // CALIB at offset 0x0C (valid)
-        assert!(!systick.contains(0xE000_E01D));
-        assert!(!systick.contains(0xE000_E00F));
+        // Valid range: [0xE000_E010, 0xE000_E020)
+        assert!(systick.contains(0xE000_E010));  // SR offset 0x00
+        assert!(systick.contains(0xE000_E014));  // VR offset 0x04
+        assert!(systick.contains(0xE000_E018));  // AR offset 0x08
+        assert!(systick.contains(0xE000_E01C));  // CALIB offset 0x0C
+        assert!(!systick.contains(0xE000_E020)); // just past end
+        assert!(!systick.contains(0xE000_E00F)); // before base
     }
 
     #[test]
