@@ -237,6 +237,16 @@ impl AdcPeripheral {
             self.channels[channel] = value;
         }
     }
+    
+    /// Set the IRQ line for this ADC peripheral.
+    pub fn set_irq_line(&mut self, line: i32) {
+        self.irq_line = line;
+    }
+    
+    /// Get the configured IRQ line.
+    pub fn get_irq_line(&self) -> i32 {
+        self.irq_line
+    }
 
     /// Get the maximum representable value for current resolution.
     pub fn max_value(&self) -> u32 {
@@ -487,5 +497,15 @@ mod tests {
         // Should be approximately 80% of 4095 (12-bit max)
         // That's about 3276
         assert_eq!(adc.channels[0], 0xCCCC);
+    }
+
+
+    #[test]
+    fn adc_irq_line_configuration() {
+        let mut adc = AdcPeripheral::new(0x4001_2000, 8);
+        assert_eq!(adc.get_irq_line(), -1); // default
+        
+        adc.set_irq_line(7);
+        assert_eq!(adc.get_irq_line(), 7);
     }
 }
