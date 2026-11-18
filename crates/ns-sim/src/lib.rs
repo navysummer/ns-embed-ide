@@ -1813,6 +1813,16 @@ impl Simulator {
                 }
             }
         }
+        
+        // Poll DMA channels for transfer completion interrupts
+        if let Some(dma) = self.peripherals.dma.as_ref() {
+            for ch in &dma.channels {
+                if ch.en && ch.is_tc_with_irq() && ch.irq_line >= 0 
+                   && ch.irq_line < self.peripherals.irq_pending.len() {
+                    self.peripherals.irq_pending[ch.irq_line] = true;
+                }
+            }
+        }
     }
 
     /// Run until a breakpoint, halt, or `max_steps` instructions.
