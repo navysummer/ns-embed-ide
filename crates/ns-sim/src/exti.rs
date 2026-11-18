@@ -277,3 +277,37 @@ mod tests {
         assert_eq!(exti.read_reg(0x08), Some(0xFF));
     }
 }
+
+    #[test]
+    fn exti_sample_with_no_change() {
+        let mut exti = ExtiController::new(0x4001_0000);
+        exti.configure_line(7, ExtiEdge::Rising, true);
+        
+        // No change on pin 7
+        let triggered = exti.sample([false, false, false, false, false, false, false, false, 
+                                     false, false, false, false, false, false, false, false]);
+        assert!(triggered.is_empty());
+        
+        // Change other pins shouldn't trigger line 7
+        let triggered = exti.sample([true, false, false, false, false, false, false, false, 
+                                     false, false, false, false, false, false, false, false]);
+        assert!(triggered.is_empty());
+    }
+
+    #[test]
+    fn exti_multiple_triggers() {
+        let mut exti = ExtiController::new(0x4001_0000);
+        exti.configure_line(0, ExtiEdge::Both, true);
+        exti.configure_line(5, ExtiEdge::Rising, true);
+        exti.configure_line(10, ExtiEdge::Falling, true);
+        
+        // Initial state: all low
+        exti.pin_states = [false; 16];
+        
+        // Rising edges on 0 and 5, falling edge on 10 (from high)
+        let triggered = exti.sample([true, false, false, false, false, true, false, false, 
+                                     false, false, false, false, false, false, false, false]);
+        assert_eq!(triggered.len(), 2);
+        assert!(triggered.contains(&0));
+        assert!(triggered.contains(&5));
+    }
