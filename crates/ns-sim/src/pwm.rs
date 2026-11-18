@@ -182,21 +182,15 @@ impl PwmPeripheral {
 
     pub fn read_reg(&self, offset: u32) -> Option<u32> {
         match offset {
-            0x00 => 0, // DIER
-            0x04 => 0, // SR
-            0x10 => {
-                // CNT - show first channel's counter for simplicity
-                self.channels.first().map(|c| c.cnt).unwrap_or(0)
-            }
-            0x14 => self.prescaler,
-            0x18 => {
-                // ARR - shared among channels
-                self.channels.first().map(|c| c.arr).unwrap_or(0xFFFF)
-            }
-            0x1C => self.channels.get(0).map(|c| c.ccr).unwrap_or(0),
-            0x20 => self.channels.get(1).map(|c| c.ccr).unwrap_or(0),
-            0x24 => self.channels.get(2).map(|c| c.ccr).unwrap_or(0),
-            0x28 => self.channels.get(3).map(|c| c.ccr).unwrap_or(0),
+            0x00 => Some(0), // DIER
+            0x04 => Some(0), // SR
+            0x10 => Some(self.channels.first().map(|c| c.cnt).unwrap_or(0)),
+            0x14 => Some(self.prescaler),
+            0x18 => Some(self.channels.first().map(|c| c.arr).unwrap_or(0xFFFF)),
+            0x1C => Some(self.channels.get(0).map(|c| c.ccr).unwrap_or(0)),
+            0x20 => Some(self.channels.get(1).map(|c| c.ccr).unwrap_or(0)),
+            0x24 => Some(self.channels.get(2).map(|c| c.ccr).unwrap_or(0)),
+            0x28 => Some(self.channels.get(3).map(|c| c.ccr).unwrap_or(0)),
             _ => None,
         }
     }

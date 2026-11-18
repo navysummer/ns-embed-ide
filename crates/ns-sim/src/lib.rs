@@ -32,11 +32,13 @@ pub mod spi;
 pub mod adc;
 pub mod i2c;
 pub mod pwm;
+pub mod rtc;
 
 pub use spi::{SpiPeripheral, SpiCpolCpha, SpiPrescaler};
 pub use adc::{AdcPeripheral, AdcResolution};
 pub use i2c::{I2cPeripheral, I2cSpeed};
 pub use pwm::{PwmPeripheral, PwmAlignment, PwmPolarity};
+pub use rtc::{RtcPeripheral, RtcTime};
 
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
@@ -231,6 +233,8 @@ pub struct VirtualPeripherals {
     pub i2c_peripherals: Vec<I2cPeripheral>,
     /// Registered PWM peripherals for memory-mapped access.
     pub pwm_peripherals: Vec<PwmPeripheral>,
+    /// Registered RTC peripheral.
+    pub rtc: Option<RtcPeripheral>,
 }
 
 /// A virtual watchdog timer. When enabled, it counts core cycles; if the
@@ -343,6 +347,7 @@ impl VirtualPeripherals {
             adc_peripherals: Vec::new(),
             i2c_peripherals: Vec::new(),
             pwm_peripherals: Vec::new(),
+            rtc: None,
         }
     }
 }
@@ -2437,6 +2442,13 @@ impl Simulator {
         self.adc_write(address);
         self.i2c_write(address);
         self.pwm_write(address);
+        if let Some(rtc) = self.peripherals.rtc.as_mut() {
+            if rtc.contains(address) {
+                let value = self.read_u32(address);
+                let offset = rtc.offset(address);
+                rtc.write_reg(offset, value);
+            }
+        }
     }
 
     /// Handle watchdog register writes: base+0x00 feed (0xAA55 resets the
@@ -2610,6 +2622,12 @@ impl Simulator {
             if pwm.contains(address) {
                 let offset = pwm.offset(address);
                 return pwm.read_reg(offset);
+            }
+        }
+        if let Some(rtc) = &self.peripherals.rtc {
+            if rtc.contains(address) {
+                let offset = rtc.offset(address);
+                return rtc.read_reg(offset);
             }
         }
         for timer in &self.peripherals.timers {

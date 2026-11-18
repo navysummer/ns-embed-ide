@@ -164,7 +164,7 @@ impl Default for I2cSr2Flags {
 }
 
 /// Control register 1 fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct I2cCr1 {
     pub pe: bool,     // Peripheral enable
     pub swrst: bool,  // Software reset
@@ -173,10 +173,10 @@ pub struct I2cCr1 {
     pub ack: bool,    // ACK enable
     pub scle: bool,   // Clock stretch enable
     pub enbuf: bool,  // Buffer enable
-    pub_enerr: bool,  // Error interrupt enable
-    pub_entie: bool,  // ERR interrupt enable
-    pub_enitiec: bool,// ITIC enable
-    pub_enitiss: bool,// ITIS enable
+    pub enerr: bool,  // Error interrupt enable
+    pub entie: bool,  // ERR interrupt enable
+    pub enic: bool,// ITIC enable
+    pub enis: bool,// ITIS enable
 }
 
 impl Default for I2cCr1 {
@@ -207,7 +207,7 @@ impl I2cCr1 {
         if self.ack { reg |= 1 << 10; }
         if self.scle { reg |= 1 << 14; }
         if self.enbuf { reg |= 1 << 15; }
-        if self.enerr { reg |= 1 << 9; }
+        // err bit if self._enerr { reg |= 1 << 9; }
         if self.entie { reg |= 1 << 8; }
         if self.enic { reg |= 1 << 7; }
         if self.enis { reg |= 1 << 6; }
