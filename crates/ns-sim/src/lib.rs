@@ -30,9 +30,13 @@ pub mod rx;
 pub mod rl78;
 pub mod spi;
 pub mod adc;
+pub mod i2c;
+pub mod pwm;
 
 pub use spi::{SpiPeripheral, SpiCpolCpha, SpiPrescaler};
 pub use adc::{AdcPeripheral, AdcResolution};
+pub use i2c::{I2cPeripheral, I2cSpeed};
+pub use pwm::{PwmPeripheral, PwmAlignment, PwmPolarity};
 
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
@@ -223,6 +227,10 @@ pub struct VirtualPeripherals {
     pub spi_peripherals: Vec<SpiPeripheral>,
     /// Registered ADC peripherals for memory-mapped access.
     pub adc_peripherals: Vec<AdcPeripheral>,
+    /// Registered I2C peripherals for memory-mapped access.
+    pub i2c_peripherals: Vec<I2cPeripheral>,
+    /// Registered PWM peripherals for memory-mapped access.
+    pub pwm_peripherals: Vec<PwmPeripheral>,
 }
 
 /// A virtual watchdog timer. When enabled, it counts core cycles; if the
@@ -333,6 +341,8 @@ impl VirtualPeripherals {
             irq_pending: [false; 16],
             spi_peripherals: Vec::new(),
             adc_peripherals: Vec::new(),
+            i2c_peripherals: Vec::new(),
+            pwm_peripherals: Vec::new(),
         }
     }
 }
@@ -2425,6 +2435,8 @@ impl Simulator {
         self.watchdog_write(address);
         self.spi_write(address);
         self.adc_write(address);
+        self.i2c_write(address);
+        self.pwm_write(address);
     }
 
     /// Handle watchdog register writes: base+0x00 feed (0xAA55 resets the
@@ -2520,6 +2532,30 @@ impl Simulator {
         }
     }
 
+    /// Route writes to registered I2C peripherals.
+    fn i2c_write(&mut self, address: u32) {
+        let value = self.read_u32(address);
+        for i2c in self.peripherals.i2c_peripherals.iter_mut() {
+            if i2c.contains(address) {
+                let offset = i2c.offset(address);
+                i2c.write_reg(offset, value);
+                return;
+            }
+        }
+    }
+
+    /// Route writes to registered PWM peripherals.
+    fn pwm_write(&mut self, address: u32) {
+        let value = self.read_u32(address);
+        for pwm in self.peripherals.pwm_peripherals.iter_mut() {
+            if pwm.contains(address) {
+                let offset = pwm.offset(address);
+                pwm.write_reg(offset, value);
+                return;
+            }
+        }
+    }
+
     /// Handle timer register writes (CR, PSC, CNT, ARR, SR).
     fn timer_write(&mut self, address: u32) {
         let value = self.read_u32(address);
@@ -2562,6 +2598,18 @@ impl Simulator {
             if adc.contains(address) {
                 let offset = adc.offset(address);
                 return adc.read_reg(offset);
+            }
+        }
+        for i2c in &self.peripherals.i2c_peripherals {
+            if i2c.contains(address) {
+                let offset = i2c.offset(address);
+                return i2c.read_reg(offset);
+            }
+        }
+        for pwm in &self.peripherals.pwm_peripherals {
+            if pwm.contains(address) {
+                let offset = pwm.offset(address);
+                return pwm.read_reg(offset);
             }
         }
         for timer in &self.peripherals.timers {
