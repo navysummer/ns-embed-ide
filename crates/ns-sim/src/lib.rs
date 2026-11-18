@@ -35,6 +35,7 @@ pub mod pwm;
 pub mod rtc;
 pub mod dma;
 pub mod uart;
+pub mod flash;
 pub mod systick;
 
 pub use spi::{SpiPeripheral, SpiCpolCpha, SpiPrescaler};
@@ -45,6 +46,7 @@ pub use rtc::{RtcPeripheral, RtcTime};
 pub use systick::SysTickPeripheral;
 pub use dma::DmaPeripheral;
 pub use uart::UartPeripheral;
+pub use flash::FlashPeripheral;
 
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
@@ -231,6 +233,10 @@ pub struct VirtualPeripherals {
     pub watchdog: Option<Watchdog>,
     /// Pending interrupt lines asserted by peripherals.
     pub irq_pending: [bool; 16],
+    /// NVIC-style interrupt priority (lower number = higher priority).
+    pub irq_priority: [u8; 16],
+    /// Currently servicing interrupt line (-1 = none).
+    pub irq_active: i32,
     /// Registered SPI peripherals for memory-mapped access.
     pub spi_peripherals: Vec<SpiPeripheral>,
     /// Registered ADC peripherals for memory-mapped access.
@@ -247,6 +253,8 @@ pub struct VirtualPeripherals {
     pub dma: Option<DmaPeripheral>,
     /// UART serial port peripheral.
     pub uart: Option<UartPeripheral>,
+    /// Flash memory region (optional, typically at fixed address).
+    pub flash: Option<FlashPeripheral>,
 }
 
 /// A virtual watchdog timer. When enabled, it counts core cycles; if the
@@ -355,6 +363,8 @@ impl VirtualPeripherals {
             timers: Vec::new(),
             watchdog: None,
             irq_pending: [false; 16],
+            irq_priority: [0xFF; 16],
+            irq_active: -1,
             spi_peripherals: Vec::new(),
             adc_peripherals: Vec::new(),
             i2c_peripherals: Vec::new(),
@@ -363,6 +373,7 @@ impl VirtualPeripherals {
             systick: SysTickPeripheral::new(0xE000_E010),
             dma: None,
             uart: None,
+            flash: None,
         }
     }
 }
