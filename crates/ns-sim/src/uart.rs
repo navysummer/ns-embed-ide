@@ -142,6 +142,16 @@ pub struct UartPeripheral {
     pub rx_buffer: Vec<u8>,
     /// Transmitted bytes
     pub tx_buffer: Vec<u8>,
+    /// RX FIFO depth (max 16 bytes)
+    pub rx_fifo: Vec<u8>,
+    /// TX FIFO depth (max 16 bytes)
+    pub tx_fifo: Vec<u8>,
+    /// RX FIFO trigger level (interrupt when >= this many bytes)
+    pub rx_thresh: u8,
+    /// TX FIFO trigger level (interrupt when <= this many empty slots)
+    pub tx_thresh: u8,
+    /// Enable RX/TX FIFOs (bit 0 = RX, bit 1 = TX)
+    pub fifo_enable: u8,
 }
 
 impl UartPeripheral {
@@ -158,6 +168,11 @@ impl UartPeripheral {
             div: 1,
             rx_buffer: Vec::new(),
             tx_buffer: Vec::new(),
+            rx_fifo: Vec::new(),
+            tx_fifo: Vec::new(),
+            rx_thresh: 1,
+            tx_thresh: 1,
+            fifo_enable: 0,
         }
     }
 
@@ -171,6 +186,31 @@ impl UartPeripheral {
 
     pub fn inject_tx(&mut self, byte: u8) {
         self.tx_buffer.push(byte);
+    }
+    
+    /// Inject a byte into TX FIFO (for loopback testing)
+    pub fn inject_tx_fifo(&mut self, byte: u8) {
+        if self.fifo_enable & 2 != 0 && self.tx_fifo.len() < 16 {
+            self.tx_fifo.push(byte);
+        } else {
+            self.tx_buffer.push(byte);
+        }
+    }
+    
+    /// Drain RX FIFO contents
+    pub fn drain_rx_fifo(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.rx_fifo)
+    }
+    
+    /// Drain TX FIFO contents  
+    pub fn drain_tx_fifo(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.tx_fifo)
+    }
+    
+    /// Reset FIFOs (write to IIR register bit 6)
+    pub fn reset_fifos(&mut self) {
+        self.rx_fifo.clear();
+        self.tx_fifo.clear();
     }
 
     pub fn read_reg(&self, offset: u32) -> Option<u32> {
@@ -258,9 +298,19 @@ impl UartPeripheral {
     }
 
     /// Simulate receiving a byte (inject from external source).
+    /// Uses FIFO if enabled and below threshold.
     pub fn rx_byte(&mut self, byte: u8) {
-        self.rx_buffer.push(byte);
-        self.lsr.dr = true;
+        if self.fifo_enable & 1 != 0 && self.rx_fifo.len() < 16 {
+            self.rx_fifo.push(byte);
+            // Trigger interrupt if we hit threshold
+            if self.rx_fifo.len() >= self.rx_thresh as usize {
+                self.lsr.dr = true;
+                // Would assert IRQ line here via simulator callback
+            }
+        } else {
+            self.rx_buffer.push(byte);
+            self.lsr.dr = true;
+        }
     }
 
     /// Check if there's space in transmitter buffer.

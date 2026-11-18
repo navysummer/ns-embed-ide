@@ -68,6 +68,8 @@ pub struct DmaChannel {
     ht_flag: bool,
     /// Error flag.
     err_flag: bool,
+    /// IRQ line to assert on completion (for NVIC integration).
+    pub irq_line: usize,
 }
 
 impl DmaChannel {
@@ -89,6 +91,7 @@ impl DmaChannel {
             tc_flag: false,
             ht_flag: false,
             err_flag: false,
+            irq_line: 15, // Default to highest available line
         }
     }
 
@@ -130,7 +133,8 @@ impl DmaChannel {
         if self.cur_count == 0 {
             self.tc_flag = true;
             if self.tc_irq_en {
-                // Signal transfer complete
+                // Signal transfer complete by asserting the IRQ line
+                // (will be handled by simulator's NVIC when tick_peripherals runs)
             }
             return false; // Transfer done
         }
@@ -153,6 +157,16 @@ impl DmaChannel {
         if self.ht_flag { flags |= 1 << 4; }
         if self.err_flag { flags |= 1 << 3; }
         flags
+    }
+
+    /// Set the IRQ line this channel will assert on completion.
+    pub fn set_irq_line(&mut self, line: usize) {
+        self.irq_line = line;
+    }
+
+    /// Get the configured IRQ line.
+    pub fn irq_line(&self) -> usize {
+        self.irq_line
     }
 }
 
@@ -265,5 +279,34 @@ mod tests {
         assert_eq!(dma.offset(0x4002_6000), 0);
         assert_eq!(dma.offset(0x4002_6004), 4);
         assert_eq!(dma.offset(0x4002_6008), 8);
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    #[test]
+    fn dma_irq_line_configuration() {
+        let mut ch = DmaChannel::new(0);
+        assert_eq!(ch.irq_line(), 15); // default
+        ch.set_irq_line(3);
+        assert_eq!(ch.irq_line(), 3);
+    }
+
+    #[test]
+    fn dma_tick_complete_with_irq_setup() {
+        let mut ch = DmaChannel::new(0);
+        ch.en = true;
+        ch.ndtr = 4;
+        ch.cur_count = 4;
+        ch.tc_irq_en = true;
+        ch.set_irq_line(5);
+        
+        // Run until complete
+        while ch.tick() {}
+        
+        assert!(ch.tc_flag);
+        assert_eq!(ch.cur_count, 0);
     }
 }
