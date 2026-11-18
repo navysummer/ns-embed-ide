@@ -209,7 +209,7 @@ impl UartPeripheral {
             0x00 => {
                 // RBR write = THR write (transmit)
                 if self.lcr.brk { // DLAB set
-                    self.div = ((self.div & 0xFF00) | (value & 0xFF) as u16);
+                    self.div = (self.div & 0xFF00) | (value & 0xFF) as u16;
                 } else {
                     self.inject_tx(value as u8);
                     self.lsr = UartSrFlags { thre: false, teng: false, ..self.lsr };
@@ -217,7 +217,7 @@ impl UartPeripheral {
             }
             0x04 => {
                 if self.lcr.brk {
-                    self.div = ((self.div & 0x00FF) | ((value & 0xFF) as u16) << 8);
+                    self.div = (self.div & 0x00FF) | ((value & 0xFF) as u16) << 8;
                 }
             }
             0x08 => {
