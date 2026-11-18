@@ -2633,6 +2633,17 @@ impl Simulator {
                         value,
                         pc: self.pc,
                     });
+                    // Trigger EXTI if configured
+                    if let Some(ref mut exti) = self.peripherals.exti {
+                        if (pin as u8) < 16 {
+                            exti.pin_states[ pin as usize ] = value != 0;
+                            let current_states = exti.pin_states;
+                            let triggered = exti.sample(current_states);
+                            for line in triggered {
+                                self.assert_irq(line);
+                            }
+                        }
+                    }
                 }
             }
         }
