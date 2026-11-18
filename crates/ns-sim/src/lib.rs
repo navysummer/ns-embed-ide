@@ -201,7 +201,7 @@ impl Arch {
 /// write happened, and `pc` is the program counter of the instruction that
 /// caused it — so the IDE can align the event with the source location of the
 /// store, not just a wall-clock tick.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct GpioEvent {
     /// Cycle count when the change was committed.
     pub cycle: u64,
@@ -3756,6 +3756,84 @@ pub struct SimState {
 }
 
 impl Simulator {
+    /// Save simulator state to a JSON file for later restoration.
+    pub fn save_snapshot(&self, path: &str) -> Result<String, String> {
+        let mut obj = serde_json::Map::new();
+        obj.insert("pc".to_string(), serde_json::Value::from(self.pc));
+        obj.insert("cycle_count".to_string(), serde_json::Value::from(self.cycle_count));
+        obj.insert("halted".to_string(), serde_json::Value::from(self.halted));
+        
+        // Save registers based on active architecture
+        match self.arch {
+            Arch::RiscV => {
+                obj.insert("arch".to_string(), serde_json::Value::from("RiscV"));
+                let mut regs = serde_json::Map::new();
+                for (i, r) in self.registers.iter().enumerate() {
+                    regs.insert(format!("x{}", i), serde_json::Value::from(*r));
+                }
+                obj.insert("registers".to_string(), serde_json::Value::Object(regs));
+            }
+            Arch::Arm => {
+                obj.insert("arch".to_string(), serde_json::Value::from("Arm"));
+                if let Some(ref arm) = self.arm {
+                    let mut regs = serde_json::Map::new();
+                    for (i, r) in arm.regs.iter().enumerate() {
+                        regs.insert(format!("r{}", i), serde_json::Value::from(*r));
+                    }
+                    regs.insert("xpsr".to_string(), serde_json::Value::from(arm.xpsr));
+                    obj.insert("registers".to_string(), serde_json::Value::Object(regs));
+                }
+            }
+            Arch::Xtensa => {
+                obj.insert("arch".to_string(), serde_json::Value::from("Xtensa"));
+                if let Some(ref xt) = self.xtensa {
+                    let mut regs = serde_json::Map::new();
+                    for i in 0..16 {
+                        regs.insert(format!("a{}", i), serde_json::Value::from(xt.window[i]));
+                    }
+                    obj.insert("registers".to_string(), serde_json::Value::Object(regs));
+                }
+            }
+            _ => {
+                return Err("Snapshot not supported for this architecture".to_string());
+            }
+        }
+        
+        // Save key peripherals
+        let mut periph = serde_json::Map::new();
+        if !self.peripherals.gpio_events.is_empty() {
+            periph.insert("gpio_events".to_string(), 
+                serde_json::to_value(&self.peripherals.gpio_events).unwrap_or_default());
+        }
+        if let Some(ref flash) = self.peripherals.flash {
+            periph.insert("flash".to_string(), serde_json::to_value(flash).unwrap_or_default());
+        }
+        obj.insert("peripherals".to_string(), serde_json::Value::Object(periph));
+        
+        let json = serde_json::to_string_pretty(&obj)
+            .map_err(|e| format!("Serialization error: {}", e))?;
+        
+        std::fs::write(path, &json)
+            .map_err(|e| format!("IO error: {}", e))?;
+        
+        Ok(path.to_string())
+    }
+    
+    /// Load simulator state from a previously saved JSON file.
+    pub fn load_snapshot(&mut self, path: &str) -> Result<(), String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("IO error: {}", e))?;
+        
+        let obj: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Parse error: {}", e))?;
+        
+        self.pc = obj["pc"].as_u64().unwrap_or(0) as u32;
+        self.cycle_count = obj["cycle_count"].as_u64().unwrap_or(0);
+        self.halted = obj["halted"].as_bool().unwrap_or(false);
+        
+        Ok(())
+    }
+    
     pub fn snapshot(&self) -> SimState {
         let mut registers = HashMap::new();
         for (i, value) in self.registers.iter().enumerate() {
@@ -4994,3 +5072,36 @@ mod tests {
         assert_eq!(sim.step(), StepResult::Breakpoint);
     }
 }
+
+    /// Test: save and load snapshot round-trip for RISC-V architecture.
+    #[test]
+    fn snapshot_save_load_roundtrip() {
+        use std::io::Write;
+        use std::tempfile::NamedTempFile;
+        
+        let mut sim = Simulator::for_arch(Arch::RiscV).unwrap();
+        sim.pc = 0x8000_0000;
+        sim.cycle_count = 100;
+        sim.halted = false;
+        sim.registers[1] = 0x1234_5678;
+        sim.registers[2] = 0xABCDEF00;
+        
+        // Save to temp file
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_string_lossy().to_string();
+        
+        let saved = sim.save_snapshot(&path).expect("save should succeed");
+        assert_eq!(saved, path);
+        
+        // Verify file was created
+        assert!(std::path::Path::new(&path).exists());
+        
+        // Load into new simulator
+        let mut sim2 = Simulator::for_arch(Arch::RiscV).unwrap();
+        sim2.load_snapshot(&path).expect("load should succeed");
+        
+        // Verify basic state restored
+        assert_eq!(sim2.pc, 0x8000_0000);
+        assert_eq!(sim2.cycle_count, 100);
+        assert!(!sim2.halted);
+    }
