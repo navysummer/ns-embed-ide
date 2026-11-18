@@ -77,6 +77,8 @@ pub struct PwmChannel {
     pub enabled: bool,
     /// Last output state.
     pub output: bool,
+    /// IRQ line to assert on update event (-1 = none).
+    pub irq_line: i32,
 }
 
 impl PwmChannel {
@@ -91,7 +93,18 @@ impl PwmChannel {
             alignment: PwmAlignment::Edge,
             enabled: false,
             output: false,
+            irq_line: -1,
         }
+    }
+    
+    /// Set the IRQ line for this PWM channel.
+    pub fn set_irq_line(&mut self, line: i32) {
+        self.irq_line = line;
+    }
+    
+    /// Get the configured IRQ line.
+    pub fn get_irq_line(&self) -> i32 {
+        self.irq_line
     }
 
     /// Calculate the current output state based on counter position.

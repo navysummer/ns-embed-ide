@@ -48,6 +48,8 @@ pub struct FlashPeripheral {
     pub sr_strberr: bool, // Strip error
     pub sr_pe: bool,      // Programming error
     pub sr_pgs: bool,     // Programming ongoing
+    /// IRQ line to assert on erase/write complete (-1 = none).
+    pub irq_line: i32,
 }
 
 impl FlashPeripheral {
@@ -70,7 +72,18 @@ impl FlashPeripheral {
             sr_strberr: false,
             sr_pe: false,
             sr_pgs: false,
+            irq_line: -1,
         }
+    }
+    
+    /// Set the IRQ line for this flash peripheral.
+    pub fn set_irq_line(&mut self, line: i32) {
+        self.irq_line = line;
+    }
+    
+    /// Get the configured IRQ line.
+    pub fn get_irq_line(&self) -> i32 {
+        self.irq_line
     }
 
     /// Read a byte from flash memory.

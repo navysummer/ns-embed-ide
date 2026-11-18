@@ -152,6 +152,8 @@ pub struct UartPeripheral {
     pub tx_thresh: u8,
     /// Enable RX/TX FIFOs (bit 0 = RX, bit 1 = TX)
     pub fifo_enable: u8,
+    /// IRQ line to assert on RX/TX events (-1 = none).
+    pub irq_line: i32,
 }
 
 impl UartPeripheral {
@@ -173,7 +175,18 @@ impl UartPeripheral {
             rx_thresh: 1,
             tx_thresh: 1,
             fifo_enable: 0,
+            irq_line: -1,
         }
+    }
+    
+    /// Set the IRQ line for this UART peripheral.
+    pub fn set_irq_line(&mut self, line: i32) {
+        self.irq_line = line;
+    }
+    
+    /// Get the configured IRQ line.
+    pub fn get_irq_line(&self) -> i32 {
+        self.irq_line
     }
 
     pub fn peek_rx(&self) -> Option<u8> {
