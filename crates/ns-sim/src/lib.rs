@@ -1169,6 +1169,14 @@ impl Simulator {
                 self.zero_bytes(bss_start, p_memsz - p_filesz);
             }
         }
+        // Auto-enable flash region if we have an ARM target
+        if let Some(base) = flash_base {
+            // Estimate sector size (typical 2KB for STM32F1)
+            let sector_size = 2048u32;
+            let num_sectors = ((base.wrapping_add(0x10000) - base) / sector_size) as usize;
+            self.enable_flash(base, 0x10000, num_sectors.max(1), sector_size);
+        }
+        
         if let Some(core) = self.arm.as_mut() {
             if let Some(base) = flash_base {
                 core.vtor = base & !3;
@@ -2413,20 +2421,22 @@ impl Simulator {
         }
     }
 
-    /// Take the lowest-numbered pending and enabled interrupt, if the global
-    /// interrupt enable (`MIE` bit of `mstatus`) is set. Saves `mepc`/`mcause`
-    /// and redirects PC to the trap vector: `mtvec` directly (mode 0) or
-    /// `mtvec + 4*line` (vectored mode 1). Returns true if a trap was taken.
+    /// Take the highest-priority pending and enabled interrupt (lowest priority
+    /// number), if the global interrupt enable (`MIE` bit of `mstatus`) is set.
+    /// Saves `mepc`/`mcause` and redirects PC to the trap vector: `mtvec` directly
+    /// (mode 0) or `mtvec + 4*line` (vectored mode 1). Returns true if a trap was taken.
     pub fn take_interrupt(&mut self) -> bool {
         if self.csr.mstatus & 0x8 == 0 {
             return false; // MIE clear: interrupts are globally masked.
         }
+        // Find the highest-priority pending interrupt (lowest priority number)
         let pending = self
             .peripherals
             .irq_pending
             .iter()
             .enumerate()
-            .find(|(line, p)| **p && (self.csr.mie >> line) & 1 == 1);
+            .filter(|(line, p)| **p && (self.csr.mie >> *line) & 1 == 1)
+            .min_by_key(|(line, _)| self.peripherals.irq_priority[*line]);
         let Some((line, _)) = pending else {
             return false;
         };
@@ -2499,6 +2509,18 @@ impl Simulator {
                 return;
             }
         }
+        // Handle flash writes (write_byte handles errors internally)
+        if let Some(mut f) = self.peripherals.flash.take() {
+            if f.contains(address) {
+                let value = self.read_u32(address);
+                for i in 0..4 {
+                    if address + i < f.base + f.size {
+                        let _ = f.write_byte(address + i, (value >> (i * 8)) as u8);
+                    }
+                }
+            }
+            self.peripherals.flash = Some(f);
+        }
     }
 
     /// Handle watchdog register writes: base+0x00 feed (0xAA55 resets the
@@ -2526,6 +2548,47 @@ impl Simulator {
             0x08 => watchdog.timeout_cycles = value as u64,
             _ => {}
         }
+    }
+
+    /// Set the priority of an interrupt line. Lower numbers = higher priority.
+    pub fn set_irq_priority(&mut self, line: usize, priority: u8) {
+        if line < self.peripherals.irq_pending.len() {
+            self.peripherals.irq_priority[line] = priority;
+        }
+    }
+
+    /// Assert an interrupt line (peripheral requesting service).
+    pub fn assert_irq(&mut self, line: usize) {
+        if line < self.peripherals.irq_pending.len() {
+            self.peripherals.irq_pending[line] = true;
+        }
+    }
+
+    /// Deassert an interrupt line.
+    pub fn deassert_irq(&mut self, line: usize) {
+        if line < self.peripherals.irq_pending.len() {
+            self.peripherals.irq_pending[line] = false;
+        }
+    }
+
+    /// Get the currently active interrupt line (-1 if none).
+    pub fn get_active_irq(&self) -> i32 {
+        self.peripherals.irq_active
+    }
+
+    /// Enable flash memory region (called during ELF loading).
+    pub fn enable_flash(&mut self, base: u32, size: u32, num_sectors: usize, sector_size: u32) {
+        self.peripherals.flash = Some(FlashPeripheral::new(base, size, num_sectors, sector_size));
+    }
+
+    /// Get reference to flash peripheral if present.
+    pub fn get_flash(&self) -> Option<&FlashPeripheral> {
+        self.peripherals.flash.as_ref()
+    }
+
+    /// Get mutable reference to flash peripheral if present.
+    pub fn get_flash_mut(&mut self) -> Option<&mut FlashPeripheral> {
+        self.peripherals.flash.as_mut()
     }
 
     /// Handle GPIO register writes (OUT, OUT_SET, OUT_CLR, DIR, IN).
@@ -2580,6 +2643,7 @@ impl Simulator {
                 return;
             }
         }
+        
     }
 
     /// Route writes to registered ADC peripherals.
@@ -2592,6 +2656,7 @@ impl Simulator {
                 return;
             }
         }
+        
     }
 
     /// Route writes to registered I2C peripherals.
@@ -2604,6 +2669,7 @@ impl Simulator {
                 return;
             }
         }
+        
     }
 
     /// Route writes to registered PWM peripherals.
@@ -2616,6 +2682,7 @@ impl Simulator {
                 return;
             }
         }
+        
     }
 
     /// Handle timer register writes (CR, PSC, CNT, ARR, SR).
@@ -2695,6 +2762,11 @@ impl Simulator {
             if rtc.contains(address) {
                 let offset = rtc.offset(address);
                 return rtc.read_reg(offset);
+            }
+        }
+        if let Some(ref flash) = self.peripherals.flash {
+            if flash.contains(address) {
+                return flash.read_byte(address).map(|b| b as u32);
             }
         }
         for timer in &self.peripherals.timers {

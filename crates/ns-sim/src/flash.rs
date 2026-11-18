@@ -141,6 +141,20 @@ impl FlashPeripheral {
         address >= self.base && address < self.base + self.size
     }
 
+    /// Write a 32-bit word to flash (in Little-Endian).
+    pub fn write_word(&mut self, address: u32, value: u32) -> Result<(), &'static str> {
+        let bytes = [
+            (value & 0xFF) as u8,
+            ((value >> 8) & 0xFF) as u8,
+            ((value >> 16) & 0xFF) as u8,
+            ((value >> 24) & 0xFF) as u8,
+        ];
+        for i in 0..4 {
+            self.write_byte(address + i, bytes[i as usize])?;
+        }
+        Ok(())
+    }
+
     /// Get offset from flash base.
     pub fn offset(&self, address: u32) -> u32 {
         address.wrapping_sub(self.base)
