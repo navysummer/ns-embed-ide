@@ -36,6 +36,7 @@ pub mod rtc;
 pub mod dma;
 pub mod uart;
 pub mod flash;
+pub mod exti;
 pub mod systick;
 
 pub use spi::{SpiPeripheral, SpiCpolCpha, SpiPrescaler};
@@ -47,6 +48,7 @@ pub use systick::SysTickPeripheral;
 pub use dma::DmaPeripheral;
 pub use uart::UartPeripheral;
 pub use flash::FlashPeripheral;
+pub use exti::{ExtiController, ExtiEdge};
 
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
@@ -255,6 +257,8 @@ pub struct VirtualPeripherals {
     pub uart: Option<UartPeripheral>,
     /// Flash memory region (optional, typically at fixed address).
     pub flash: Option<FlashPeripheral>,
+    /// External Interrupt/Event controller (for GPIO edge-triggered interrupts).
+    pub exti: Option<ExtiController>,
 }
 
 /// A virtual watchdog timer. When enabled, it counts core cycles; if the
@@ -374,6 +378,7 @@ impl VirtualPeripherals {
             dma: None,
             uart: None,
             flash: None,
+            exti: None,
         }
     }
 }

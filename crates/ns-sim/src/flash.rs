@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn flash_erase_sector() {
-        let mut flash = FlashPeripheral::new(0x0800_0000, 0x100, 2, 0x80);
+        let _flash = FlashPeripheral::new(0x0800_0000, 0x100, 2, 0x80);
         // Unprotect both sectors for this test
         for s in &mut flash.sectors {
             s.protected = false;
