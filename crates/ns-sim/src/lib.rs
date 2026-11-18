@@ -33,12 +33,14 @@ pub mod adc;
 pub mod i2c;
 pub mod pwm;
 pub mod rtc;
+pub mod systick;
 
 pub use spi::{SpiPeripheral, SpiCpolCpha, SpiPrescaler};
 pub use adc::{AdcPeripheral, AdcResolution};
 pub use i2c::{I2cPeripheral, I2cSpeed};
 pub use pwm::{PwmPeripheral, PwmAlignment, PwmPolarity};
 pub use rtc::{RtcPeripheral, RtcTime};
+pub use systick::SysTickPeripheral;
 
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
@@ -235,6 +237,8 @@ pub struct VirtualPeripherals {
     pub pwm_peripherals: Vec<PwmPeripheral>,
     /// Registered RTC peripheral.
     pub rtc: Option<RtcPeripheral>,
+    /// The ARM SysTick timer (always present on Cortex-M).
+    pub systick: SysTickPeripheral,
 }
 
 /// A virtual watchdog timer. When enabled, it counts core cycles; if the
@@ -348,6 +352,7 @@ impl VirtualPeripherals {
             i2c_peripherals: Vec::new(),
             pwm_peripherals: Vec::new(),
             rtc: None,
+            systick: SysTickPeripheral::new(0xE000_E010),
         }
     }
 }
@@ -1717,6 +1722,17 @@ impl Simulator {
     /// estimated latency, so peripherals must be ticked by that same amount or
     /// timers run slow relative to the CPU clock.
     pub fn tick_peripherals_for(&mut self, cycles: u64) {
+        // Advance SysTick for each cycle
+        let mut systick_irq = false;
+        for _ in 0..cycles.max(1) {
+            if self.peripherals.systick.tick() {
+                systick_irq = true;
+            }
+        }
+        if systick_irq && self.peripherals.systick.csr.intena {
+            self.peripherals.irq_pending[1] = true; // IRQ line 1 = SysTick
+        }
+        
         for timer in self.peripherals.timers.iter_mut() {
             let mut overflow = false;
             for _ in 0..cycles.max(1) {
@@ -2442,6 +2458,14 @@ impl Simulator {
         self.adc_write(address);
         self.i2c_write(address);
         self.pwm_write(address);
+        // Check SysTick first (it has fixed base address)
+        if self.peripherals.systick.contains(address) {
+            let value = self.read_u32(address);
+            let offset = self.peripherals.systick.offset(address);
+            self.peripherals.systick.write_reg(offset, value);
+            return;
+        }
+        
         // Check RTC first (before other periph that may share address space)
         if let Some(ref rtc) = self.peripherals.rtc {
             if rtc.contains(address) {
@@ -2622,6 +2646,11 @@ impl Simulator {
                 let offset = i2c.offset(address);
                 return i2c.read_reg(offset);
             }
+        }
+        // Check SysTick read first
+        if self.peripherals.systick.contains(address) {
+            let offset = self.peripherals.systick.offset(address);
+            return self.peripherals.systick.read_reg(offset);
         }
         for pwm in &self.peripherals.pwm_peripherals {
             if pwm.contains(address) {
