@@ -168,6 +168,11 @@ impl DmaChannel {
     pub fn irq_line(&self) -> usize {
         self.irq_line
     }
+    
+    /// Check if transfer is complete with IRQ enabled.
+    pub fn is_tc_with_irq(&self) -> bool {
+        self.tc_flag && self.tc_irq_en
+    }
 }
 
 /// DMA controller state.
