@@ -1176,6 +1176,28 @@ impl Simulator {
         }
         // Auto-enable flash region if we have an ARM target
         if let Some(base) = flash_base {
+            // Check for address conflicts with existing peripherals
+            let mut conflicts = Vec::new();
+            
+            // Check GPIO conflict
+            if base <= self.peripherals.gpio_base && base + 0x10000 > self.peripherals.gpio_base {
+                conflicts.push(("GPIO".to_string(), self.peripherals.gpio_base));
+            }
+            
+            // Check timer conflicts
+            for timer in &self.peripherals.timers {
+                if base <= timer.base && base + 0x10000 > timer.base {
+                    conflicts.push(("Timer".to_string(), timer.base));
+                }
+            }
+            
+            if !conflicts.is_empty() {
+                eprintln!("Warning: Flash region 0x{:08X}-0x{:08X} overlaps with:", base, base + 0x10000);
+                for (name, addr) in &conflicts {
+                    eprintln!("  - {} at 0x{:08X}", name, addr);
+                }
+            }
+            
             // Estimate sector size (typical 2KB for STM32F1)
             let sector_size = 2048u32;
             let num_sectors = ((base.wrapping_add(0x10000) - base) / sector_size) as usize;
