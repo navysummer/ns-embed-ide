@@ -64,7 +64,7 @@ impl FlashPeripheral {
             base,
             size,
             sectors,
-            data: vec![0xFF; size as usize],
+            data: vec![0; size as usize],
             sr_ready: true,
             sr_pgerr: false,
             sr_strberr: false,
@@ -126,6 +126,7 @@ impl FlashPeripheral {
         let start = (sector.start - self.base) as usize;
         let end = start + sector.size as usize;
         if end <= self.data.len() {
+            // Flash erases to 0xFF (all bits set)
             for b in &mut self.data[start..end] {
                 *b = 0xFF;
             }
