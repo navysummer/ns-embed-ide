@@ -270,3 +270,43 @@ mod irq_tests {
         assert_eq!(gpio.get_irq_line(), 5);
     }
 }
+
+/// GPIO event history entry for visualization.
+#[derive(Debug, Clone, Serialize)]
+pub struct GpioHistoryEntry {
+    /// Timestamp (cycle count).
+    pub cycle: u64,
+    /// Pin number.
+    pub pin: u8,
+    /// New state (true = high, false = low).
+    pub state: bool,
+}
+
+impl From<&GpioEvent> for GpioHistoryEntry {
+    fn from(event: &GpioEvent) -> Self {
+        Self {
+            cycle: event.cycle,
+            pin: event.pin,
+            state: event.value != 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn gpio_history_entry_from_event() {
+        let event = GpioEvent {
+            cycle: 100,
+            pin: 5,
+            value: 1,
+            pc: 0x2000,
+        };
+        let entry = GpioHistoryEntry::from(&event);
+        assert_eq!(entry.cycle, 100);
+        assert_eq!(entry.pin, 5);
+        assert!(entry.state);
+    }
+}
