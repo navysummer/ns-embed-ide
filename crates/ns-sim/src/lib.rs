@@ -33,6 +33,8 @@ pub mod adc;
 pub mod i2c;
 pub mod pwm;
 pub mod rtc;
+pub mod dma;
+pub mod uart;
 pub mod systick;
 
 pub use spi::{SpiPeripheral, SpiCpolCpha, SpiPrescaler};
@@ -41,6 +43,8 @@ pub use i2c::{I2cPeripheral, I2cSpeed};
 pub use pwm::{PwmPeripheral, PwmAlignment, PwmPolarity};
 pub use rtc::{RtcPeripheral, RtcTime};
 pub use systick::SysTickPeripheral;
+pub use dma::DmaPeripheral;
+pub use uart::UartPeripheral;
 
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
@@ -239,6 +243,10 @@ pub struct VirtualPeripherals {
     pub rtc: Option<RtcPeripheral>,
     /// The ARM SysTick timer (always present on Cortex-M).
     pub systick: SysTickPeripheral,
+    /// DMA controller for memory-to-peripheral transfers.
+    pub dma: Option<DmaPeripheral>,
+    /// UART serial port peripheral.
+    pub uart: Option<UartPeripheral>,
 }
 
 /// A virtual watchdog timer. When enabled, it counts core cycles; if the
@@ -353,6 +361,8 @@ impl VirtualPeripherals {
             pwm_peripherals: Vec::new(),
             rtc: None,
             systick: SysTickPeripheral::new(0xE000_E010),
+            dma: None,
+            uart: None,
         }
     }
 }
@@ -2656,6 +2666,18 @@ impl Simulator {
             if pwm.contains(address) {
                 let offset = pwm.offset(address);
                 return pwm.read_reg(offset);
+            }
+        }
+        if let Some(ref uart) = self.peripherals.uart {
+            if uart.contains(address) {
+                let offset = uart.offset(address);
+                return uart.read_reg(offset);
+            }
+        }
+        if let Some(ref dma) = self.peripherals.dma {
+            if dma.contains(address) {
+                let offset = dma.offset(address);
+                return dma.read_reg(offset);
             }
         }
         if let Some(rtc) = &self.peripherals.rtc {
