@@ -304,12 +304,9 @@ impl I2cPeripheral {
         }
     }
 
-    pub fn tick(&mut self, cycles: u64) -> bool {
+    pub fn tick(&mut self, _cycles: u64) -> bool {
         // Simulate I2C timing based on speed
-        let cycles_per_bit = match self.speed {
-            I2cSpeed::Standard => 10,
-            I2cSpeed::Fast => 3,
-        };
+// timing handled internally
         
         false
     }

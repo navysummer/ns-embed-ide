@@ -258,7 +258,7 @@ impl PwmPeripheral {
     }
 
     pub fn contains(&self, address: u32) -> bool {
-        address >= self.base && address < self.base + 0x44
+        address >= self.base && address < self.base + 0x2C
     }
 
     pub fn offset(&self, address: u32) -> u32 {

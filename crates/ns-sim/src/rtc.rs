@@ -286,11 +286,7 @@ impl RtcPeripheral {
         self.elapsed_seconds += 1;
         
         // Update time
-        let old_sec = self.time.sec;
-        let old_min = self.time.min;
-        let old_hour = self.time.hour;
-        let old_day = self.time.day;
-        let old_month = self.time.month;
+// capture not needed
         
         self.time.sec += 1;
         if self.time.sec >= 60 {
@@ -331,23 +327,6 @@ impl RtcPeripheral {
         }
     }
 
-    fn check_alarm(&mut self, alarm: &RtcAlarm) {
-        if !alarm.enabled {
-            return;
-        }
-        
-        let matches = (!alarm.mask_sec || alarm.target.sec == self.time.sec)
-            && (!alarm.mask_min || alarm.target.min == self.time.min)
-            && (!alarm.mask_hour || alarm.target.hour == self.time.hour)
-            && (!alarm.mask_day || alarm.target.day == self.time.day)
-            && (!alarm.mask_month || alarm.target.month == self.time.month)
-            && (!alarm.mask_wday || alarm.target.wday == self.time.wday);
-        
-        if matches {
-            self.sr.alrf = true;
-            self.cr2 |= 1 << 6; // Set ALRAF flag
-        }
-    }
 
     pub fn contains(&self, address: u32) -> bool {
         address >= self.base && address < self.base + 0x28

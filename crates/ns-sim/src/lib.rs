@@ -2442,11 +2442,16 @@ impl Simulator {
         self.adc_write(address);
         self.i2c_write(address);
         self.pwm_write(address);
-        if let Some(rtc) = self.peripherals.rtc.as_mut() {
+        // Check RTC first (before other periph that may share address space)
+        if let Some(ref rtc) = self.peripherals.rtc {
             if rtc.contains(address) {
                 let value = self.read_u32(address);
                 let offset = rtc.offset(address);
-                rtc.write_reg(offset, value);
+                if let Some(mut r) = self.peripherals.rtc.take() {
+                    r.write_reg(offset, value);
+                    self.peripherals.rtc = Some(r);
+                }
+                return;
             }
         }
     }
