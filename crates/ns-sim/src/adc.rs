@@ -206,6 +206,8 @@ pub struct AdcPeripheral {
     current_channel: usize,
     /// Number of channels in regular sequence.
     sequence_length: u8,
+    /// IRQ line to assert on conversion complete (-1 = none).
+    pub irq_line: i32,
 }
 
 impl AdcPeripheral {
@@ -225,6 +227,7 @@ impl AdcPeripheral {
             converting: false,
             current_channel: 0,
             sequence_length: 1,
+            irq_line: -1,
         }
     }
 

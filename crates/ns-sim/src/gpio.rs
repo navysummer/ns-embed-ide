@@ -256,3 +256,17 @@ mod tests {
         assert!(gpio.contains(portb_base));
     }
 }
+
+#[cfg(test)]
+mod irq_tests {
+    use super::*;
+
+    #[test]
+    fn gpio_controller_irq_line() {
+        let mut gpio = GpioController::new(0x4002_0000, 1, 16);
+        assert_eq!(gpio.get_irq_line(), -1); // default
+        
+        gpio.set_irq_line(5);
+        assert_eq!(gpio.get_irq_line(), 5);
+    }
+}
