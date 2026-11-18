@@ -117,6 +117,8 @@ pub struct RtcAlarm {
     pub mask_month: bool,
     pub mask_wday: bool,
     pub target: RtcTime,
+    /// IRQ line to assert when alarm fires (-1 = none).
+    pub irq_line: i32,
 }
 
 impl Default for RtcAlarm {
@@ -130,6 +132,7 @@ impl Default for RtcAlarm {
             mask_month: false,
             mask_wday: false,
             target: RtcTime::default(),
+            irq_line: -1,
         }
     }
 }
@@ -334,6 +337,28 @@ impl RtcPeripheral {
 
     pub fn offset(&self, address: u32) -> u32 {
         address.wrapping_sub(self.base)
+    }
+    
+    /// Configure the IRQ line for alarm A. Returns true if alarm was enabled.
+    pub fn configure_alarm_a_irq(&mut self, irq_line: i32) -> bool {
+        self.alarm_a.irq_line = irq_line;
+        self.alarm_a.enabled
+    }
+    
+    /// Configure the IRQ line for alarm B. Returns true if alarm was enabled.
+    pub fn configure_alarm_b_irq(&mut self, irq_line: i32) -> bool {
+        self.alarm_b.irq_line = irq_line;
+        self.alarm_b.enabled
+    }
+    
+    /// Get configured IRQ line for alarm A, or -1 if none configured.
+    pub fn alarm_a_irq_line(&self) -> i32 {
+        self.alarm_a.irq_line
+    }
+    
+    /// Get configured IRQ line for alarm B, or -1 if none configured.
+    pub fn alarm_b_irq_line(&self) -> i32 {
+        self.alarm_b.irq_line
     }
 }
 
