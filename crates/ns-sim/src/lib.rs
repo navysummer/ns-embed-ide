@@ -4984,3 +4984,57 @@ mod tests {
         assert_eq!(sim.step(), StepResult::Breakpoint);
     }
 }
+
+    /// Integration test: GPIO edge triggers EXTI which asserts NVIC IRQ.
+    #[test]
+    fn gpio_exti_nvic_integration() {
+        let mut sim = Simulator::for_arch(Arch::Arm).unwrap();
+        
+        // Enable EXTI controller with rising-edge on pin 0
+        sim.peripherals.exti = Some(ExtiController::new(0x4001_0000));
+        if let Some(ref mut exti) = sim.peripherals.exti {
+            extinfigure_line(0, ExtiEdge::Rising, true);
+            extinigure.pin_states[0] = false;
+        }
+        
+        // Set up GPIO as output
+        sim.peripherals.gpio_dir = 1;
+        sim.peripherals.gpio_out = 0;
+        
+        // Simulate writing high to pin 0 -> should trigger EXTI line 0
+        sim.peripherals.gpio_out = 1;
+        
+        // Manually trigger EXTI detection (normally done in gpio_write)
+        if let Some(ref mut exti) = sim.peripherals.exti {
+            extinigure.pin_states[0] = true;
+            let triggered = extin.figure.sample(extinigure.pin_states);
+            for line in triggered {
+                sim.assert_irq(line);
+            }
+        }
+        
+        // Verify IRQ was asserted
+        assert!(sim.peripherals.irq_pending[0]);
+    }
+
+    /// Integration test: DMA completes transfer and sets TC flag.
+    #[test]
+    fn dma_transfer_completion_test() {
+        use super::dma::{DmaChannel, DmaWidth};
+        
+        let mut ch = DmaChannel::new(0);
+        ch.en = true;
+        ch.ndtr = 8;
+        ch.cur_count = 8;
+        ch.mem_width = DmaWidth::Word;
+        ch.mem_inc = true;
+        ch.tc_irq_en = true;
+        
+        // Run until complete
+        while ch.tick() {}
+        
+        assert!(ch.tc_flag);
+        assert_eq!(ch.cur_count, 0);
+        assert_eq!(ch.mem_addr, 32); // 8 words * 4 bytes
+    }
+}
