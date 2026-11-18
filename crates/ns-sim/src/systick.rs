@@ -242,7 +242,7 @@ mod tests {
         let systick = SysTickPeripheral::new(0xE000_E010);
         assert!(systick.contains(0xE000_E010));
         assert!(systick.contains(0xE000_E018)); // CVR at offset 0x0C
-        assert!(!systick.contains(0xE000_E01C)); // CSR at offset 0x10 is OUTSIDE [base, base+0x10)
+        assert!(systick.contains(0xE000_E01C)); // CALIB at offset 0x0C (valid)
         assert!(!systick.contains(0xE000_E01D));
         assert!(!systick.contains(0xE000_E00F));
     }
