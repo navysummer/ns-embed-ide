@@ -337,6 +337,16 @@ impl AdcPeripheral {
         }
     }
 
+    /// Configure the number of channels in the regular sequence.
+    pub fn set_sequence_length(&mut self, length: u8) {
+        self.sequence_length = length.min(self.channels.len().max(1) as u8);
+    }
+
+    /// Get the current sequence length.
+    pub fn sequence_length(&self) -> u8 {
+        self.sequence_length
+    }
+
     /// Start a new conversion cycle.
     fn start_conversion(&mut self) {
         self.converting = true;
