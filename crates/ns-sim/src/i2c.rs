@@ -230,6 +230,8 @@ pub struct I2cPeripheral {
     pub state: I2cState,
     pub address: u16,
     pub direction: I2cDirection,
+    /// IRQ line to assert on transfer complete (-1 = none).
+    pub irq_line: i32,
 }
 
 impl I2cPeripheral {
@@ -247,7 +249,18 @@ impl I2cPeripheral {
             state: I2cState::Idle,
             address: 0,
             direction: I2cDirection::Transmit,
+            irq_line: -1,
         }
+    }
+    
+    /// Set the IRQ line for this I2C peripheral.
+    pub fn set_irq_line(&mut self, line: i32) {
+        self.irq_line = line;
+    }
+    
+    /// Get the configured IRQ line.
+    pub fn irq_line(&self) -> i32 {
+        self.irq_line
     }
 
     pub fn read_reg(&self, offset: u32) -> Option<u32> {
