@@ -5037,4 +5037,3 @@ mod tests {
         assert_eq!(ch.cur_count, 0);
         assert_eq!(ch.mem_addr, 32); // 8 words * 4 bytes
     }
-}
