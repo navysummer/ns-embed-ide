@@ -188,11 +188,6 @@ mod tests {
     #[test]
     fn flash_read_write_byte() {
         let mut flash = FlashPeripheral::new(0x0800_0000, 0x100, 1, 0x100);
-        
-        // Sector 0 is protected by default - write to offset within it
-        // Actually sector 0 covers 0x0800_0000..0x0800_00FF and is protected
-        // Let's unprotect it for this test by creating without protection
-        let mut flash = FlashPeripheral::new(0x0800_0000, 0x100, 1, 0x100);
         flash.sectors[0].protected = false;
         
         // Write a byte
@@ -211,7 +206,7 @@ mod tests {
 
     #[test]
     fn flash_erase_sector() {
-        let _flash = FlashPeripheral::new(0x0800_0000, 0x100, 2, 0x80);
+        let mut flash = FlashPeripheral::new(0x0800_0000, 0x100, 2, 0x80);
         // Unprotect both sectors for this test
         for s in &mut flash.sectors {
             s.protected = false;
