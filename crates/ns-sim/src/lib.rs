@@ -1817,7 +1817,7 @@ impl Simulator {
         // Poll DMA channels for transfer completion interrupts
         if let Some(dma) = self.peripherals.dma.as_ref() {
             for ch in &dma.channels {
-                if ch.en && ch.is_tc_with_irq() && ch.irq_line >= 0 
+                if ch.en if ch.en && ch.is_tc_with_irq() && ch.irq_line >= 0if ch.en && ch.is_tc_with_irq() && ch.irq_line >= 0 ch.is_tc_with_irq() 
                    && ch.irq_line < self.peripherals.irq_pending.len() {
                     self.peripherals.irq_pending[ch.irq_line] = true;
                 }
@@ -5076,8 +5076,7 @@ mod tests {
     /// Test: save and load snapshot round-trip for RISC-V architecture.
     #[test]
     fn snapshot_save_load_roundtrip() {
-        use std::io::Write;
-        use std::tempfile::NamedTempFile;
+        use std::fs;
         
         let mut sim = Simulator::for_arch(Arch::RiscV).unwrap();
         sim.pc = 0x8000_0000;
@@ -5086,22 +5085,23 @@ mod tests {
         sim.registers[1] = 0x1234_5678;
         sim.registers[2] = 0xABCDEF00;
         
-        // Save to temp file
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_string_lossy().to_string();
-        
-        let saved = sim.save_snapshot(&path).expect("save should succeed");
+        // Save to temp file in /tmp
+        let path = "/tmp/ns_sim_test_snapshot.json";
+        let saved = sim.save_snapshot(path).expect("save should succeed");
         assert_eq!(saved, path);
         
         // Verify file was created
-        assert!(std::path::Path::new(&path).exists());
+        assert!(std::path::Path::new(path).exists());
         
         // Load into new simulator
         let mut sim2 = Simulator::for_arch(Arch::RiscV).unwrap();
-        sim2.load_snapshot(&path).expect("load should succeed");
+        sim2.load_snapshot(path).expect("load should succeed");
         
         // Verify basic state restored
         assert_eq!(sim2.pc, 0x8000_0000);
         assert_eq!(sim2.cycle_count, 100);
         assert!(!sim2.halted);
+        
+        // Cleanup
+        let _ = fs::remove_file(path);
     }
