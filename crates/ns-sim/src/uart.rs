@@ -14,8 +14,8 @@ pub enum UartParity {
     None,
     Even,
     Odd,
-    One,   // forced to 1
-    Zero,  // forced to 0
+    One,  // forced to 1
+    Zero, // forced to 0
 }
 
 impl Default for UartParity {
@@ -27,22 +27,22 @@ impl Default for UartParity {
 /// UART status flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct UartSrFlags {
-    pub dr: bool,     // Data Ready (receiver not empty)
-    pub thre: bool,   // Transmitter Holding Register Empty
-    pub teng: bool,   // Transmitter Empty
-    pub bri: bool,    // Break Receive Interrupt
-    pub te: bool,     // Timeout Error
-    pub pe: bool,     // Parity Error
-    pub fe: bool,     // Framing Error
-    pub oe: bool,     // Overrun Error
+    pub dr: bool,   // Data Ready (receiver not empty)
+    pub thre: bool, // Transmitter Holding Register Empty
+    pub teng: bool, // Transmitter Empty
+    pub bri: bool,  // Break Receive Interrupt
+    pub te: bool,   // Timeout Error
+    pub pe: bool,   // Parity Error
+    pub fe: bool,   // Framing Error
+    pub oe: bool,   // Overrun Error
 }
 
 impl Default for UartSrFlags {
     fn default() -> Self {
         Self {
             dr: false,
-            thre: true,   // Initially empty, ready to send
-            teng: true,   // Initially empty
+            thre: true, // Initially empty, ready to send
+            teng: true, // Initially empty
             bri: false,
             te: false,
             pe: false,
@@ -55,14 +55,30 @@ impl Default for UartSrFlags {
 impl UartSrFlags {
     pub fn encode(&self) -> u32 {
         let mut reg = 0u32;
-        if self.dr { reg |= 1 << 0; }
-        if self.thre { reg |= 1 << 5; }
-        if self.teng { reg |= 1 << 6; }
-        if self.bri { reg |= 1 << 3; }
-        if self.te { reg |= 1 << 2; }
-        if self.pe { reg |= 1 << 1; }
-        if self.fe { reg |= 1 << 4; }
-        if self.oe { reg |= 1 << 7; }
+        if self.dr {
+            reg |= 1 << 0;
+        }
+        if self.thre {
+            reg |= 1 << 5;
+        }
+        if self.teng {
+            reg |= 1 << 6;
+        }
+        if self.bri {
+            reg |= 1 << 3;
+        }
+        if self.te {
+            reg |= 1 << 2;
+        }
+        if self.pe {
+            reg |= 1 << 1;
+        }
+        if self.fe {
+            reg |= 1 << 4;
+        }
+        if self.oe {
+            reg |= 1 << 7;
+        }
         reg
     }
 }
@@ -70,33 +86,50 @@ impl UartSrFlags {
 /// UART line control register fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct UartLcr {
-    pub wb5: bool,   // Word Length 5 bits
-    pub wb6: bool,   // Word Length 6 bits  
-    pub wb7: bool,   // Word Length 7 bits
-    pub wb8: bool,   // Word Length 8 bits (default)
-    pub sp: bool,    // Stick Parity
-    pub eps: bool,   // Even Parity Select
-    pub pen: bool,   // Parity Enable
-    pub sts: bool,   // Stop Bits (0=1, 1=2)
-    pub brk: bool,   // Break Control
+    pub wb5: bool, // Word Length 5 bits
+    pub wb6: bool, // Word Length 6 bits
+    pub wb7: bool, // Word Length 7 bits
+    pub wb8: bool, // Word Length 8 bits (default)
+    pub sp: bool,  // Stick Parity
+    pub eps: bool, // Even Parity Select
+    pub pen: bool, // Parity Enable
+    pub sts: bool, // Stop Bits (0=1, 1=2)
+    pub brk: bool, // Break Control
 }
 
 impl Default for UartLcr {
     fn default() -> Self {
         Self {
-            wb5: false, wb6: false, wb7: false, wb8: true,
-            sp: false, eps: false, pen: false, sts: false, brk: false,
+            wb5: false,
+            wb6: false,
+            wb7: false,
+            wb8: true,
+            sp: false,
+            eps: false,
+            pen: false,
+            sts: false,
+            brk: false,
         }
     }
 }
 
 impl UartLcr {
     pub fn data_bits(&self) -> u8 {
-        if self.wb8 { 8 } else if self.wb7 { 7 } else if self.wb6 { 6 } else { 5 }
+        if self.wb8 {
+            8
+        } else if self.wb7 {
+            7
+        } else if self.wb6 {
+            6
+        } else {
+            5
+        }
     }
 
     pub fn parity(&self) -> UartParity {
-        if !self.pen { return UartParity::None; }
+        if !self.pen {
+            return UartParity::None;
+        }
         match (self.eps, self.sp) {
             (false, false) => UartParity::Odd,
             (true, false) => UartParity::Even,
@@ -109,19 +142,23 @@ impl UartLcr {
 /// UART interrupt enable register fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct UartIer {
-    pub rbui: bool, // RX Buffer Full Interrupt Enable
-    pub thoie: bool,// TX Holding Register Empty IE
-    pub rbei: bool, // RX Buffer Full Interrupt Enable
-    pub rtoie: bool,// RX Timeout Interrupt Enable
-    pub lipsie: bool,// Line Status Interrupt Enable
-    pub mie: bool,  // Modem Interrupt Enable
+    pub rbui: bool,   // RX Buffer Full Interrupt Enable
+    pub thoie: bool,  // TX Holding Register Empty IE
+    pub rbei: bool,   // RX Buffer Full Interrupt Enable
+    pub rtoie: bool,  // RX Timeout Interrupt Enable
+    pub lipsie: bool, // Line Status Interrupt Enable
+    pub mie: bool,    // Modem Interrupt Enable
 }
 
 impl Default for UartIer {
     fn default() -> Self {
         Self {
-            rbui: false, thoie: false, rbei: false,
-            rtoie: false, lipsie: false, mie: false,
+            rbui: false,
+            thoie: false,
+            rbei: false,
+            rtoie: false,
+            lipsie: false,
+            mie: false,
         }
     }
 }
@@ -131,13 +168,13 @@ impl Default for UartIer {
 pub struct UartPeripheral {
     pub base: u32,
     pub ier: UartIer,
-    pub iir: u8,       // Interrupt Identification Register (read-only, cleared on read)
+    pub iir: u8, // Interrupt Identification Register (read-only, cleared on read)
     pub lcr: UartLcr,
-    pub mcr: u8,       // Modem Control Register
+    pub mcr: u8, // Modem Control Register
     pub lsr: UartSrFlags,
-    pub msr: u8,       // Modem Status Register
-    pub scr: u8,       // Scratch register
-    pub div: u16,      // Baud rate divisor
+    pub msr: u8,  // Modem Status Register
+    pub scr: u8,  // Scratch register
+    pub div: u16, // Baud rate divisor
     /// Received bytes waiting to be read
     pub rx_buffer: Vec<u8>,
     /// Transmitted bytes
@@ -178,12 +215,12 @@ impl UartPeripheral {
             irq_line: -1,
         }
     }
-    
+
     /// Set the IRQ line for this UART peripheral.
     pub fn set_irq_line(&mut self, line: i32) {
         self.irq_line = line;
     }
-    
+
     /// Get the configured IRQ line.
     pub fn get_irq_line(&self) -> i32 {
         self.irq_line
@@ -200,7 +237,7 @@ impl UartPeripheral {
     pub fn inject_tx(&mut self, byte: u8) {
         self.tx_buffer.push(byte);
     }
-    
+
     /// Inject a byte into TX FIFO (for loopback testing)
     pub fn inject_tx_fifo(&mut self, byte: u8) {
         if self.fifo_enable & 2 != 0 && self.tx_fifo.len() < 16 {
@@ -209,17 +246,17 @@ impl UartPeripheral {
             self.tx_buffer.push(byte);
         }
     }
-    
+
     /// Drain RX FIFO contents
     pub fn drain_rx_fifo(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.rx_fifo)
     }
-    
+
     /// Drain TX FIFO contents  
     pub fn drain_tx_fifo(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.tx_fifo)
     }
-    
+
     /// Reset FIFOs (write to IIR register bit 6)
     pub fn reset_fifos(&mut self) {
         self.rx_fifo.clear();
@@ -230,7 +267,8 @@ impl UartPeripheral {
         let val = match offset {
             0x00 => {
                 // RBR / DLL (Divisor Latch Low when DLAB=1)
-                if self.lcr.brk { // DLAB bit is bit 7
+                if self.lcr.brk {
+                    // DLAB bit is bit 7
                     self.div as u32
                 } else if let Some(b) = self.rx_buffer.first() {
                     *b as u32
@@ -246,12 +284,12 @@ impl UartPeripheral {
                     0
                 }
             }
-            0x08 => self.iir as u32, // IIR (read clears interrupts)
+            0x08 => self.iir as u32,          // IIR (read clears interrupts)
             0x0C => self.lcr.encode() as u32, // LCR
-            0x10 => self.mcr as u32, // MCR
-            0x14 => self.lsr.encode(), // LSR
-            0x18 => self.msr as u32, // MSR
-            0x1C => self.scr as u32, // SCR
+            0x10 => self.mcr as u32,          // MCR
+            0x14 => self.lsr.encode(),        // LSR
+            0x18 => self.msr as u32,          // MSR
+            0x1C => self.scr as u32,          // SCR
             _ => return None,
         };
         Some(val)
@@ -261,11 +299,16 @@ impl UartPeripheral {
         match offset {
             0x00 => {
                 // RBR write = THR write (transmit)
-                if self.lcr.brk { // DLAB set
+                if self.lcr.brk {
+                    // DLAB set
                     self.div = (self.div & 0xFF00) | (value & 0xFF) as u16;
                 } else {
                     self.inject_tx(value as u8);
-                    self.lsr = UartSrFlags { thre: false, teng: false, ..self.lsr };
+                    self.lsr = UartSrFlags {
+                        thre: false,
+                        teng: false,
+                        ..self.lsr
+                    };
                 }
             }
             0x04 => {
@@ -299,9 +342,15 @@ impl UartPeripheral {
             }
             0x14 => {
                 // Write to LSR clears specific flags
-                if value & 1 != 0 { self.lsr.dr = false; }
-                if value & (1 << 5) != 0 { self.lsr.thre = false; }
-                if value & (1 << 6) != 0 { self.lsr.teng = false; }
+                if value & 1 != 0 {
+                    self.lsr.dr = false;
+                }
+                if value & (1 << 5) != 0 {
+                    self.lsr.thre = false;
+                }
+                if value & (1 << 6) != 0 {
+                    self.lsr.teng = false;
+                }
             }
             0x1C => {
                 self.scr = value as u8;
@@ -343,15 +392,33 @@ impl UartPeripheral {
 impl UartLcr {
     pub fn encode(&self) -> u32 {
         let mut reg = 0u32;
-        if self.wb5 { reg |= 1 << 0; }
-        if self.wb6 { reg |= 1 << 1; }
-        if self.wb7 { reg |= 1 << 2; }
-        if self.wb8 { reg |= 1 << 3; }
-        if self.sp { reg |= 1 << 4; }
-        if self.eps { reg |= 1 << 5; }
-        if self.pen { reg |= 1 << 6; }
-        if self.sts { reg |= 1 << 7; }
-        if self.brk { reg |= 1 << 8; } // DLAB
+        if self.wb5 {
+            reg |= 1 << 0;
+        }
+        if self.wb6 {
+            reg |= 1 << 1;
+        }
+        if self.wb7 {
+            reg |= 1 << 2;
+        }
+        if self.wb8 {
+            reg |= 1 << 3;
+        }
+        if self.sp {
+            reg |= 1 << 4;
+        }
+        if self.eps {
+            reg |= 1 << 5;
+        }
+        if self.pen {
+            reg |= 1 << 6;
+        }
+        if self.sts {
+            reg |= 1 << 7;
+        }
+        if self.brk {
+            reg |= 1 << 8;
+        } // DLAB
         reg
     }
 }

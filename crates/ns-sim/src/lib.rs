@@ -27,28 +27,28 @@ pub mod stm8;
 
 pub mod rx;
 
-pub mod rl78;
-pub mod spi;
 pub mod adc;
+pub mod dma;
+pub mod exti;
+pub mod flash;
 pub mod i2c;
 pub mod pwm;
+pub mod rl78;
 pub mod rtc;
-pub mod dma;
-pub mod uart;
-pub mod flash;
-pub mod exti;
+pub mod spi;
 pub mod systick;
+pub mod uart;
 
-pub use spi::{SpiPeripheral, SpiCpolCpha, SpiPrescaler};
 pub use adc::{AdcPeripheral, AdcResolution};
-pub use i2c::{I2cPeripheral, I2cSpeed};
-pub use pwm::{PwmPeripheral, PwmAlignment, PwmPolarity};
-pub use rtc::{RtcPeripheral, RtcTime};
-pub use systick::SysTickPeripheral;
 pub use dma::DmaPeripheral;
-pub use uart::UartPeripheral;
-pub use flash::FlashPeripheral;
 pub use exti::{ExtiController, ExtiEdge};
+pub use flash::FlashPeripheral;
+pub use i2c::{I2cPeripheral, I2cSpeed};
+pub use pwm::{PwmAlignment, PwmPeripheral, PwmPolarity};
+pub use rtc::{RtcPeripheral, RtcTime};
+pub use spi::{SpiCpolCpha, SpiPeripheral, SpiPrescaler};
+pub use systick::SysTickPeripheral;
+pub use uart::UartPeripheral;
 
 use std::collections::HashMap;
 pub const REG_COUNT: usize = 32;
@@ -1178,32 +1178,36 @@ impl Simulator {
         if let Some(base) = flash_base {
             // Check for address conflicts with existing peripherals
             let mut conflicts = Vec::new();
-            
+
             // Check GPIO conflict
             if base <= self.peripherals.gpio_base && base + 0x10000 > self.peripherals.gpio_base {
                 conflicts.push(("GPIO".to_string(), self.peripherals.gpio_base));
             }
-            
+
             // Check timer conflicts
             for timer in &self.peripherals.timers {
                 if base <= timer.base && base + 0x10000 > timer.base {
                     conflicts.push(("Timer".to_string(), timer.base));
                 }
             }
-            
+
             if !conflicts.is_empty() {
-                eprintln!("Warning: Flash region 0x{:08X}-0x{:08X} overlaps with:", base, base + 0x10000);
+                eprintln!(
+                    "Warning: Flash region 0x{:08X}-0x{:08X} overlaps with:",
+                    base,
+                    base + 0x10000
+                );
                 for (name, addr) in &conflicts {
                     eprintln!("  - {} at 0x{:08X}", name, addr);
                 }
             }
-            
+
             // Estimate sector size (typical 2KB for STM32F1)
             let sector_size = 2048u32;
             let num_sectors = ((base.wrapping_add(0x10000) - base) / sector_size) as usize;
             self.enable_flash(base, 0x10000, num_sectors.max(1), sector_size);
         }
-        
+
         if let Some(core) = self.arm.as_mut() {
             if let Some(base) = flash_base {
                 core.vtor = base & !3;
@@ -1788,7 +1792,7 @@ impl Simulator {
         if systick_irq && self.peripherals.systick.csr.intena {
             self.peripherals.irq_pending[1] = true; // IRQ line 1 = SysTick
         }
-        
+
         for timer in self.peripherals.timers.iter_mut() {
             let mut overflow = false;
             for _ in 0..cycles.max(1) {
@@ -1813,12 +1817,15 @@ impl Simulator {
                 }
             }
         }
-        
+
         // Poll DMA channels for transfer completion interrupts
         if let Some(dma) = self.peripherals.dma.as_ref() {
             for ch in &dma.channels {
-                if ch.en && ch.is_tc_with_irq() && ch.irq_line >= 0
-                   && ch.irq_line < self.peripherals.irq_pending.len() {
+                if ch.en
+                    && ch.is_tc_with_irq()
+                    && ch.irq_line >= 0
+                    && ch.irq_line < self.peripherals.irq_pending.len()
+                {
                     self.peripherals.irq_pending[ch.irq_line] = true;
                 }
             }
@@ -2533,7 +2540,7 @@ impl Simulator {
             self.peripherals.systick.write_reg(offset, value);
             return;
         }
-        
+
         // Check RTC first (before other periph that may share address space)
         if let Some(ref rtc) = self.peripherals.rtc {
             if rtc.contains(address) {
@@ -2668,7 +2675,7 @@ impl Simulator {
                     // Trigger EXTI if configured
                     if let Some(ref mut exti) = self.peripherals.exti {
                         if (pin as u8) < 16 {
-                            exti.pin_states[ pin as usize ] = value != 0;
+                            exti.pin_states[pin as usize] = value != 0;
                             let current_states = exti.pin_states;
                             let triggered = exti.sample(current_states);
                             for line in triggered {
@@ -2691,7 +2698,6 @@ impl Simulator {
                 return;
             }
         }
-        
     }
 
     /// Route writes to registered ADC peripherals.
@@ -2704,7 +2710,6 @@ impl Simulator {
                 return;
             }
         }
-        
     }
 
     /// Route writes to registered I2C peripherals.
@@ -2717,7 +2722,6 @@ impl Simulator {
                 return;
             }
         }
-        
     }
 
     /// Route writes to registered PWM peripherals.
@@ -2730,7 +2734,6 @@ impl Simulator {
                 return;
             }
         }
-        
     }
 
     /// Handle timer register writes (CR, PSC, CNT, ARR, SR).
@@ -3760,9 +3763,12 @@ impl Simulator {
     pub fn save_snapshot(&self, path: &str) -> Result<String, String> {
         let mut obj = serde_json::Map::new();
         obj.insert("pc".to_string(), serde_json::Value::from(self.pc));
-        obj.insert("cycle_count".to_string(), serde_json::Value::from(self.cycle_count));
+        obj.insert(
+            "cycle_count".to_string(),
+            serde_json::Value::from(self.cycle_count),
+        );
         obj.insert("halted".to_string(), serde_json::Value::from(self.halted));
-        
+
         // Save registers based on active architecture
         match self.arch {
             Arch::RiscV => {
@@ -3798,27 +3804,31 @@ impl Simulator {
                 return Err("Snapshot not supported for this architecture".to_string());
             }
         }
-        
+
         // Save key peripherals
         let mut periph = serde_json::Map::new();
         if !self.peripherals.gpio_events.is_empty() {
-            periph.insert("gpio_events".to_string(), 
-                serde_json::to_value(&self.peripherals.gpio_events).unwrap_or_default());
+            periph.insert(
+                "gpio_events".to_string(),
+                serde_json::to_value(&self.peripherals.gpio_events).unwrap_or_default(),
+            );
         }
         if let Some(ref flash) = self.peripherals.flash {
-            periph.insert("flash".to_string(), serde_json::to_value(flash).unwrap_or_default());
+            periph.insert(
+                "flash".to_string(),
+                serde_json::to_value(flash).unwrap_or_default(),
+            );
         }
         obj.insert("peripherals".to_string(), serde_json::Value::Object(periph));
-        
+
         let json = serde_json::to_string_pretty(&obj)
             .map_err(|e| format!("Serialization error: {}", e))?;
-        
-        std::fs::write(path, &json)
-            .map_err(|e| format!("IO error: {}", e))?;
-        
+
+        std::fs::write(path, &json).map_err(|e| format!("IO error: {}", e))?;
+
         Ok(path.to_string())
     }
-    
+
     /// Search memory for a byte pattern starting at `start`.
     /// Returns all matching addresses (0-indexed, physical address space).
     /// Uses naive O(n*m) substring search; suitable for typical embedded RAM sizes.
@@ -3828,7 +3838,7 @@ impl Simulator {
         }
         let mut matches = Vec::new();
         // Read up to `length` bytes from `start` and search for pattern
-        for offset in 0..length.saturating_sub(pattern.len() as u64 + 1) {
+        for offset in 0..length.saturating_sub(pattern.len() as u64) + 1 {
             let addr = start + offset;
             // Try to read each byte of pattern at consecutive addresses
             let mut found = true;
@@ -3851,19 +3861,18 @@ impl Simulator {
 
     /// Load simulator state from a previously saved JSON file.
     pub fn load_snapshot(&mut self, path: &str) -> Result<(), String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("IO error: {}", e))?;
-        
-        let obj: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| format!("Parse error: {}", e))?;
-        
+        let content = std::fs::read_to_string(path).map_err(|e| format!("IO error: {}", e))?;
+
+        let obj: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("Parse error: {}", e))?;
+
         self.pc = obj["pc"].as_u64().unwrap_or(0) as u32;
         self.cycle_count = obj["cycle_count"].as_u64().unwrap_or(0);
         self.halted = obj["halted"].as_bool().unwrap_or(false);
-        
+
         Ok(())
     }
-    
+
     pub fn snapshot(&self) -> SimState {
         let mut registers = HashMap::new();
         for (i, value) in self.registers.iter().enumerate() {
@@ -5103,35 +5112,88 @@ mod tests {
     }
 }
 
-    /// Test: save and load snapshot round-trip for RISC-V architecture.
+/// Test: save and load snapshot round-trip for RISC-V architecture.
+#[test]
+fn snapshot_save_load_roundtrip() {
+    use std::fs;
+
+    let mut sim = Simulator::for_arch(Arch::RiscV).unwrap();
+    sim.pc = 0x8000_0000;
+    sim.cycle_count = 100;
+    sim.halted = false;
+    sim.registers[1] = 0x1234_5678;
+    sim.registers[2] = 0xABCDEF00;
+
+    // Save to temp file in /tmp
+    let path = "/tmp/ns_sim_test_snapshot.json";
+    let saved = sim.save_snapshot(path).expect("save should succeed");
+    assert_eq!(saved, path);
+
+    // Verify file was created
+    assert!(std::path::Path::new(path).exists());
+
+    // Load into new simulator
+    let mut sim2 = Simulator::for_arch(Arch::RiscV).unwrap();
+    sim2.load_snapshot(path).expect("load should succeed");
+
+    // Verify basic state restored
+    assert_eq!(sim2.pc, 0x8000_0000);
+    assert_eq!(sim2.cycle_count, 100);
+    assert!(!sim2.halted);
+
+    // Cleanup
+    let _ = fs::remove_file(path);
+
+    /// `memsearch` finds all occurrences of a byte pattern in the memory image.
     #[test]
-    fn snapshot_save_load_roundtrip() {
-        use std::fs;
-        
+    fn memsearch_finds_single_and_multiple_occurrences() {
         let mut sim = Simulator::for_arch(Arch::RiscV).unwrap();
-        sim.pc = 0x8000_0000;
-        sim.cycle_count = 100;
-        sim.halted = false;
-        sim.registers[1] = 0x1234_5678;
-        sim.registers[2] = 0xABCDEF00;
-        
-        // Save to temp file in /tmp
-        let path = "/tmp/ns_sim_test_snapshot.json";
-        let saved = sim.save_snapshot(path).expect("save should succeed");
-        assert_eq!(saved, path);
-        
-        // Verify file was created
-        assert!(std::path::Path::new(path).exists());
-        
-        // Load into new simulator
-        let mut sim2 = Simulator::for_arch(Arch::RiscV).unwrap();
-        sim2.load_snapshot(path).expect("load should succeed");
-        
-        // Verify basic state restored
-        assert_eq!(sim2.pc, 0x8000_0000);
-        assert_eq!(sim2.cycle_count, 100);
-        assert!(!sim2.halted);
-        
-        // Cleanup
-        let _ = fs::remove_file(path);
+        // Seed the simulator's flat memory array with a known pattern.
+        let data: Vec<u8> = vec![0x11, 0x22, 0x33, 0x11, 0x22, 0x33, 0xFF];
+        sim.write_bytes(0, &data);
+
+        assert_eq!(sim.memsearch(0, 7, &[0x11]), vec![0, 3],);
+        // Search with overlap window: pattern len=3, length=7 → offsets 0..3.
+        // Offset 0 matches 0x11,0x22,0x33; offset 3 matches 0x11,0x22,0x33.
+        assert_eq!(sim.memsearch(0, 7, &[0x11, 0x22, 0x33]), vec![0, 3],);
+        assert!(sim.memsearch(0, 7, &[0xDE, 0xAD]).is_empty());
+        assert!(sim.memsearch(0, 7, &[]).is_empty());
+        assert!(sim.memsearch(0, 0, &[0x11]).is_empty());
     }
+
+    /// `memsearch` treats reads crossing into unmapped regions as non-matching.
+    #[test]
+    fn memsearch_handles_unmapped_regions() {
+        let mut sim = Simulator::for_arch(Arch::RiscV).unwrap();
+        sim.write_bytes(0, &[0xAA, 0xBB]);
+        // Byte at index 2 stays zero (unmapped effectively).
+        assert_eq!(sim.memsearch(0, 3, &[0xAA, 0xBB]), vec![0],);
+        assert!(sim.memsearch(0, 3, &[0xAA, 0xBB, 0xCC]).is_empty());
+    }
+}
+/// `memsearch` finds all occurrences of a byte pattern in the memory image.
+#[test]
+fn memsearch_finds_single_and_multiple_occurrences() {
+    let mut sim = Simulator::for_arch(Arch::RiscV).unwrap();
+    // Seed the simulator's flat memory array with a known pattern.
+    let data: Vec<u8> = vec![0x11, 0x22, 0x33, 0x11, 0x22, 0x33, 0xFF];
+    sim.write_bytes(0, &data);
+
+    assert_eq!(sim.memsearch(0, 7, &[0x11]), vec![0, 3],);
+    // Search with overlap window: pattern len=3, length=7 → offsets 0..3.
+    // Offset 0 matches 0x11,0x22,0x33; offset 3 matches 0x11,0x22,0x33.
+    assert_eq!(sim.memsearch(0, 7, &[0x11, 0x22, 0x33]), vec![0, 3],);
+    assert!(sim.memsearch(0, 7, &[0xDE, 0xAD]).is_empty());
+    assert!(sim.memsearch(0, 7, &[]).is_empty());
+    assert!(sim.memsearch(0, 0, &[0x11]).is_empty());
+}
+
+/// `memsearch` treats reads crossing into unmapped regions as non-matching.
+#[test]
+fn memsearch_handles_unmapped_regions() {
+    let mut sim = Simulator::for_arch(Arch::RiscV).unwrap();
+    sim.write_bytes(0, &[0xAA, 0xBB]);
+    // Byte at index 2 stays zero (unmapped effectively).
+    assert_eq!(sim.memsearch(0, 3, &[0xAA, 0xBB]), vec![0],);
+    assert!(sim.memsearch(0, 3, &[0xAA, 0xBB, 0xCC]).is_empty());
+}

@@ -15,7 +15,7 @@ pub const BOOKMARKS_FILE: &str = "bookmarks.json";
 
 /// A single source bookmark: a file path (project-relative) plus a 1-based
 /// line number and an optional user label.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Bookmark {
     pub path: String,
@@ -24,17 +24,6 @@ pub struct Bookmark {
     /// Monotonic creation order, used to keep the list stable and to allow
     /// restoring relative order after a load/save round trip.
     pub seq: u64,
-}
-
-impl Default for Bookmark {
-    fn default() -> Self {
-        Self {
-            path: String::new(),
-            line: 0,
-            label: String::new(),
-            seq: 0,
-        }
-    }
 }
 
 impl Bookmark {

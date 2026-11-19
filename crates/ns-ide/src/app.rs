@@ -601,6 +601,8 @@ struct PeriphConfigState {
 enum PinSignal {
     GpioOutput,
     GpioInput,
+    GpioInputPull,
+    GpioInputPullDown,
     Usart1Tx,
     Usart1Rx,
     Usart1Ck,
@@ -626,7 +628,6 @@ enum PinSignal {
     Tim2Ch2,
     Tim2Ch3,
     Tim2Ch4,
-    Tim2Ch1Etr,
     Tim1Ch1,
     Tim1Ch2,
     Tim1Ch3,
@@ -652,6 +653,8 @@ impl PinSignal {
         match self {
             PinSignal::GpioOutput => "GPIO 输出",
             PinSignal::GpioInput => "GPIO 输入",
+            PinSignal::GpioInputPull => "GPIO 输入·上拉",
+            PinSignal::GpioInputPullDown => "GPIO 输入·下拉",
             PinSignal::Usart1Tx => "USART1_TX",
             PinSignal::Usart1Rx => "USART1_RX",
             PinSignal::Usart1Ck => "USART1_CK",
@@ -677,7 +680,6 @@ impl PinSignal {
             PinSignal::Tim2Ch2 => "TIM2_CH2",
             PinSignal::Tim2Ch3 => "TIM2_CH3",
             PinSignal::Tim2Ch4 => "TIM2_CH4",
-            PinSignal::Tim2Ch1Etr => "TIM2_CH1_ETR",
             PinSignal::Tim1Ch1 => "TIM1_CH1",
             PinSignal::Tim1Ch2 => "TIM1_CH2",
             PinSignal::Tim1Ch3 => "TIM1_CH3",
@@ -702,6 +704,7 @@ impl PinSignal {
     fn group(self) -> &'static str {
         match self {
             PinSignal::GpioOutput | PinSignal::GpioInput => "GPIO",
+            PinSignal::GpioInputPull | PinSignal::GpioInputPullDown => "GPIO",
             PinSignal::Usart1Tx
             | PinSignal::Usart1Rx
             | PinSignal::Usart1Ck
@@ -725,8 +728,7 @@ impl PinSignal {
             | PinSignal::Tim2Ch2
             | PinSignal::Tim2Ch3
             | PinSignal::Tim2Ch4
-            | PinSignal::Tim2Ch1Etr => "TIM2",
-            PinSignal::Tim1Ch1
+            | PinSignal::Tim1Ch1
             | PinSignal::Tim1Ch2
             | PinSignal::Tim1Ch3
             | PinSignal::Tim1Ch4
@@ -749,6 +751,8 @@ impl PinSignal {
         match self {
             PinSignal::GpioOutput => PinMode::OutputPushPull,
             PinSignal::GpioInput => PinMode::InputFloat,
+            PinSignal::GpioInputPull => PinMode::InputPull,
+            PinSignal::GpioInputPullDown => PinMode::InputPullDown,
             PinSignal::I2c1Scl | PinSignal::I2c1Sda => PinMode::AltOpenDrain,
             PinSignal::UsbDm | PinSignal::UsbDp => PinMode::InputFloat,
             _ => PinMode::AltPushPull,
@@ -759,6 +763,8 @@ impl PinSignal {
         match self {
             PinSignal::GpioOutput => theme::JADE,
             PinSignal::GpioInput => theme::TEXT_FAINT,
+            PinSignal::GpioInputPull => theme::ACCENT_3,
+            PinSignal::GpioInputPullDown => theme::ACCENT_2,
             PinSignal::Usart1Tx
             | PinSignal::Usart1Rx
             | PinSignal::Usart1Ck
@@ -782,7 +788,6 @@ impl PinSignal {
             | PinSignal::Tim2Ch2
             | PinSignal::Tim2Ch3
             | PinSignal::Tim2Ch4
-            | PinSignal::Tim2Ch1Etr
             | PinSignal::Tim1Ch1
             | PinSignal::Tim1Ch2
             | PinSignal::Tim1Ch3
@@ -1853,25 +1858,116 @@ fn stm32f1_allowed_signals(port: char, pin: usize) -> &'static [PinSignal] {
         ('A', 10) => &[GpioOutput, GpioInput, Usart1Rx, Tim1Ch3],
         ('A', 11) => &[GpioOutput, GpioInput, Usart1Cts, Can1Rx, UsbDm, Tim1Ch4],
         ('A', 12) => &[GpioOutput, GpioInput, Usart1Rts, Can1Tx, UsbDp, Tim1Etr],
-        ('A', 13) => &[GpioOutput, GpioInput],
-        ('A', 14) => &[GpioOutput, GpioInput],
-        ('A', 15) => &[GpioOutput, GpioInput, Spi1Nss, Tim2Ch1Etr],
-        ('B', 0) => &[GpioOutput, GpioInput, Tim3Ch3],
-        ('B', 1) => &[GpioOutput, GpioInput, Tim3Ch4],
-        ('B', 3) => &[GpioOutput, GpioInput, Spi1Sck],
-        ('B', 4) => &[GpioOutput, GpioInput, Spi1Miso],
-        ('B', 5) => &[GpioOutput, GpioInput, Spi1Mosi],
-        ('B', 6) => &[GpioOutput, GpioInput, I2c1Scl, Usart1Tx, Tim4Ch1],
-        ('B', 7) => &[GpioOutput, GpioInput, I2c1Sda, Usart1Rx, Tim4Ch2],
-        ('B', 8) => &[GpioOutput, GpioInput, I2c1Scl, Tim4Ch3],
-        ('B', 9) => &[GpioOutput, GpioInput, I2c1Sda, Tim4Ch4],
-        ('B', 10) => &[GpioOutput, GpioInput, Usart3Tx],
-        ('B', 11) => &[GpioOutput, GpioInput, Usart3Rx],
-        ('B', 12) => &[GpioOutput, GpioInput, Usart3Ck, Tim1Bkin],
-        ('B', 13) => &[GpioOutput, GpioInput, Usart3Cts],
-        ('B', 14) => &[GpioOutput, GpioInput, Usart3Rts],
-        ('B', 15) => &[GpioOutput, GpioInput],
-        _ => &[GpioOutput, GpioInput],
+        ('A', 13) => &[GpioOutput, GpioInput, GpioInputPull, GpioInputPullDown],
+        ('A', 14) => &[GpioOutput, GpioInput, GpioInputPull, GpioInputPullDown],
+        ('A', 15) => &[GpioOutput, GpioInput, Spi1Nss],
+        ('B', 0) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim3Ch3,
+        ],
+        ('B', 1) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Tim3Ch4,
+        ],
+        ('B', 3) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Sck,
+        ],
+        ('B', 4) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Miso,
+        ],
+        ('B', 5) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Spi1Mosi,
+        ],
+        ('B', 6) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c1Scl,
+            Usart1Tx,
+            Tim4Ch1,
+        ],
+        ('B', 7) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c1Sda,
+            Usart1Rx,
+            Tim4Ch2,
+        ],
+        ('B', 8) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c1Scl,
+            Tim4Ch3,
+        ],
+        ('B', 9) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            I2c1Sda,
+            Tim4Ch4,
+        ],
+        ('B', 10) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Tx,
+        ],
+        ('B', 11) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Rx,
+        ],
+        ('B', 12) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Ck,
+            Tim1Bkin,
+        ],
+        ('B', 13) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Cts,
+        ],
+        ('B', 14) => &[
+            GpioOutput,
+            GpioInput,
+            GpioInputPull,
+            GpioInputPullDown,
+            Usart3Rts,
+        ],
+        ('B', 15) => &[GpioOutput, GpioInput, GpioInputPull, GpioInputPullDown],
+        _ => &[GpioOutput, GpioInput, GpioInputPull, GpioInputPullDown],
     }
 }
 
@@ -2396,12 +2492,6 @@ fn pin_signal_is_remap(signal: PinSignal, port: char, pin: usize) -> bool {
         (PinSignal::I2c1Scl | PinSignal::I2c1Sda, 'B', 8..=9) => true,
         (PinSignal::Usart1Tx | PinSignal::Usart1Rx, 'B', 6..=7) => true,
         (PinSignal::Usart3Tx | PinSignal::Usart3Rx, 'C', 10..=11) => true,
-        // TIM2 partial remap: CH1_ETR → PA15, CH2 → PB3, CH3/CH4 → PB10/PB11.
-        (PinSignal::Tim2Ch1Etr, 'A', 15) | (PinSignal::Tim2Ch2, 'B', 3) => true,
-        // TIM3 partial remap: CH1/CH2 → PB4/PB5.
-        (PinSignal::Tim3Ch1 | PinSignal::Tim3Ch2, 'B', 4..=5) => true,
-        // CAN1 remap: RX/TX → PB8/PB9.
-        (PinSignal::Can1Rx | PinSignal::Can1Tx, 'B', 8..=9) => true,
         _ => false,
     }
 }
@@ -2606,8 +2696,7 @@ fn stm32f1_pin_clocks(dialog: &PinMapDialog) -> (u32, u32) {
                 PinSignal::Tim2Ch1
                 | PinSignal::Tim2Ch2
                 | PinSignal::Tim2Ch3
-                | PinSignal::Tim2Ch4
-                | PinSignal::Tim2Ch1Etr => apb1 |= 1 << 0, // TIM2EN
+                | PinSignal::Tim2Ch4 => apb1 |= 1 << 0, // TIM2EN
                 PinSignal::Tim1Ch1
                 | PinSignal::Tim1Ch2
                 | PinSignal::Tim1Ch3
@@ -2628,6 +2717,8 @@ fn stm32f1_pin_clocks(dialog: &PinMapDialog) -> (u32, u32) {
                 }
                 PinSignal::Can1Rx | PinSignal::Can1Tx => apb1 |= 1 << 25, // CAN1EN
                 PinSignal::UsbDm | PinSignal::UsbDp => apb1 |= 1 << 23,   // USBFSEN / USBIP
+                // GPIO input pull-up/pull-down variants don't enable any peripheral clock.
+                PinSignal::GpioInputPull | PinSignal::GpioInputPullDown => {}
             }
         }
     }
@@ -2639,7 +2730,7 @@ fn stm32f1_pin_clocks(dialog: &PinMapDialog) -> (u32, u32) {
 
 /// Pack a port's assigned signals into STM32F1 `CRL`/`CRH` values. Every
 /// unassigned pin stays input-float (0x4).
-fn stm32f1_pin_registers(port: &PinMapPort) -> (u64, u64) {
+fn stm32f1_pin_registers(port: &PinMapPort) -> (u64, u64, u32, u32) {
     let mut modes = vec![PinMode::InputFloat; 16];
     for (slot, assignment) in port.pins.iter().enumerate() {
         let pin = port.start_pin + slot;
@@ -2649,7 +2740,40 @@ fn stm32f1_pin_registers(port: &PinMapPort) -> (u64, u64) {
                 .unwrap_or(PinMode::InputFloat);
         }
     }
-    stm32f1_gpio_registers(&modes)
+    let (crl, crh) = stm32f1_gpio_registers(&modes);
+    let ospeedr: u32 = modes
+        .iter()
+        .enumerate()
+        .map(|(pin, mode)| ((stm32f1_speed_bits(*mode)) as u32) << (pin * 2))
+        .sum();
+    let pupdr: u32 = modes
+        .iter()
+        .enumerate()
+        .map(|(pin, mode)| ((stm32f1_pull_bits(*mode)) as u32) << (pin * 2))
+        .sum();
+    (crl, crh, ospeedr, pupdr)
+}
+
+/// Output-speed bits for one F1 GPIO pin: high speed (0b10) for output/AF pins,
+/// default 2 MHz (0b00) for plain inputs.
+fn stm32f1_speed_bits(mode: PinMode) -> u8 {
+    match mode {
+        PinMode::OutputPushPull
+        | PinMode::OutputOpenDrain
+        | PinMode::AltPushPull
+        | PinMode::AltOpenDrain => 0b10,
+        _ => 0b00,
+    }
+}
+
+/// Pull-up/pull-down bits for one F1 GPIO pin. Only the pulled-input variants
+/// drive a resistor; everything else stays at reset value (0b00).
+fn stm32f1_pull_bits(mode: PinMode) -> u8 {
+    match mode {
+        PinMode::InputPull => 0b01,
+        PinMode::InputPullDown => 0b10,
+        _ => 0b00,
+    }
 }
 
 /// Generate `src/pin_mapping.c` for a validated STM32F103C (LQFP48) pin map.
@@ -2670,6 +2794,8 @@ typedef struct {
     volatile uint32_t BSRR;  /* 0x10 */
     volatile uint32_t BRR;   /* 0x14 */
     volatile uint32_t LCKR;  /* 0x18 */
+    volatile uint32_t OSPEEDR; /* 0x1C */
+    volatile uint32_t PUPDR;   /* 0x20 */
 } ns_gpio_f1_t;
 
 typedef struct {
@@ -2735,9 +2861,14 @@ fn stm32f1_pin_mapping_code(dialog: &PinMapDialog) -> String {
         if !port.pins.iter().any(|assignment| assignment.is_some()) {
             continue;
         }
-        let (crl, crh) = stm32f1_pin_registers(port);
+        let (crl, crh, ospeedr, pupdr) = stm32f1_pin_registers(port);
         code.push_str(&format!("    GPIO{}->CRL = {crl:#010x}u;\n", port.port));
         code.push_str(&format!("    GPIO{}->CRH = {crh:#010x}u;\n", port.port));
+        code.push_str(&format!(
+            "    GPIO{}->OSPEEDR = {ospeedr:#010x}u;\n",
+            port.port
+        ));
+        code.push_str(&format!("    GPIO{}->PUPDR = {pupdr:#010x}u;\n", port.port));
     }
     code.push_str("}\n");
     code
@@ -34089,12 +34220,12 @@ mod tests {
         assert_eq!(stm32f1_remap_bits(&dialog), 0x6, "MAPR");
 
         let port_a = &dialog.ports[0];
-        let (crl, crh) = stm32f1_pin_registers(port_a);
+        let (crl, crh, _ospeedr, _pupdr) = stm32f1_pin_registers(port_a);
         assert_eq!(crl, 0xBBBBBBBB, "GPIOA CRL all AF push-pull");
         assert_eq!(crh, 0x44444444, "GPIOA CRH input-float");
 
         let port_b = &dialog.ports[1];
-        let (crl, crh) = stm32f1_pin_registers(port_b);
+        let (crl, crh, _ospeedr, _pupdr) = stm32f1_pin_registers(port_b);
         assert_eq!(crl, 0xBB444443, "GPIOB CRL");
         // PB8/PB9 I2C open-drain, PB10/PB11 USART3 AF, rest input-float.
         assert_eq!(crh, 0x4444BBFF, "GPIOB CRH");
@@ -34120,7 +34251,7 @@ mod tests {
         dialog.ports[port_c].pins[0] = Some(PinSignal::GpioOutput);
 
         assert!(validate_pin_mapping(&dialog).is_empty());
-        let (crl, crh) = stm32f1_pin_registers(&dialog.ports[port_c]);
+        let (crl, crh, _ospeedr, _pupdr) = stm32f1_pin_registers(&dialog.ports[port_c]);
         assert_eq!(crl, 0x44444444, "PC13-15 are CRH pins");
         assert_eq!(crh, 0x44344444, "PC13 output push-pull");
         let (apb2, _) = stm32f1_pin_clocks(&dialog);
@@ -34254,6 +34385,119 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             app
         });
+    }
+
+    /// Expanded STM32F103C6 C8 CB LQFP48 AF table covers TIM1/3/4, CAN1, USB
+    /// and USART handshake lines alongside the original USART/SPI/I2C/TIM2 set.
+    #[test]
+    fn f103_expanded_af_table_has_tim1_3_4_can_usb_and_usart_handshake() {
+        use PinSignal::*;
+
+        // TIM1 on PA8-12 and PB12.
+        assert!(
+            stm32f1_allowed_signals('A', 8).contains(&Tim1Ch1),
+            "PA8 offers TIM1_CH1"
+        );
+        assert!(
+            stm32f1_allowed_signals('A', 11).contains(&Tim1Ch4),
+            "PA11 offers TIM1_CH4"
+        );
+        assert!(
+            stm32f1_allowed_signals('A', 12).contains(&Tim1Etr),
+            "PA12 offers TIM1_ETR"
+        );
+        assert!(
+            stm32f1_allowed_signals('B', 12).contains(&Tim1Bkin),
+            "PB12 offers TIM1_BKIN"
+        );
+        // TIM3 full quad on PB0/PB1 + alternate positions.
+        assert!(stm32f1_allowed_signals('B', 0).contains(&Tim3Ch3));
+        assert!(stm32f1_allowed_signals('B', 1).contains(&Tim3Ch4));
+        // TIM4 on PB6-PB9.
+        assert!(stm32f1_allowed_signals('B', 6).contains(&Tim4Ch1));
+        assert!(stm32f1_allowed_signals('B', 7).contains(&Tim4Ch2));
+        assert!(stm32f1_allowed_signals('B', 8).contains(&Tim4Ch3));
+        assert!(stm32f1_allowed_signals('B', 9).contains(&Tim4Ch4));
+        // CAN1 on PA11/12 (shared with USB, which is the correct default pin set).
+        assert!(stm32f1_allowed_signals('A', 11).contains(&Can1Rx));
+        assert!(stm32f1_allowed_signals('A', 12).contains(&Can1Tx));
+        // USB_DM/DP on PA11/12.
+        assert!(stm32f1_allowed_signals('A', 11).contains(&UsbDm));
+        assert!(stm32f1_allowed_signals('A', 12).contains(&UsbDp));
+        // USART handshake lines on A2-A4 and B10-B14.
+        assert!(stm32f1_allowed_signals('A', 2).contains(&Usart2Tx));
+        assert!(stm32f1_allowed_signals('A', 4).contains(&Usart2Ck));
+        assert!(stm32f1_allowed_signals('B', 10).contains(&Usart3Tx));
+        assert!(stm32f1_allowed_signals('B', 13).contains(&Usart3Cts));
+        assert!(stm32f1_allowed_signals('B', 14).contains(&Usart3Rts));
+
+        // Generate a map using the new peripherals and verify clocks are emitted.
+        let mut dialog = PinMapDialog::for_target("stm32f103c8".to_string());
+        // Set some expanded-function pins.
+        let assign = |dialog: &mut PinMapDialog, port: char, pin: usize, signal: PinSignal| {
+            let idx = dialog.ports.iter().position(|p| p.port == port).unwrap();
+            let slot = pin - dialog.ports[idx].start_pin;
+            dialog.ports[idx].pins[slot] = Some(signal);
+        };
+        assign(&mut dialog, 'A', 8, Tim1Ch1);
+        assign(&mut dialog, 'B', 0, Tim3Ch3);
+        assign(&mut dialog, 'B', 6, Tim4Ch1);
+        assign(&mut dialog, 'A', 11, Can1Rx);
+        assign(&mut dialog, 'A', 12, UsbDp);
+
+        assert!(
+            validate_pin_mapping(&dialog).is_empty(),
+            "expanded F1 map must be valid: {:?}",
+            validate_pin_mapping(&dialog)
+        );
+
+        let code = stm32f1_pin_mapping_code(&dialog);
+        // APB2: IOPAEN(2)+IOPBEN(3)+TIM1EN(11)=0x080c.
+        assert!(code.contains("RCC->APB2ENR |= 0x0000080cu;"), "{code}");
+        // APB1: TIM1EN would be on APB2; here we get TIM4EN(2)+TIM3EN(1)+CAN1EN(25)+USBFSEN(23)=0x02800006.
+        assert!(code.contains("RCC->APB1ENR |= 0x02800006u;"), "{code}");
+    }
+
+    /// GPIO input pull-up/pull-down variants are packed into both the CRL/CRH
+    /// mode nibbles and the new OSPEEDR/PUPDR registers, so the generated
+    /// `src/pin_mapping.c` carries the complete pin configuration.
+    #[test]
+    fn f103_pin_registers_pack_ospeedr_and_pupdr() {
+        use PinSignal::*;
+        let mut dialog = PinMapDialog::for_target("stm32f103c8".to_string());
+        // PA0 = AF push-pull (TIM2_CH1) → speed high (0b10), no pull.
+        // PA1 = GPIO input pull-up → speed default (0b00), pull-up (0b01).
+        // PA2 = GPIO output push-pull → speed high (0b10), no pull.
+        assign(&mut dialog, 'A', 0, Tim2Ch1);
+        assign(&mut dialog, 'A', 1, GpioInputPull);
+        assign(&mut dialog, 'A', 2, GpioOutput);
+        // PB0-PB15 all remain unassigned (input-float: speed=0, pull=0).
+
+        assert!(validate_pin_mapping(&dialog).is_empty());
+
+        let port_a = &dialog.ports[0];
+        let (crl, _crh, ospeedr, pupdr) = stm32f1_pin_registers(port_a);
+        assert_eq!(crl & 0xF, 0xB, "PA0 AF push-pull in CRL");
+        assert_eq!((crl >> 4) & 0xF, 0x8, "PA1 InputPull in CRL");
+        assert_eq!((crl >> 8) & 0xF, 0x3, "PA2 OutputPushPull in CRL");
+        // OSPEEDR: PA0=high(2)<<0, PA1=default(0)<<2, PA2=high(2)<<4
+        assert_eq!(ospeedr & 0x3, 0b10, "PA0 AF → high speed");
+        assert_eq!((ospeedr >> 2) & 0x3, 0b00, "PA1 input → default speed");
+        assert_eq!((ospeedr >> 4) & 0x3, 0b10, "PA2 output → high speed");
+        // PUPDR: PA0=0, PA1=pull-up(1)<<2, PA2=0
+        assert_eq!(pupdr & 0x3, 0b00, "PA0 no pull");
+        assert_eq!((pupdr >> 2) & 0x3, 0b01, "PA1 pull-up");
+        assert_eq!((pupdr >> 4) & 0x3, 0b00, "PA2 no pull");
+
+        let code = stm32f1_pin_mapping_code(&dialog);
+        assert!(code.contains("GPIOA->OSPEEDR"), "missing OSPEEDR write");
+        assert!(code.contains("GPIOA->PUPDR"), "missing PUPDR write");
+    }
+
+    fn assign(dialog: &mut PinMapDialog, port: char, pin: usize, signal: PinSignal) {
+        let idx = dialog.ports.iter().position(|p| p.port == port).unwrap();
+        let slot = pin - dialog.ports[idx].start_pin;
+        dialog.ports[idx].pins[slot] = Some(signal);
     }
 
     /// The STM32F407 pin map packs MODER (2 bits/pin), AFRL/AFRH (4 bits/pin,

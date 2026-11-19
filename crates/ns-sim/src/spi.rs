@@ -133,7 +133,7 @@ pub struct SpiStatus {
 impl Default for SpiStatus {
     fn default() -> Self {
         Self {
-            txe: true,   // Empty initially
+            txe: true, // Empty initially
             rxne: false,
             bsy: false,
             mrf: false,
@@ -166,14 +166,14 @@ impl Default for SpiCr1 {
     fn default() -> Self {
         Self {
             en: false,
-            mstr: true,  // Default to master mode
+            mstr: true, // Default to master mode
             cpol: false,
             cpha: false,
-            br: 0b000,   // DIV2
+            br: 0b000, // DIV2
             ssm: false,
             ssi: false,
         }
-  }
+    }
 }
 
 /// Virtual SPI peripheral state.
@@ -235,21 +235,41 @@ impl SpiPeripheral {
             0x04 => {
                 // Encode CR1 fields
                 let mut reg = 0u32;
-                if self.cr1.en { reg |= 1 << 0; }
-                if self.cr1.mstr { reg |= 1 << 2; }
-                if self.cr1.cpol { reg |= 1 << 1; }
-                if self.cr1.cpha { reg |= 1 << 3; }
+                if self.cr1.en {
+                    reg |= 1 << 0;
+                }
+                if self.cr1.mstr {
+                    reg |= 1 << 2;
+                }
+                if self.cr1.cpol {
+                    reg |= 1 << 1;
+                }
+                if self.cr1.cpha {
+                    reg |= 1 << 3;
+                }
                 reg |= ((self.cr1.br & 0x7) as u32) << 5;
-                if self.cr1.ssm { reg |= 1 << 8; }
-                if self.cr1.ssi { reg |= 1 << 9; }
+                if self.cr1.ssm {
+                    reg |= 1 << 8;
+                }
+                if self.cr1.ssi {
+                    reg |= 1 << 9;
+                }
                 reg
             }
             0x08 => {
                 let mut reg = 0u32;
-                if self.sr.txe { reg |= 1 << 1; }
-                if self.sr.rxne { reg |= 1 << 0; }
-                if self.sr.bsy { reg |= 1 << 6; }
-                if self.sr.ovr { reg |= 1 << 5; }
+                if self.sr.txe {
+                    reg |= 1 << 1;
+                }
+                if self.sr.rxne {
+                    reg |= 1 << 0;
+                }
+                if self.sr.bsy {
+                    reg |= 1 << 6;
+                }
+                if self.sr.ovr {
+                    reg |= 1 << 5;
+                }
                 reg
             }
             0x0C => {
@@ -289,14 +309,14 @@ impl SpiPeripheral {
                 let old_en = self.cr1.en;
                 self.cr1 = new_cr1;
                 self.update_divider();
-                
+
                 // Update slave select state based on SSI/SSM
                 if self.cr1.ssm && self.cr1.ssi {
                     self.last_ss_state = true;
                 } else if self.cr1.ssm {
                     self.last_ss_state = false;
                 }
-                
+
                 // Clear flags when disabling
                 if !self.cr1.en && old_en {
                     self.sr.txe = true;
@@ -324,11 +344,11 @@ impl SpiPeripheral {
 
         if self.bit_cycle >= self.div as u64 {
             self.bit_cycle -= self.div as u64;
-            
+
             // Shift out one bit (MSB first)
             // let tx_bit = (self.tx_shift >> (7 - self.tx_count)) & 1;
             self.tx_shift <<= 1;
-            
+
             // Shift in received bit (simulate as 0 for now)
             let rx_bit: u8 = 0;
             self.rx_shift = (self.rx_shift << 1) | rx_bit;
@@ -400,7 +420,7 @@ mod tests {
     fn spi_dr_write_sets_bsy_and_cleares_txe() {
         let mut spi = SpiPeripheral::new(0x4001_3000);
         spi.write_reg(0x04, 0x0023); // Enable
-        spi.write_reg(0x00, 0x42);   // Write data
+        spi.write_reg(0x00, 0x42); // Write data
         assert!(spi.sr.bsy);
         assert!(!spi.sr.txe);
         assert!(!spi.sr.rxne);
@@ -410,13 +430,13 @@ mod tests {
     fn spi_tick_completes_byte_transfer() {
         let mut spi = SpiPeripheral::new(0x4001_3000);
         spi.write_reg(0x04, 0x0023); // Enable, DIV2
-        spi.write_reg(0x00, 0x42);   // Start transmission
-        
+        spi.write_reg(0x00, 0x42); // Start transmission
+
         // Need to tick enough times for 8 bits at DIV2
         for _ in 0..16 {
             spi.tick(2);
         }
-        
+
         assert!(!spi.sr.bsy);
         assert!(spi.sr.rxne);
         assert_eq!(spi.rx_buffer.len(), 1);
@@ -428,7 +448,7 @@ mod tests {
         assert_eq!(SpiCpolCpha::from_cr1(false, true), SpiCpolCpha::Mode1);
         assert_eq!(SpiCpolCpha::from_cr1(true, false), SpiCpolCpha::Mode2);
         assert_eq!(SpiCpolCpha::from_cr1(true, true), SpiCpolCpha::Mode3);
-        
+
         assert!(!SpiCpolCpha::Mode0.cpol());
         assert!(!SpiCpolCpha::Mode0.cpha());
         assert!(SpiCpolCpha::Mode1.cpha());

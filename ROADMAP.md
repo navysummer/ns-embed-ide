@@ -748,6 +748,37 @@ P44 起 F407 生成代码只写 GPIO 端口的 `AHB1ENR`；复用脚对应的外
 
 > 执行顺序：P1 → P49 已完成。迭代 30 新增 **P49（时钟树生成代码自包含 RCC）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
 
+### P50 · STM32F103C6/C8/CB LQFP48 引脚映射扩展外设与输入上下拉（迭代 31）
+
+上一轮引脚映射图只覆盖基础外设（USART1/2/3、SPI1、I2C1、TIM2 + 普通 GPIO），但 F407 已覆盖 TIM1/3/4、CAN、USB、完整 USART 握手线。同一目标家族内部体验不对称。
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| F4PIN-59 | `PinSignal` 枚举扩展 | 新增 `Usart1Ck/Cts/Rts`、`Usart2Ck/Cts/Rts`、`Usart3Ck/Cts/Rts`、`Tim2Ch3/Ch4`、`Tim1Ch1-Ch4/Bkin/Etr`、`Tim3Ch1-Ch4`、`Tim4Ch1-Ch4`、`Can1Rx/Tx`、`UsbDm/Dp`；原有 `label()`/`group()`/`mode()`/`color()` 全部补齐，I2C 复用保持开漏，USB_DM/DP 复用输入高阻 |
+| F4PIN-60 | AF 表重写 | `stm32f1_allowed_signals` 从原来只覆盖 PA0/1/2/3/4/5/6/7/9/10/15、PB3-11，扩展到覆盖 **PA0-12、PB0-1、PB3-14**；均使用**默认引脚**不引入重映射以避免 `pin_signal_is_remap` 语义复杂化 |
+| F4PIN-61 | 时钟使能补齐 | `stm32f1_pin_clocks` 为 TIM1 (`APB2ENR bit 11`)、TIM3 (`APB1ENR bit 1`)、TIM4 (`APB1ENR bit 2`)、CAN1 (`APB1ENR bit 25`)、USBFSEN (`APB1ENR bit 23`) 补全对应 `|=` 位 |
+| F4PIN-62 | 单测 | 新增 `f103_expanded_af_table_has_tim1_3_4_can_usb_and_usart_handshake`：逐项断言 PA8/11/12/PB0/PB1/PB6-PB9 的允许信号集合含新增变体；构造有效分配后调用 `validate_pin_mapping` 通过；再生成代码并断言 APB2/APB1 寄存器值含对应外设时钟位；旧测试不变，全部通过 |
+
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **685 项全绿**（不含沙箱限制的 2 个 socket 测试）。
+
+> 执行顺序：P1 → P50 已完成。迭代 31 新增 **P50（F103 引脚映射扩展外设）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
+### P51 · STM32F103 GPIO 输入上拉/下拉 + OSPEEDR/PUPDR（迭代 32）
+
+P42 给 F407 补了 `GpioInputPull`/`GpioInputPullDown` 和 `OSPEEDR`/`PUPDR` 寄存器生成，但 F103 同样有这两个寄存器（地址偏移 0x1C/0x20），且 P50 新加的 GPIO 上下拉信号需要能真正写入硬件。
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| F4PIN-63 | `PinSignal` 扩展 | 新增 `GpioInputPull`、`GpioInputPullDown` 两个变体；`label()` 输出「GPIO 输入·上拉」/「GPIO 输入·下拉」，`group()` 归入 `GPIO`，`mode()` 映射 `PinMode::InputPull`/`InputPullDown`，`color()` 分别使用 `ACCENT_3`/`ACCENT_2`（与 F407 一致） |
+| F4PIN-64 | AF 表扩展 | `stm32f1_allowed_signals` 所有分支在 `GpioOutput/GpioInput` 后追加 `GpioInputPull/GpioInputPullDown`，点击循环变为「未分配 → GPIO 输出 → GPIO 输入 → 输入·上拉 → 输入·下拉 → AF… → 未分配」 |
+| F4PIN-65 | 寄存器打包 | `stm32f1_pin_registers` 返回 `(CRL, CRH, OSPEEDR, PUPDR)`；新增 `stm32f1_speed_bits`（输出/复用=高速 0b10，输入=默认 0b00）与 `stm32f1_pull_bits`（上拉 0b01、下拉 0b10）；未赋值引脚速度/上拉均为 0 |
+| F4PIN-66 | 代码生成补齐 | `STM32F1_REGISTER_PRELUDE` 中 `ns_gpio_f1_t` 增加 `OSPEEDR`（0x1C）/`PUPDR`（0x20）字段；`stm32f1_pin_mapping_code` 对每个已分配端口额外发出 `GPIOX->OSPEEDR` 与 `GPIOX->PUPDR` 写入行 |
+| F4PIN-67 | 单测 | 新增 `f103_pin_registers_pack_ospeedr_and_pupdr`：构造 PA0=AF推挽/PA1=输入上拉/PA2=输出推挽的分配，断言 CRL 低三个 nibble 正确、OSPEEDR 对应位 0b10/0b00/0b10、PUPDR 对应位 0b00/0b01/0b00，生成代码包含 `GPIOA->OSPEEDR` 与 `GPIOA->PUPDR` 写入 |
+
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **94 项全绿**（不含沙箱限制的 2 个 socket 测试）。
+
+> 执行顺序：P1 → P51 已完成。迭代 32 新增 **P51（F103 GPIO 输入上下拉 + OSPEEDR/PUPDR）** 全部完成并同步文档；🔒 attach 硬件验证贯穿（需硬件，未验证）。
+
 1. `cargo check --workspace` 0 警告 0 错误；禁止 `#[allow(dead_code)]` 等掩盖。
 2. 功能完整实现，禁止 `todo!()`/占位/假数据/「仅演示路径」。
 3. 提交前本机实际运行验证关键路径。

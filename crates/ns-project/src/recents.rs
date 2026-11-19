@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,7 +39,7 @@ pub fn load_recents() -> Vec<RecentProject> {
         .map(|file| file.projects)
         .unwrap_or_default();
     recents.retain(|recent| recent.path.is_dir());
-    recents.sort_by(|a, b| b.opened_at.cmp(&a.opened_at));
+    recents.sort_by_key(|recent| Reverse(recent.opened_at));
     recents
 }
 

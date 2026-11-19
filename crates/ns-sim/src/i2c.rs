@@ -92,14 +92,14 @@ impl Default for I2cState {
 /// Status flags in SR1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct I2cSr1Flags {
-    pub sb: bool,      // Start bit sent
-    pub addr: bool,    // Address matched
-    pub btf: bool,     // Byte transfer finished
-    pub rxne: bool,    // Read data register not empty
-    pub txe: bool,     // Transmit data register empty
-    pub stopf: bool,   // Stop condition detected
-    pub arlo: bool,    // Arbitration lost
-    pub ovr: bool,     // Overrun/underrun
+    pub sb: bool,    // Start bit sent
+    pub addr: bool,  // Address matched
+    pub btf: bool,   // Byte transfer finished
+    pub rxne: bool,  // Read data register not empty
+    pub txe: bool,   // Transmit data register empty
+    pub stopf: bool, // Stop condition detected
+    pub arlo: bool,  // Arbitration lost
+    pub ovr: bool,   // Overrun/underrun
 }
 
 impl Default for I2cSr1Flags {
@@ -109,7 +109,7 @@ impl Default for I2cSr1Flags {
             addr: false,
             btf: false,
             rxne: false,
-            txe: true,    // Initially empty, ready to send
+            txe: true, // Initially empty, ready to send
             stopf: false,
             arlo: false,
             ovr: false,
@@ -120,14 +120,30 @@ impl Default for I2cSr1Flags {
 impl I2cSr1Flags {
     pub fn encode(&self) -> u32 {
         let mut reg = 0u32;
-        if self.sb { reg |= 1 << 0; }
-        if self.addr { reg |= 1 << 1; }
-        if self.btf { reg |= 1 << 2; }
-        if self.rxne { reg |= 1 << 6; }
-        if self.txe { reg |= 1 << 7; }
-        if self.stopf { reg |= 1 << 8; }
-        if self.arlo { reg |= 1 << 6; }
-        if self.ovr { reg |= 1 << 5; }
+        if self.sb {
+            reg |= 1 << 0;
+        }
+        if self.addr {
+            reg |= 1 << 1;
+        }
+        if self.btf {
+            reg |= 1 << 2;
+        }
+        if self.rxne {
+            reg |= 1 << 6;
+        }
+        if self.txe {
+            reg |= 1 << 7;
+        }
+        if self.stopf {
+            reg |= 1 << 8;
+        }
+        if self.arlo {
+            reg |= 1 << 6;
+        }
+        if self.ovr {
+            reg |= 1 << 5;
+        }
         reg
     }
 
@@ -148,17 +164,17 @@ impl I2cSr1Flags {
 /// Status flags in SR2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct I2cSr2Flags {
-    pub msl: bool,     // Master/Slave detector
-    pub busy: bool,    // Bus busy
-    pub tr: bool,      // Transfer direction (1=Tx, 0=Rx)
+    pub msl: bool,  // Master/Slave detector
+    pub busy: bool, // Bus busy
+    pub tr: bool,   // Transfer direction (1=Tx, 0=Rx)
 }
 
 impl Default for I2cSr2Flags {
     fn default() -> Self {
         Self {
-            msl: true,      // Always master in this model
+            msl: true, // Always master in this model
             busy: false,
-            tr: true,       // Default to transmit
+            tr: true, // Default to transmit
         }
     }
 }
@@ -166,17 +182,17 @@ impl Default for I2cSr2Flags {
 /// Control register 1 fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct I2cCr1 {
-    pub pe: bool,     // Peripheral enable
-    pub swrst: bool,  // Software reset
-    pub nack: bool,   // NACK generation
-    pub pos: bool,    // Prompt ACK
-    pub ack: bool,    // ACK enable
-    pub scle: bool,   // Clock stretch enable
-    pub enbuf: bool,  // Buffer enable
-    pub enerr: bool,  // Error interrupt enable
-    pub entie: bool,  // ERR interrupt enable
-    pub enic: bool,// ITIC enable
-    pub enis: bool,// ITIS enable
+    pub pe: bool,    // Peripheral enable
+    pub swrst: bool, // Software reset
+    pub nack: bool,  // NACK generation
+    pub pos: bool,   // Prompt ACK
+    pub ack: bool,   // ACK enable
+    pub scle: bool,  // Clock stretch enable
+    pub enbuf: bool, // Buffer enable
+    pub enerr: bool, // Error interrupt enable
+    pub entie: bool, // ERR interrupt enable
+    pub enic: bool,  // ITIC enable
+    pub enis: bool,  // ITIS enable
 }
 
 impl Default for I2cCr1 {
@@ -200,17 +216,37 @@ impl Default for I2cCr1 {
 impl I2cCr1 {
     pub fn encode(&self) -> u32 {
         let mut reg = 0u32;
-        if self.pe { reg |= 1 << 0; }
-        if self.swrst { reg |= 1 << 1; }
-        if self.nack { reg |= 1 << 10; }
-        if self.pos { reg |= 1 << 11; }
-        if self.ack { reg |= 1 << 10; }
-        if self.scle { reg |= 1 << 14; }
-        if self.enbuf { reg |= 1 << 15; }
+        if self.pe {
+            reg |= 1 << 0;
+        }
+        if self.swrst {
+            reg |= 1 << 1;
+        }
+        if self.nack {
+            reg |= 1 << 10;
+        }
+        if self.pos {
+            reg |= 1 << 11;
+        }
+        if self.ack {
+            reg |= 1 << 10;
+        }
+        if self.scle {
+            reg |= 1 << 14;
+        }
+        if self.enbuf {
+            reg |= 1 << 15;
+        }
         // err bit if self._enerr { reg |= 1 << 9; }
-        if self.entie { reg |= 1 << 8; }
-        if self.enic { reg |= 1 << 7; }
-        if self.enis { reg |= 1 << 6; }
+        if self.entie {
+            reg |= 1 << 8;
+        }
+        if self.enic {
+            reg |= 1 << 7;
+        }
+        if self.enis {
+            reg |= 1 << 6;
+        }
         reg
     }
 }
@@ -252,12 +288,12 @@ impl I2cPeripheral {
             irq_line: -1,
         }
     }
-    
+
     /// Set the IRQ line for this I2C peripheral.
     pub fn set_irq_line(&mut self, line: i32) {
         self.irq_line = line;
     }
-    
+
     /// Get the configured IRQ line.
     pub fn irq_line(&self) -> i32 {
         self.irq_line
@@ -273,9 +309,15 @@ impl I2cPeripheral {
             0x14 => self.sr1.encode(),
             0x18 => {
                 let mut reg = 0u32;
-                if self.sr2.msl { reg |= 1 << 13; }
-                if self.sr2.busy { reg |= 1 << 1; }
-                if self.sr2.tr { reg |= 1 << 2; }
+                if self.sr2.msl {
+                    reg |= 1 << 13;
+                }
+                if self.sr2.busy {
+                    reg |= 1 << 1;
+                }
+                if self.sr2.tr {
+                    reg |= 1 << 2;
+                }
                 reg
             }
             0x1C => 0, // CCR simplified
@@ -306,7 +348,7 @@ impl I2cPeripheral {
                 self.dr = value as u8;
                 self.tx_buffer.push(self.dr);
                 self.sr1.txe = false;
-                
+
                 if self.state == I2cState::DataPhase && self.direction == I2cDirection::Transmit {
                     // Simulate byte transmission
                     self.sr1.txe = true;
@@ -319,8 +361,8 @@ impl I2cPeripheral {
 
     pub fn tick(&mut self, _cycles: u64) -> bool {
         // Simulate I2C timing based on speed
-// timing handled internally
-        
+        // timing handled internally
+
         false
     }
 

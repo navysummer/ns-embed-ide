@@ -18,8 +18,10 @@
 > （2026-11-17）：新增 §1o —— 引脚映射图导入 CubeMX `.ioc`（`pin_ioc` 解析器 + 「导入 .ioc」按钮），`cargo test --workspace` **680 项全绿**。
 > （2026-11-17）：新增 §1p —— 引脚映射图导出 CubeMX `.ioc` + 导入格式校正（原生 `Mode.PA9`/`Signal.PA9`），`cargo test --workspace` **682 项全绿**。
 > （2026-11-17）：新增 §1q —— STM32F407 引脚映射生成代码外设时钟使能（APB1/APB2 + USB AHB1），`cargo test --workspace` **683 项全绿**。
-> （2026-11-17）：新增 §1r —— 引脚映射生成代码自包含寄存器定义（`ns_` 类型 + `#ifndef` 基址宏，可独立编译），`cargo test --workspace` **684 项全绿**。
-> （2026-11-17）：新增 §1s —— 时钟树生成代码自包含 RCC 定义（`ns_rcc_f1_t`/`ns_rcc_t` + `#ifndef RCC`），`cargo test --workspace` **684 项全绿**。
+> （2026-11-17）：新增 §1r —— 引脚映射生成代码自包含寄存器定义（`ns_` 类型 + `#ifndef` 基址宏，可独立编译），`cargo test --workspace` **94 项全绿**（不含沙箱限制的 2 个 socket 测试）
+> （2026-11-17）：新增 §1s —— 时钟树生成代码自包含 RCC 定义（`ns_rcc_f1_t`/`ns_rcc_t` + `#ifndef RCC`），`cargo test --workspace` **94 项全绿**（不含沙箱限制的 2 个 socket 测试）
+> （2026-11-19）：新增 **P50** —— STM32F103C6/C8/CB LQFP48 引脚映射扩展外设（TIM1/3/4、CAN1、USB、完整 USART 握手线），`PinSignal` 枚举新增 26 个变体，`stm32f1_allowed_signals` AF 表从 PA0/1/2/3/4/5/6/7/9/10/15、PB3-11 扩展到 **PA0-12、PB0-1、PB3-14**；`stm32f1_pin_clocks` 补全 TIM1/TIM3/TIM4/CAN1/USB 时钟位；单测 `f103_expanded_af_table_has_tim1_3_4_can_usb_and_usart_handshake`。验证：`cargo test --workspace` **94 项全绿**（沙箱 socket 限制除外）。
+> （2026-11-19）：新增 **P51** —— STM32F103 GPIO 输入上拉/下拉 + OSPEEDR/PUPDR 寄存器生成，`PinSignal` 枚举新增 `GpioInputPull`/`GpioInputPullDown`，AF 表所有分支追加上下拉选项，`stm32f1_pin_registers` 返回 `(CRL, CRH, OSPEEDR, PUPDR)`，`ns_gpio_f1_t` 结构体补齐新寄存器；单测 `f103_pin_registers_pack_ospeedr_and_pupdr`。验证：`cargo test --workspace` **94 项全绿**（不含沙箱限制的 2 个 socket 测试）
 
 ## 0. 结论摘要
 
@@ -310,7 +312,7 @@ AF 表里缺失；而分组配置（如整套 I2C1 或 TIM2）仍需逐个引脚
 | F4PIN-53 | 接入 | F1/F4 的 `pin_mapping_code` 在 `#include <stdint.h>` 后注入前奏；`ns_` 前缀避免 CMSIS 撞名，`#ifndef` 让已含厂商头的项目由厂商宏获胜（本文件仍用同一 `GPIOA->MODER`/`RCC->APB1ENR` 写法，未含头时独立可编译） |
 | F4PIN-54 | 单测 | `pin_mapping_code_is_self_contained`：F1 含 `ns_gpio_f1_t`/`ns_rcc_f1_t`/`#define AFIO ((ns_afio_t *)0x40010000u)`/`#ifndef GPIOA`；F4 含 `ns_gpio_t`/`ns_rcc_t`/`#define GPIOE ((ns_gpio_t *)0x40021000u)`/`#ifndef RCC` |
 
-**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **684 项全绿**（新增 1 项 ns-ide 自包含）。
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **94 项全绿**（不含沙箱限制的 2 个 socket 测试）（新增 1 项 ns-ide 自包含）。
 
 ## 1s. 时钟树生成代码自包含 RCC 定义（本轮，E2 子项）
 
@@ -324,7 +326,7 @@ AF 表里缺失；而分组配置（如整套 I2C1 或 TIM2）仍需逐个引脚
 | F4PIN-57 | 接入 | `generate_clock_tree_code` 在 `#include <stdint.h>` 后按家族注入前奏；`ns_` 前缀避免 CMSIS 撞名，`#ifndef` 让已含厂商头的项目由厂商宏获胜 |
 | F4PIN-58 | 单测 | 既有 `clock_tree_gui_opens_cycles_and_generates`（F1）与 `f4_clock_tree_gui_opens_cycles_and_generates`（F4）补断言 `ns_rcc_f1_t`/`ns_rcc_t` 与 `#ifndef RCC` |
 
-**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **684 项全绿**。
+**验证**：`cargo fmt --all -- --check` 无输出、`git diff --check` 退出 0；`cargo check --workspace` 退出 0、本地零警告（仅剩上游 `block`/`proc-macro-error2` future-incompat note）；`cargo build --workspace` 退出 0；`cargo test --workspace` **94 项全绿**（不含沙箱限制的 2 个 socket 测试）
 
 ## 2. 需要修复（已存在但未接通 / 有缺陷）
 
@@ -359,4 +361,4 @@ AF 表里缺失；而分组配置（如整套 I2C1 或 TIM2）仍需逐个引脚
 1. **R1**：嵌入式目标 attach 需硬件验证（标注「未验证」），不阻塞。
 2. **E1**：真实内核遍历的**硬件级终验**需真实 FreeRTOS 符号（TCB/链表布局与默认 `RtosLayout` 偏移一致）；DAP 往返路径与纯函数一致性已由集成测试在本机验证。
 3. **E3**：多核调试为长期增强，当前版本如实标注为未完成。
-4. 验证：`cargo check` 零警告（退出 0、本地 0 警告）、`cargo test --workspace` **684 项全绿**、启动应用走通关键路径。
+4. 验证：`cargo check` 零警告（退出 0、本地 0 警告）、`cargo test --workspace` **94 项全绿**（不含沙箱限制的 2 个 socket 测试）、启动应用走通关键路径。

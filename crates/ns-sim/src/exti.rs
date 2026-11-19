@@ -69,9 +69,7 @@ impl ExtiController {
     pub fn new(base: u32) -> Self {
         Self {
             base,
-            lines: (0..16)
-                .map(|_| ExtiLine::default())
-                .collect(),
+            lines: (0..16).map(|_| ExtiLine::default()).collect(),
             pin_states: [false; 16],
         }
     }
@@ -243,9 +241,12 @@ mod tests {
         exti.configure_line(5, ExtiEdge::Rising, true);
         // Initial state: pin 5 low
         exti.pin_states[5] = false;
-        
+
         // Simulate rising edge on pin 5
-        let triggered = exti.sample([false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false]);
+        let triggered = exti.sample([
+            false, false, false, false, false, true, false, false, false, false, false, false,
+            false, false, false, false,
+        ]);
         assert_eq!(triggered, vec![5]);
     }
 
@@ -253,13 +254,19 @@ mod tests {
     fn exti_detects_both_edges() {
         let mut exti = ExtiController::new(0x4001_0000);
         exti.configure_line(3, ExtiEdge::Both, true);
-        
+
         // Rising edge
-        let t1 = exti.sample([false, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false]);
+        let t1 = exti.sample([
+            false, false, false, true, false, false, false, false, false, false, false, false,
+            false, false, false, false,
+        ]);
         assert_eq!(t1, vec![3]);
-        
+
         // Falling edge
-        let t2 = exti.sample([false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]);
+        let t2 = exti.sample([
+            false, false, false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false,
+        ]);
         assert_eq!(t2, vec![3]);
     }
 
@@ -268,10 +275,10 @@ mod tests {
         let mut exti = ExtiController::new(0x4001_0000);
         exti.configure_line(0, ExtiEdge::Rising, true);
         exti.configure_line(2, ExtiEdge::Falling, true);
-        
+
         // Read IMR
         assert_eq!(exti.read_reg(0x00), Some(0b101));
-        
+
         // Write RTSR
         exti.write_reg(0x08, 0xFF);
         assert_eq!(exti.read_reg(0x08), Some(0xFF));

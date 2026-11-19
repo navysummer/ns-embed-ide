@@ -96,12 +96,12 @@ impl PwmChannel {
             irq_line: -1,
         }
     }
-    
+
     /// Set the IRQ line for this PWM channel.
     pub fn set_irq_line(&mut self, line: i32) {
         self.irq_line = line;
     }
-    
+
     /// Get the configured IRQ line.
     pub fn get_irq_line(&self) -> i32 {
         self.irq_line
@@ -136,11 +136,11 @@ impl PwmChannel {
         // Apply prescaler
         let internal_counter = (self.cnt as u64) + 1;
         let wrapped = internal_counter % ((self.psc + 1) as u64);
-        
+
         if wrapped == 0 {
             // Prescaler tick completed, advance main counter
             self.cnt += 1;
-            
+
             if self.alignment == PwmAlignment::Edge {
                 // Edge-aligned: wrap at ARR+1
                 if self.cnt >= self.arr + 1 {
@@ -256,14 +256,14 @@ impl PwmPeripheral {
 
         let div = self.prescaler + 1;
         let mut update_event = false;
-        
+
         for ch in &mut self.channels {
             if ch.tick(div) {
                 update_event = true;
             }
             ch.update_output();
         }
-        
+
         // If any channel had an update event, we'd set UEV flag in SR
         if update_event {
             // Would set SR.UEV here in full implementation
@@ -295,11 +295,11 @@ mod tests {
     #[test]
     fn pwm_channel_configuration() {
         let mut pwm = PwmPeripheral::new(0x4001_0000, 4);
-        
+
         // Configure channel 1: period=1000, duty=50%
         pwm.write_reg(0x18, 999); // ARR = 999
         pwm.write_reg(0x1C, 499); // CCR1 = 499 (50% duty)
-        
+
         let ch = pwm.get_channel(1).unwrap();
         assert_eq!(ch.arr, 999);
         assert_eq!(ch.ccr, 499);
@@ -309,16 +309,16 @@ mod tests {
     fn pwm_tick_updates_outputs() {
         let mut pwm = PwmPeripheral::new(0x4001_0000, 4);
         pwm.enabled = true;
-        
+
         // Configure 50% duty cycle
         pwm.write_reg(0x18, 99); // ARR = 99
         pwm.write_reg(0x1C, 49); // CCR1 = 49 (roughly 50%)
-        
+
         // Tick until we see output changes
         for _ in 0..100 {
             pwm.tick();
         }
-        
+
         let ch = pwm.get_channel(1).unwrap();
         assert!(ch.cnt <= 99); // Counter wrapped
     }
@@ -326,14 +326,14 @@ mod tests {
     #[test]
     fn pwm_channels_independent_duty() {
         let mut pwm = PwmPeripheral::new(0x4001_0000, 4);
-        
+
         // CH1: 25% duty
         pwm.write_reg(0x18, 99); // ARR
         pwm.write_reg(0x1C, 24); // CCR1 = 25%
-        
-        // CH2: 75% duty  
+
+        // CH2: 75% duty
         pwm.write_reg(0x20, 74); // CCR2 = 75%
-        
+
         assert_eq!(pwm.channels[0].ccr, 24);
         assert_eq!(pwm.channels[1].ccr, 74);
     }
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(PwmAlignment::Edge, PwmAlignment::Edge);
         assert_eq!(PwmAlignment::Center, PwmAlignment::Center);
         assert_ne!(PwmAlignment::Edge, PwmAlignment::Center);
-        
+
         assert_eq!(PwmPolarity::High, PwmPolarity::High);
         assert_eq!(PwmPolarity::Low, PwmPolarity::Low);
         assert_ne!(PwmPolarity::High, PwmPolarity::Low);

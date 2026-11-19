@@ -75,12 +75,12 @@ impl FlashPeripheral {
             irq_line: -1,
         }
     }
-    
+
     /// Set the IRQ line for this flash peripheral.
     pub fn set_irq_line(&mut self, line: i32) {
         self.irq_line = line;
     }
-    
+
     /// Get the configured IRQ line.
     pub fn get_irq_line(&self) -> i32 {
         self.irq_line
@@ -176,11 +176,21 @@ impl FlashPeripheral {
     /// Get status register value.
     pub fn get_sr(&self) -> u32 {
         let mut reg = 0u32;
-        if self.sr_ready { reg |= 1 << 0; }
-        if self.sr_pgerr { reg |= 1 << 2; }
-        if self.sr_strberr { reg |= 1 << 4; }
-        if self.sr_pe { reg |= 1 << 5; }
-        if self.sr_pgs { reg |= 1 << 6; }
+        if self.sr_ready {
+            reg |= 1 << 0;
+        }
+        if self.sr_pgerr {
+            reg |= 1 << 2;
+        }
+        if self.sr_strberr {
+            reg |= 1 << 4;
+        }
+        if self.sr_pe {
+            reg |= 1 << 5;
+        }
+        if self.sr_pgs {
+            reg |= 1 << 6;
+        }
         reg
     }
 }
@@ -202,11 +212,11 @@ mod tests {
     fn flash_read_write_byte() {
         let mut flash = FlashPeripheral::new(0x0800_0000, 0x100, 1, 0x100);
         flash.sectors[0].protected = false;
-        
+
         // Write a byte
         flash.write_byte(0x0800_0010, 0x42).unwrap();
         assert_eq!(flash.read_byte(0x0800_0010), Some(0x42));
-        
+
         // Read word
         assert_eq!(flash.read_word(0x0800_0010), Some(0x42));
     }
@@ -224,11 +234,11 @@ mod tests {
         for s in &mut flash.sectors {
             s.protected = false;
         }
-        
+
         // Write some data to sector 1 (address 0x80)
         flash.write_byte(0x0800_0080, 0xAB).unwrap();
         assert_eq!(flash.read_byte(0x0800_0080), Some(0xAB));
-        
+
         // Erase sector 1
         flash.erase_sector(1).unwrap();
         assert_eq!(flash.read_byte(0x0800_0080), Some(0xFF));

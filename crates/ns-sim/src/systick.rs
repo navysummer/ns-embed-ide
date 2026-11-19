@@ -24,9 +24,15 @@ impl Default for SysTickCsr {
 impl SysTickCsr {
     pub fn encode(&self) -> u32 {
         let mut reg = 0u32;
-        if self.enable { reg |= 1 << 0; }
-        if self.intena { reg |= 1 << 1; }
-        if self.clksrc { reg |= 1 << 2; }
+        if self.enable {
+            reg |= 1 << 0;
+        }
+        if self.intena {
+            reg |= 1 << 1;
+        }
+        if self.clksrc {
+            reg |= 1 << 2;
+        }
         reg
     }
 
@@ -128,12 +134,12 @@ impl SysTickPeripheral {
 
         // Decrement counter
         self.cnr = self.cnr.saturating_sub(1);
-        
+
         // When counter reaches 0, reload and signal interrupt
         if self.cnr == 0 {
             self.count_flag.store(true, Ordering::SeqCst);
             self.cnr = self.rvr; // reload
-            
+
             if self.csr.intena {
                 self.interrupt_count += 1;
                 return true;
@@ -198,10 +204,13 @@ mod tests {
         let mut systick = SysTickPeripheral::new(0xE000_E010);
         systick.set_reload(3);
         systick.write_reg(0x10, 0x03); // CR with intena;
-        
-        let irq = systick.tick(); assert_eq!(irq, false);
-        let irq = systick.tick(); assert_eq!(irq, false);
-        let irq = systick.tick(); assert!(irq);
+
+        let irq = systick.tick();
+        assert_eq!(irq, false);
+        let irq = systick.tick();
+        assert_eq!(irq, false);
+        let irq = systick.tick();
+        assert!(irq);
         assert_eq!(systick.interrupt_count, 1);
         assert!(systick.has_count_flag());
     }
@@ -220,7 +229,7 @@ mod tests {
         let mut systick = SysTickPeripheral::new(0xE000_E010);
         systick.set_reload(5);
         systick.write_reg(0x10, 0x07); // enable + intena + clksrc
-        
+
         // Tick 6 times: 5->4->3->2->1->0 (interrupt fires on transition 0->5)
         systick.tick(); // cnt=4
         systick.tick(); // cnt=3
@@ -228,9 +237,9 @@ mod tests {
         systick.tick(); // cnt=1
         systick.tick(); // cnt=0
         systick.tick(); // cnt wraps to 5, interrupt fires
-        
+
         assert!(systick.has_count_flag());
-        
+
         // Writing to VR clears COUNTFLAG
         systick.write_reg(0x04, 3);
         assert!(!systick.has_count_flag());
@@ -241,10 +250,10 @@ mod tests {
     fn systick_contains_range() {
         let systick = SysTickPeripheral::new(0xE000_E010);
         // Valid range: [0xE000_E010, 0xE000_E020)
-        assert!(systick.contains(0xE000_E010));  // SR offset 0x00
-        assert!(systick.contains(0xE000_E014));  // VR offset 0x04
-        assert!(systick.contains(0xE000_E018));  // AR offset 0x08
-        assert!(systick.contains(0xE000_E01C));  // CALIB offset 0x0C
+        assert!(systick.contains(0xE000_E010)); // SR offset 0x00
+        assert!(systick.contains(0xE000_E014)); // VR offset 0x04
+        assert!(systick.contains(0xE000_E018)); // AR offset 0x08
+        assert!(systick.contains(0xE000_E01C)); // CALIB offset 0x0C
         assert!(!systick.contains(0xE000_E020)); // just past end
         assert!(!systick.contains(0xE000_E00F)); // before base
     }

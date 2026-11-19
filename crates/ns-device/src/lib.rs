@@ -243,12 +243,12 @@ fn field_bit_range(node: roxmltree::Node) -> (u32, u32) {
     }
     if let Some(range) = text_of(node, "bitRange") {
         let range = range.trim().trim_start_matches('[').trim_end_matches(']');
-        if let Some((high, low)) = range.split_once(':') {
-            if let (Ok(high), Ok(low)) = (high.trim().parse::<u32>(), low.trim().parse::<u32>()) {
-                let low = low.min(high);
-                let high = low.max(high);
-                return (low, high - low + 1);
-            }
+        if let Some((high, low)) = range.split_once(':')
+            && let (Ok(high), Ok(low)) = (high.trim().parse::<u32>(), low.trim().parse::<u32>())
+        {
+            let low = low.min(high);
+            let high = low.max(high);
+            return (low, high - low + 1);
         }
     }
     (0, 1)

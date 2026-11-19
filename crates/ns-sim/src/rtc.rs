@@ -39,8 +39,8 @@ impl Default for RtcPrescaler {
     fn default() -> Self {
         // Typical values for 1HzRTC clock from 32.768 kHz LSE
         Self {
-            prediv_a: 127,  // 128 division for async
-            prediv_b: 255,  // 256 division for sync (128*256 = 32768 -> 1 Hz)
+            prediv_a: 127, // 128 division for async
+            prediv_b: 255, // 256 division for sync (128*256 = 32768 -> 1 Hz)
         }
     }
 }
@@ -97,7 +97,7 @@ pub struct RtcSrFlags {
 impl Default for RtcSrFlags {
     fn default() -> Self {
         Self {
-            rsf: true,   // Start as synchronized
+            rsf: true, // Start as synchronized
             calff: false,
             alrf: false,
             wf: false,
@@ -146,13 +146,13 @@ pub struct RtcPeripheral {
     pub cr3: u32,
     pub sr: RtcSrFlags,
     pub prer: RtcPrescaler,
-    pub cnt: u32,           // Current subsecond counter
-    pub div: u32,           // Fractional division (for subsecond)
-    pub time: RtcTime,      // Calendar time
+    pub cnt: u32,      // Current subsecond counter
+    pub div: u32,      // Fractional division (for subsecond)
+    pub time: RtcTime, // Calendar time
     pub alarm_a: RtcAlarm,
     pub alarm_b: RtcAlarm,
-    pub waktr: u16,         // Wakeup timer reload value
-    pub wakeup_counter: u16,// Current wakeup countdown
+    pub waktr: u16,          // Wakeup timer reload value
+    pub wakeup_counter: u16, // Current wakeup countdown
     /// Total simulated seconds elapsed (internal).
     pub elapsed_seconds: u64,
 }
@@ -188,21 +188,31 @@ impl RtcPeripheral {
             0x04 => self.cr2,
             0x08 => self.cr3,
             0x0C => self.sr.encode(),
-            0x10 => {
-                ((self.prer.prediv_a as u32) << 16) | (self.prer.prediv_b as u32)
-            }
+            0x10 => ((self.prer.prediv_a as u32) << 16) | (self.prer.prediv_b as u32),
             0x14 => self.div,
-            0x18 => self.cnt >> 16,  // High part of counter
+            0x18 => self.cnt >> 16,    // High part of counter
             0x1C => self.cnt & 0xFFFF, // Low part
             0x20 => {
                 // ALRMAR - encode alarm A
                 let mut reg = 0u32;
-                if self.alarm_a.mask_sec { reg |= 1 << 31; }
-                if self.alarm_a.mask_min { reg |= 1 << 24; }
-                if self.alarm_a.mask_hour { reg |= 1 << 16; }
-                if self.alarm_a.mask_day { reg |= 1 << 13; }
-                if self.alarm_a.mask_month { reg |= 1 << 12; }
-                if self.alarm_a.mask_wday { reg |= 1 << 11; }
+                if self.alarm_a.mask_sec {
+                    reg |= 1 << 31;
+                }
+                if self.alarm_a.mask_min {
+                    reg |= 1 << 24;
+                }
+                if self.alarm_a.mask_hour {
+                    reg |= 1 << 16;
+                }
+                if self.alarm_a.mask_day {
+                    reg |= 1 << 13;
+                }
+                if self.alarm_a.mask_month {
+                    reg |= 1 << 12;
+                }
+                if self.alarm_a.mask_wday {
+                    reg |= 1 << 11;
+                }
                 reg |= (self.alarm_a.target.sec as u32) << 0;
                 reg |= (self.alarm_a.target.min as u32) << 8;
                 reg |= (self.alarm_a.target.hour as u32) << 16;
@@ -287,29 +297,29 @@ impl RtcPeripheral {
     /// Tick the RTC by one second. Call this once per simulated second.
     pub fn tick_second(&mut self) {
         self.elapsed_seconds += 1;
-        
+
         // Update time
-// capture not needed
-        
+        // capture not needed
+
         self.time.sec += 1;
         if self.time.sec >= 60 {
             self.time.sec = 0;
             self.time.min += 1;
-            
+
             if self.time.min >= 60 {
                 self.time.min = 0;
                 self.time.hour += 1;
-                
+
                 if self.time.hour >= 24 {
                     self.time.hour = 0;
                     self.time.day += 1;
                     let new_wday = (self.time.wday % 7u8) + 1;
                     self.time.wday = if new_wday > 7 { 1 } else { new_wday };
-                    
+
                     if self.time.day > 28 {
                         self.time.day = 1;
                         self.time.month += 1;
-                        
+
                         if self.time.month > 12 {
                             self.time.month = 1;
                             self.time.year += 1;
@@ -318,7 +328,7 @@ impl RtcPeripheral {
                 }
             }
         }
-        
+
         // Check alarm A - capture values first to avoid borrow issues
         if self.alarm_a.enabled {
             let sec_match = !self.alarm_a.mask_sec || self.alarm_a.target.sec == self.time.sec;
@@ -330,7 +340,6 @@ impl RtcPeripheral {
         }
     }
 
-
     pub fn contains(&self, address: u32) -> bool {
         address >= self.base && address < self.base + 0x28
     }
@@ -338,24 +347,24 @@ impl RtcPeripheral {
     pub fn offset(&self, address: u32) -> u32 {
         address.wrapping_sub(self.base)
     }
-    
+
     /// Configure the IRQ line for alarm A. Returns true if alarm was enabled.
     pub fn configure_alarm_a_irq(&mut self, irq_line: i32) -> bool {
         self.alarm_a.irq_line = irq_line;
         self.alarm_a.enabled
     }
-    
+
     /// Configure the IRQ line for alarm B. Returns true if alarm was enabled.
     pub fn configure_alarm_b_irq(&mut self, irq_line: i32) -> bool {
         self.alarm_b.irq_line = irq_line;
         self.alarm_b.enabled
     }
-    
+
     /// Get configured IRQ line for alarm A, or -1 if none configured.
     pub fn alarm_a_irq_line(&self) -> i32 {
         self.alarm_a.irq_line
     }
-    
+
     /// Get configured IRQ line for alarm B, or -1 if none configured.
     pub fn alarm_b_irq_line(&self) -> i32 {
         self.alarm_b.irq_line
@@ -365,11 +374,21 @@ impl RtcPeripheral {
 impl RtcSrFlags {
     pub fn encode(&self) -> u32 {
         let mut reg = 0u32;
-        if self.rsf { reg |= 1 << 3; }
-        if self.calff { reg |= 1 << 2; }
-        if self.alrf { reg |= 1 << 1; }
-        if self.wf { reg |= 1 << 0; }
-        if self.initf { reg |= 1 << 7; }
+        if self.rsf {
+            reg |= 1 << 3;
+        }
+        if self.calff {
+            reg |= 1 << 2;
+        }
+        if self.alrf {
+            reg |= 1 << 1;
+        }
+        if self.wf {
+            reg |= 1 << 0;
+        }
+        if self.initf {
+            reg |= 1 << 7;
+        }
         reg
     }
 }
@@ -390,11 +409,14 @@ mod tests {
     #[test]
     fn rtc_tick_advances_seconds() {
         let mut rtc = RtcPeripheral::new(0x4000_2800);
-        rtc.set_initial_time(RtcTime { sec: 30, ..Default::default() });
-        
+        rtc.set_initial_time(RtcTime {
+            sec: 30,
+            ..Default::default()
+        });
+
         rtc.tick_second();
         assert_eq!(rtc.time.sec, 31);
-        
+
         rtc.tick_second();
         assert_eq!(rtc.time.sec, 32);
     }
@@ -402,8 +424,12 @@ mod tests {
     #[test]
     fn rtc_tick_advances_minutes() {
         let mut rtc = RtcPeripheral::new(0x4000_2800);
-        rtc.set_initial_time(RtcTime { sec: 59, min: 30, ..Default::default() });
-        
+        rtc.set_initial_time(RtcTime {
+            sec: 59,
+            min: 30,
+            ..Default::default()
+        });
+
         rtc.tick_second();
         assert_eq!(rtc.time.sec, 0);
         assert_eq!(rtc.time.min, 31);
@@ -412,8 +438,13 @@ mod tests {
     #[test]
     fn rtc_tick_advances_hours() {
         let mut rtc = RtcPeripheral::new(0x4000_2800);
-        rtc.set_initial_time(RtcTime { sec: 59, min: 59, hour: 23, ..Default::default() });
-        
+        rtc.set_initial_time(RtcTime {
+            sec: 59,
+            min: 59,
+            hour: 23,
+            ..Default::default()
+        });
+
         rtc.tick_second();
         assert_eq!(rtc.time.sec, 0);
         assert_eq!(rtc.time.min, 0);
@@ -434,7 +465,7 @@ mod tests {
     fn rtc_write_prescaler() {
         let mut rtc = RtcPeripheral::new(0x4000_2800);
         rtc.write_reg(0x10, 0x007F_00FF); // prediv_a=127, prediv_b=255
-        
+
         assert_eq!(rtc.prer.prediv_a, 127);
         assert_eq!(rtc.prer.prediv_b, 255);
     }
@@ -442,15 +473,25 @@ mod tests {
     #[test]
     fn rtc_alarm_matches_and_clears() {
         let mut rtc = RtcPeripheral::new(0x4000_2800);
-        
+
         // Configure alarm at 12:00:30
-        rtc.alarm_a.target = RtcTime { sec: 30, min: 0, hour: 12, ..Default::default() };
+        rtc.alarm_a.target = RtcTime {
+            sec: 30,
+            min: 0,
+            hour: 12,
+            ..Default::default()
+        };
         rtc.alarm_a.enabled = true;
-        
+
         // Simulate reaching that time
-        rtc.set_initial_time(RtcTime { sec: 29, min: 0, hour: 12, ..Default::default() });
+        rtc.set_initial_time(RtcTime {
+            sec: 29,
+            min: 0,
+            hour: 12,
+            ..Default::default()
+        });
         rtc.tick_second();
-        
+
         assert!(rtc.sr.alrf);
     }
 

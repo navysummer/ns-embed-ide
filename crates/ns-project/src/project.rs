@@ -203,7 +203,7 @@ pub struct SimSection {
 /// Debug launch configuration (`[launch]` in `project.toml`): the arguments,
 /// environment variables and working directory passed to the debuggee when a
 /// debug session starts. An empty working directory means the project root.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LaunchSection {
     /// Command-line arguments passed to the debuggee, one per entry.
@@ -213,16 +213,6 @@ pub struct LaunchSection {
     pub env: Vec<String>,
     /// Working directory for the debuggee. Empty = the project root.
     pub cwd: String,
-}
-
-impl Default for LaunchSection {
-    fn default() -> Self {
-        Self {
-            args: Vec::new(),
-            env: Vec::new(),
-            cwd: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

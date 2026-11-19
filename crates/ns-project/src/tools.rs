@@ -15,7 +15,7 @@ pub const STATE_DIR: &str = ".ns-ide";
 pub const TOOLS_FILE: &str = "tools.json";
 
 /// One user-defined external tool command.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolCommand {
     /// Stable id used to identify the tool (and keep config order).
@@ -26,17 +26,6 @@ pub struct ToolCommand {
     pub command: String,
     /// Working directory. Empty = project root.
     pub cwd: String,
-}
-
-impl Default for ToolCommand {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            title: String::new(),
-            command: String::new(),
-            cwd: String::new(),
-        }
-    }
 }
 
 /// The persisted tool list.

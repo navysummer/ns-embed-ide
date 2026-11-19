@@ -111,9 +111,15 @@ impl Default for AdcStatus {
 impl AdcStatus {
     pub fn encode(&self) -> u32 {
         let mut reg = 0u32;
-        if self.eoc { reg |= 1 << 1; }
-        if self.jeoc { reg |= 1 << 5; }
-        if self.ovr { reg |= 1 << 6; }
+        if self.eoc {
+            reg |= 1 << 1;
+        }
+        if self.jeoc {
+            reg |= 1 << 5;
+        }
+        if self.ovr {
+            reg |= 1 << 6;
+        }
         reg
     }
 
@@ -237,12 +243,12 @@ impl AdcPeripheral {
             self.channels[channel] = value;
         }
     }
-    
+
     /// Set the IRQ line for this ADC peripheral.
     pub fn set_irq_line(&mut self, line: i32) {
         self.irq_line = line;
     }
-    
+
     /// Get the configured IRQ line.
     pub fn get_irq_line(&self) -> i32 {
         self.irq_line
@@ -259,17 +265,29 @@ impl AdcPeripheral {
             0x00 => {
                 // CR1
                 let mut reg = self.cr1.res as u32;
-                if self.cr1.owprot { reg |= 1 << 8; }
-                if self.cr1.eocsel { reg |= 1 << 9; }
+                if self.cr1.owprot {
+                    reg |= 1 << 8;
+                }
+                if self.cr1.eocsel {
+                    reg |= 1 << 9;
+                }
                 reg
             }
             0x04 => {
                 // CR2
                 let mut reg = 0u32;
-                if self.cr2.adon { reg |= 1 << 0; }
-                if self.cr2.cont { reg |= 1 << 1; }
-                if self.cr2.swstart { reg |= 1 << 30; }
-                if self.cr2.align { reg |= 1 << 11; }
+                if self.cr2.adon {
+                    reg |= 1 << 0;
+                }
+                if self.cr2.cont {
+                    reg |= 1 << 1;
+                }
+                if self.cr2.swstart {
+                    reg |= 1 << 30;
+                }
+                if self.cr2.align {
+                    reg |= 1 << 11;
+                }
                 reg
             }
             0x08 | 0x0C => {
@@ -316,7 +334,7 @@ impl AdcPeripheral {
                 let cont = (value >> 1 & 1) != 0;
                 let swstart = (value >> 30 & 1) != 0;
                 let align = (value >> 11 & 1) != 0;
-                
+
                 let old_adon = self.cr2.adon;
                 self.cr2 = AdcCr2 {
                     adon,
@@ -324,13 +342,13 @@ impl AdcPeripheral {
                     swstart,
                     align: align,
                 };
-                
+
                 // Handle ADON bit transitions
                 if !old_adon && adon {
                     // ADC enabled - ready to convert
                     self.sr.eoc = true; // Clear any pending flags
                 }
-                
+
                 // Handle software start
                 if swstart && adon {
                     self.start_conversion();
@@ -364,13 +382,15 @@ impl AdcPeripheral {
     fn start_conversion(&mut self) {
         self.converting = true;
         self.conversion_cycle = 0;
-        
+
         // Calculate total sampling + conversion cycles
-        let sample_cycles = self.sampling_times.get(self.current_channel)
+        let sample_cycles = self
+            .sampling_times
+            .get(self.current_channel)
             .map(|st| st.cycles as u64)
             .unwrap_or(1);
         let conv_cycles = self.cr1.resolution().bits() as u64; // 1 cycle per bit
-        
+
         self.conversion_cycles = sample_cycles + conv_cycles;
     }
 
@@ -385,24 +405,28 @@ impl AdcPeripheral {
 
         if self.conversion_cycle >= self.conversion_cycles {
             // Conversion complete - read result from channel
-            let channel_value = self.channels.get(self.current_channel).copied().unwrap_or(0) as u32;
+            let channel_value = self
+                .channels
+                .get(self.current_channel)
+                .copied()
+                .unwrap_or(0) as u32;
             let max_val = self.max_value();
-            
+
             // Scale to resolution
             let scaled = ((channel_value as u32) * max_val) / 0xFFFF;
             self.dr = scaled.min(max_val);
-            
+
             self.sr.eoc = true;
             self.converting = false;
-            
+
             // Move to next channel in sequence
             self.current_channel = (self.current_channel + 1) % self.channels.len().max(1);
-            
+
             // If continuous mode or more channels, start next conversion
             if self.cr2.cont || self.current_channel != 0 {
                 self.start_conversion();
             }
-            
+
             return true;
         }
 
@@ -445,13 +469,13 @@ mod tests {
         let mut adc = AdcPeripheral::new(0x4001_2400, 16);
         adc.write_reg(0x00, 0x0000_0002); // 12-bit (default already)
         assert_eq!(adc.cr1.resolution(), AdcResolution::Bits12);
-        
+
         adc.write_reg(0x00, 0x0000_0001); // 10-bit
         assert_eq!(adc.cr1.resolution(), AdcResolution::Bits10);
-        
+
         adc.write_reg(0x00, 0x0000_0000); // 8-bit
         assert_eq!(adc.cr1.resolution(), AdcResolution::Bits8);
-        
+
         adc.write_reg(0x00, 0x0000_0003); // 16-bit
         assert_eq!(adc.cr1.resolution(), AdcResolution::Bits16);
     }
@@ -493,18 +517,17 @@ mod tests {
         let mut adc = AdcPeripheral::new(0x4001_2400, 16);
         adc.set_channel_value(0, 0xCCCC); // ~80% of full scale
         adc.write_reg(0x04, 0x0000_0001); // Enable
-        
+
         // Should be approximately 80% of 4095 (12-bit max)
         // That's about 3276
         assert_eq!(adc.channels[0], 0xCCCC);
     }
 
-
     #[test]
     fn adc_irq_line_configuration() {
         let mut adc = AdcPeripheral::new(0x4001_2000, 8);
         assert_eq!(adc.get_irq_line(), -1); // default
-        
+
         adc.set_irq_line(7);
         assert_eq!(adc.get_irq_line(), 7);
     }

@@ -153,9 +153,15 @@ impl DmaChannel {
 
     pub fn get_status_flags(&self) -> u32 {
         let mut flags = 0u32;
-        if self.tc_flag { flags |= 1 << 5; }
-        if self.ht_flag { flags |= 1 << 4; }
-        if self.err_flag { flags |= 1 << 3; }
+        if self.tc_flag {
+            flags |= 1 << 5;
+        }
+        if self.ht_flag {
+            flags |= 1 << 4;
+        }
+        if self.err_flag {
+            flags |= 1 << 3;
+        }
         flags
     }
 
@@ -168,7 +174,7 @@ impl DmaChannel {
     pub fn irq_line(&self) -> usize {
         self.irq_line
     }
-    
+
     /// Check if transfer is complete with IRQ enabled.
     pub fn is_tc_with_irq(&self) -> bool {
         self.tc_flag && self.tc_irq_en
@@ -188,7 +194,9 @@ impl DmaPeripheral {
     pub fn new(base: u32, num_channels: usize) -> Self {
         Self {
             base,
-            channels: (0..num_channels).map(|i| DmaChannel::new(i as u8)).collect(),
+            channels: (0..num_channels)
+                .map(|i| DmaChannel::new(i as u8))
+                .collect(),
             interrupt_enable: 0,
             interrupt_status: 0,
         }
@@ -200,9 +208,9 @@ impl DmaPeripheral {
 
     pub fn read_reg(&self, offset: u32) -> Option<u32> {
         match offset {
-            0x00 => Some(self.interrupt_enable),      // IER
-            0x04 => Some(self.interrupt_status),       // ISR
-            0x08 => Some(0),                           // FCR (not implemented)
+            0x00 => Some(self.interrupt_enable), // IER
+            0x04 => Some(self.interrupt_status), // ISR
+            0x08 => Some(0),                     // FCR (not implemented)
             _ => None,
         }
     }
@@ -251,12 +259,12 @@ mod tests {
     fn dma_channel_start_transfer() {
         let mut dma = DmaPeripheral::new(0x4002_6000, 1);
         let ch = dma.get_channel(0).unwrap();
-        
+
         ch.en = true;
         ch.ndtr = 10;
         ch.mem_addr = 0x2000_0000;
         ch.periph_addr = 0x4001_3000;
-        
+
         assert!(ch.start());
         assert_eq!(ch.cur_count, 10);
     }
@@ -266,7 +274,7 @@ mod tests {
         let mut dma = DmaPeripheral::new(0x4002_6000, 1);
         let ch = dma.get_channel(0).unwrap();
         assert!(!ch.tick()); // Not enabled
-        
+
         // Enable and start (would be done via register writes in real use)
     }
 
@@ -307,10 +315,10 @@ mod integration_tests {
         ch.cur_count = 4;
         ch.tc_irq_en = true;
         ch.set_irq_line(5);
-        
+
         // Run until complete
         while ch.tick() {}
-        
+
         assert!(ch.tc_flag);
         assert_eq!(ch.cur_count, 0);
     }
