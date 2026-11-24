@@ -36,6 +36,7 @@ use crate::editor::{
     DiagnosticHover, Editor, HoverWord,
 };
 use crate::git;
+use crate::mcp::McpPanel;
 use crate::palette::{self, CommandEntry};
 use crate::pin_ioc::{self, IocPinEntry};
 use crate::search::{self, MatchOrigin, SearchMatch};
@@ -255,6 +256,7 @@ enum OutputTab {
     Terminal,
     Serial,
     Agent,
+    MCP,
 }
 
 /// Severity filter for the problems panel (the VSCode-style "show errors /
@@ -5423,6 +5425,40 @@ impl IdeApp {
         cx.notify();
     }
 
+    fn show_mcp(&mut self, cx: &mut Context<Self>) {
+        self.show_output = true;
+        self.output_tab = OutputTab::MCP;
+        if self.mcp_server.is_none() {
+            let mcp = cx.new(|cx| McpPanel::new(cx));
+            let poll = mcp.clone();
+            cx.spawn(async move |this, cx| {
+                loop {
+                    let changed = poll.update(cx, |panel, _cx| panel.poll_events());
+                    if changed.is_err() {
+                        break;
+                    }
+                    if changed.unwrap_or(false) {
+                        this.update(cx, |_this, cx| cx.notify()).ok();
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(200))
+                        .await;
+                }
+            })
+            .detach();
+            self.mcp_server = Some(mcp);
+        }
+        // Auto-start server if project is open
+        if let Some(ref mcp) = self.mcp_server {
+            let root = match &self.project {
+                Some(p) => p.root.clone(),
+                None => std::env::current_dir().unwrap_or_default(),
+            };
+            mcp.update(cx, |panel, _cx| panel.start(&root, _cx));
+        }
+        cx.notify();
+    }
+
     fn show_tools(&mut self, cx: &mut Context<Self>) {
         self.show_output = true;
         self.output_tab = OutputTab::Tools;
@@ -6081,6 +6117,7 @@ pub struct IdeApp {
     _serial_sub: Option<Subscription>,
     /// Agent panel (任务/子代理管理), modeled after Zed's agent panel.
     agent: Option<Entity<AgentPanel>>,
+    mcp_server: Option<Entity<McpPanel>>,
     tools: Option<Entity<crate::external_tools::ExternalToolsPanel>>,
     tools_store: ns_project::ToolStore,
     tool_dialog: Option<ToolEditDialog>,
@@ -6454,6 +6491,7 @@ impl IdeApp {
             lsp_generation: 0,
             lsp_refresh_generation: 0,
             agent: None,
+            mcp_server: None,
             tools: None,
             tools_store: ns_project::ToolStore::default(),
             tool_dialog: None,
@@ -16435,6 +16473,7 @@ impl IdeApp {
             "terminal" => self.show_terminal(cx),
             "serial-monitor" => self.show_serial_monitor(cx),
             "agent" => self.show_agent_panel(cx),
+            "mcp-server" => self.show_mcp(cx),
             "tools" => self.run_tool_picker(cx),
             "edit-tools" => self.open_tool_editor(None, cx),
             "edit-snippets" => self.open_snippet_dialog(cx),
@@ -21752,6 +21791,9 @@ impl IdeApp {
                             .into_any_element()
                     }),
                 OutputTab::Agent => self.render_agent_panel(cx).into_any_element(),
+                OutputTab::MCP => self.mcp_server.clone()
+                    .map(|m| div().flex_1().overflow_hidden().child(m).into_any_element())
+                    .unwrap_or_else(|| div().flex_1().into_any_element()),
             })
     }
     /// Git panel: changed files, diff of the selected file, and a commit box.

@@ -5,6 +5,7 @@ mod editor;
 mod external_tools;
 mod git;
 mod highlight;
+mod mcp;
 mod palette;
 mod pin_ioc;
 mod search;

@@ -181,6 +181,12 @@ pub const COMMANDS: &[CommandEntry] = &[
         keywords: "agent task subagent 任务 子代理 代理 面板 zed",
     },
     CommandEntry {
+        id: "mcp-server",
+        title: "打开 MCP 服务器面板",
+        keys: "",
+        keywords: "mcp model context protocol server LLM agent 模型 上下文 协议 服务器",
+    },
+    CommandEntry {
         id: "tools",
         title: "运行外部工具…",
         keys: "",

@@ -992,30 +992,44 @@ pub struct StackUsageEntry {
     pub dynamic: bool,
 }
 
-/// Parse a GCC `-fstack-usage` `.su` file (one line per function):
-/// `\t<file>\t<function>\t<bytes>\t<static|dynamic>`.
+/// Parse a GCC `-fstack-usage` `.su` file (one line per function).
+///
+/// Real GCC and Clang emit `file:line:function\tbytes\tstatic|dynamic` (three
+/// tab-separated fields, no leading tab). Some toolchains additionally emit an
+/// older tab-prefixed `file\tfunction\tbytes\tstatic|dynamic` form. Both are
+/// accepted so the IDE can read `.su` files from any GCC-family compiler.
 pub fn parse_stack_usage_su(text: &str) -> Vec<StackUsageEntry> {
     let mut entries = Vec::new();
     for raw in text.lines() {
-        // `.su` lines begin with a tab (the leading tab separates the file
-        // column). Reject blank lines and lines that are not tab-prefixed.
-        if !raw.starts_with('\t') {
-            continue;
-        }
         let line = raw.trim();
         if line.is_empty() {
             continue;
         }
-        // Split on tab: [file, function, bytes, kind].
         let parts: Vec<&str> = line.split('\t').map(str::trim).collect();
-        if parts.len() < 4 {
+        // Accept the three-field `file:line:function bytes kind` form (real
+        // GCC/Clang) and the four-field `file function bytes kind` form.
+        let (file, function, bytes_text, kind_text) = if parts.len() >= 4 {
+            (parts[0], parts[1], parts[2], parts[3])
+        } else if parts.len() == 3 {
+            // `file:line:function` — split from the right so a Windows drive
+            // letter in the path does not confuse the function/line split.
+            let location = parts[0];
+            let segments: Vec<&str> = location.rsplitn(3, ':').collect();
+            let function = segments[0];
+            let file = if segments.len() >= 3 {
+                segments[2]
+            } else {
+                location
+            };
+            (file, function, parts[1], parts[2])
+        } else {
             continue;
-        }
-        let bytes: u64 = parts[2].parse().unwrap_or(0);
-        let dynamic = parts[3].eq_ignore_ascii_case("dynamic");
+        };
+        let bytes: u64 = bytes_text.parse().unwrap_or(0);
+        let dynamic = kind_text.eq_ignore_ascii_case("dynamic");
         entries.push(StackUsageEntry {
-            file: parts[0].to_string(),
-            function: parts[1].to_string(),
+            file: file.to_string(),
+            function: function.to_string(),
             bytes,
             dynamic,
         });
@@ -1381,8 +1395,23 @@ pub fn run_coverage(
     if stems.is_empty() {
         return Ok(None);
     }
-    let mut output = Vec::new();
+    // gcov's aggregate summary (`File '...'` + `Lines executed:...% of N`) is
+    // only emitted WITHOUT `-t`; the `-t` flag switches gcov to per-line rows
+    // and drops the aggregate header. Run both forms so `parse_gcov_report`
+    // and `parse_gcov_lines` each get the output they expect.
+    let mut aggregate = Vec::new();
+    let mut line_output = Vec::new();
     for stem in &stems {
+        if let Ok(report) = Command::new(&gcov)
+            .arg("-o")
+            .arg(out_dir)
+            .arg(stem)
+            .current_dir(project_root)
+            .output()
+        {
+            aggregate.extend(report.stdout);
+            aggregate.push(b'\n');
+        }
         let report = Command::new(&gcov)
             .arg("-o")
             .arg(out_dir)
@@ -1391,14 +1420,17 @@ pub fn run_coverage(
             .current_dir(project_root)
             .output();
         if let Ok(report) = report {
-            output.extend(report.stdout);
-            output.push(b'\n');
+            line_output.extend(report.stdout);
+            line_output.push(b'\n');
         }
     }
-    let text = String::from_utf8_lossy(&output);
-    let mut files = parse_gcov_report(&text);
-    // Attach per-line hit data from the same `-t` output.
-    let lines = parse_gcov_lines(&text);
+    let aggregate_text = String::from_utf8_lossy(&aggregate);
+    let line_text = String::from_utf8_lossy(&line_output);
+    let mut files = parse_gcov_report(&aggregate_text);
+    // Attach per-line hit data from the `-t` output. On toolchains whose gcov
+    // emits a `Source:` header instead of `File '...'` (e.g. Apple gcov) the
+    // line map stays `None`, which the UI treats as "no line data".
+    let lines = parse_gcov_lines(&line_text);
     for file in &mut files {
         let path = file.file.clone();
         if let Some((_, hits)) = lines.iter().find(|(f, _)| *f == path) {
@@ -3494,6 +3526,25 @@ printf '%s\n' "$@"
             "Rust has no stack plan"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Real GCC/Clang `.su` output is `file:line:function\tbytes\tkind`
+    /// (three tab-separated fields, no leading tab). The parser must read
+    /// that form, not only the older tab-prefixed four-field form, so that
+    /// `run_stack_usage` returns the compiled functions instead of nothing.
+    #[test]
+    fn parses_real_gcc_su_three_field_format() {
+        let text = "src/main.c:2:main\t8\tstatic\nsrc/util.c:14:helper\t48\tdynamic\n";
+        let entries = parse_stack_usage_su(text);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].file, "src/main.c");
+        assert_eq!(entries[0].function, "main");
+        assert_eq!(entries[0].bytes, 8);
+        assert!(!entries[0].dynamic);
+        assert_eq!(entries[1].file, "src/util.c");
+        assert_eq!(entries[1].function, "helper");
+        assert_eq!(entries[1].bytes, 48);
+        assert!(entries[1].dynamic);
     }
 
     /// `parse_gcov_report` reads gcov's aggregate `File '<path>'` +

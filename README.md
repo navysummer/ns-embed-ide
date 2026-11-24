@@ -136,6 +136,7 @@
 - **watch 表达式「复制」（本轮）**：调试变量页 watch 行新增「📋」——把 `expression = value` 写系统剪贴板。
 未完成（实现但未验证）：**嵌入式目标 attach**（OpenOCD / ST-Link / J-Link / pyOCD / probe-rs 探针适配器 + `target remote` GDB 会话，命令面板「嵌入式调试（目标 attach）」→ 编译→烧写→attach；需硬件，尚未在本机验证）；**ZR 真实 `zrc` 编译器集成**（`zr-std` 声明库已提供，编译器本体后续接入）；**真实 FreeRTOS 内核遍历硬件级终验**（DAP 往返路径与纯函数一致性已由集成测试在本机验证，仍需真实内核符号确认 TCB/链表布局与默认 `RtosLayout` 偏移一致）；**STM32 其他封装/系列引脚映射表扩展**（当前内置 STM32F103C6/C8/CB LQFP48 中密度与 STM32F407 LQFP100 已建模 GPIO+USART1/2/3/6+SPI1/2/3+I2C1/2/3+TIM1-14+SDIO+USB+CAN1+SWD；其他封装/系列目标如实提示暂不支持，且 F407 尚未建模的 DCMI/FMC 等留作后续增强），见 AGENTS.md §5.1 🚧 清单。
 - **编译修复与补齐（本轮）**：工作区此前无法编译（`cargo check` 11 错误），本次修复——实现缺失的 `ns_debug::profile::ProfileAggregator`（DWT PC 采样热点聚合，3 项单测）、`kernel_walk_expr`/`rtos_kernel_send`/`rtos_kernel_advance`（真实 FreeRTOS 内核链表遍历，2 项单测）、补齐 3 处过期测试初始化器；删除 8 处死代码。`cargo check --workspace` 退出 0、本地零警告；`cargo test --workspace` **635 项全绿**。详见 [GAP_ANALYSIS.md](GAP_ANALYSIS.md)。
+- **UI / 交互测试与 MCP 面板完善（本轮）**：项目此前虽声明 `gpui` 的 `test-support` 依赖，但 `#[gpui::test]` 数量为 0——全部为纯逻辑测试。本轮建立 headless GPUI 测试基线（GPUI 0.2.2 的 `TestAppContext`/`VisualTestContext` 可 headless 构建窗口、派发输入、断言 Entity 状态；无像素快照能力），并为 MCP 面板补齐 16 项测试（9 项纯协议 + 7 项 UI/交互，覆盖初始状态、工具调用、无效 JSON、握手、退出/断开、首帧渲染）。同时完善 MCP 面板真实缺陷：启动后发送 `initialize` 握手并在收到响应后发送 `initialized`（`ready` 状态此前永不置位，UI 永远显示「连接中…」）；JSON-RPC id 自增（此前恒为 1）；输入框绑定 Enter 提交；子进程退出经 wait 线程回收并通知 UI、关闭连接时经关闭 stdin 让其自然退出（避免僵尸进程）；抽出纯协议层 `mcp_proto` 供测试复用。修复两处既有警告：`ns-sim` 中 `usize` 恒真比较 `irq_line >= 0`、两个错误嵌套在函数内部而从未注册的内嵌测试（保留文件末尾的顶层副本）。`cargo fmt --all -- --check` 无输出、`cargo check --workspace` 本地零警告、`cargo test --workspace` **839 项全绿**（其中 7 项为 headless UI 测试）。
 
 ## 构建与运行
 
@@ -152,6 +153,49 @@ cargo test --workspace           # 单元测试 + ns-debug DAP 端到端测试�
 - 适配器：`lldb-dap`（随 Xcode Command Line Tools / Xcode 提供）。自动发现顺序：`NS_DEBUG_ADAPTER` 环境变量 → `PATH` → `xcrun --find lldb-dap` → 常见安装路径。
 - 目前支持**宿主机构建产物**的启动调试（`project.toml` 的 `[build] config = "debug"` 即可，无需额外配置）；嵌入式目标 attach 已实现（OpenOCD/ST-Link/J-Link/pyOCD/probe-rs）但**尚未验证**，需硬件。
 - 调试会话中增删/启停断点会实时下发到适配器；断点保存在 `.ns-ide/breakpoints.json`，不写入 `project.toml`。
+
+## MCP（Model Context Protocol）
+
+IDE 内置 MCP 服务器，LLM 可通过标准 JSON-RPC 2.0 over stdio 驱动所有 IDE 操作。
+
+**从 IDE 内部使用**：命令面板「打开 MCP 服务器面板」→ MCP tab，自动启动子进程，输入框直接发工具调用或原始 JSON-RPC。
+
+**从外部 LLM 客户端连接**：将 `ns-mcp` 二进制加入客户端的 `mcpServers` 配置：
+
+```jsonc
+// Claude Desktop ~/.claude/settings.json 示例
+{
+  "mcpServers": {
+    "ns-embed-ide": {
+      "command": "/path/to/ns-mcp",
+      "args": [],
+      "cwd": "/path/to/your/embedded-project"
+    }
+  }
+}
+```
+
+可用工具（139 个）：`project_info`、`list_devices`、`build`、`clean`、`read_file`、`write_file`、`search_files`、`read_file_lines`、`replace_in_files`、`diff_text`、`list_files`、`get_diagnostics`、`read_binary`、`list_open_files`、`get_session`、`save_session`、`run_tests`、`toggle_build_config`、`write_project_field`、`get_workspace_symbols`、`get_device_info`、`read_project_toml`、`list_build_outputs`、`open_project`、`create_project`、`get_peripherals`、`generate_linker_script`、`flash_firmware`、`run_simulation`、`mem_search`、`run_static_analysis`、`preprocess_source`、`generate_compile_commands`、`read_stack_usage`、`suggest_quick_fix`、`memory_map`、`get_startup_file`、`check_toolchain`、`parse_svd_preview`、`get_register_details`、`decode_number`、`generate_init_code`、`get_project_issues`、`get_linker_script`、`list_catalog_devices`、`read_recent_projects`、`compute_artifact_path`、`list_breakpoints`、`add_breakpoint`、`remove_breakpoint`、`update_breakpoint`、`add_watchpoint`、`remove_watchpoint`、`set_watchpoint_enabled`、`list_external_tools`、`add_external_tool`、`remove_external_tool`、`list_bookmarks`、`toggle_bookmark`、`export_breakpoints`、`debug_adapter_status`、`git_status`、`git_diff`、`git_stage`、`git_unstage`、`git_commit`、`git_log`、`git_branches`、`git_checkout`、`git_create_branch`、`git_pull`、`git_push`、`import_project`、`get_toolchain_config`、`set_toolchain_override`、`list_toolchain_registry`、`sim_session_start`、`sim_session_end`、`sim_step`、`sim_run`、`sim_reset`、`sim_status`、`sim_read_mem`、`sim_write_mem`、`sim_read_reg`、`sim_write_reg`、`sim_disassemble`、`sim_snapshot_save`、`sim_snapshot_load`、`sim_breakpoint_add`、`sim_breakpoint_remove`、`sim_breakpoint_list`、`sim_clear_breakpoints`、`sim_step_over`、`sim_step_out`、`sim_run_to`、`sim_peripherals`、`sim_uart_read`、`sim_load_image`、`debug_session_start`、`debug_session_stop`、`debug_status`、`debug_continue`、`debug_pause`、`debug_step_over`、`debug_step_into`、`debug_step_out`、`debug_step_instruction`、`debug_breakpoint_set`、`debug_breakpoint_clear`、`debug_breakpoint_list`、`debug_read_memory`、`debug_write_memory`、`debug_stacks`、`debug_variables`、`debug_read_registers`、`debug_disassemble`、`debug_evaluate`、`decode_hardfault`、`trace_waveform`、`profile_hotspots`、`rtos_tasks`、`decode_trace`、`run_command`、`run_external_tool`、`lsp_session_start`、`lsp_session_end`、`lsp_hover`、`lsp_definition`、`lsp_references`、`lsp_completion`。每个工具的参数 schema 通过 `tools/list` 请求获取完整信息。
+
+其中两个为**嵌入式故障/波形分析**工具：`decode_hardfault` 把 ARM Cortex-M 故障快照（CFSR/HFSR/MMFAR/BFAR/栈帧）解码为可读的故障报告（含故障类型、强制升级、字段逐位解释、摘要、EXC_RETURN 解释）；`trace_waveform` 把已解码的 SWV/ITM 包流（Stimulus/Dwt/Exception/Timestamp）构建为可绘制的通道（`stimN`/`dwt_pc`/`excN`/`ts`），未指定通道时自动探测。二者底层为纯函数（`ns_debug::fault` / `ns_debug::waveform`），无 UI/硬件依赖，可直接供 LLM 分析现场故障与波形。
+
+`decode_trace` 把原始 SWO/ITM 字节解码为包（输出与 `trace_waveform` 输入同构，可串联）；`profile_hotspots` 把 DWT PC 采样按符号表聚合成热点；`rtos_tasks` 从 RAM 镜像遍历真实 FreeRTOS 链表枚举任务；`run_command` 在项目目录执行 shell 命令并返回 stdout/stderr/退出码——这是“大模型可操作软件”的底层原语（等价于 IDE 的 Agent/外部工具面板）。
+
+断点/观察点编辑也经 MCP 完整暴露：`update_breakpoint` 一次调用设置条件、命中次数、日志消息、硬件/软件类型或启用状态（随 `.ns-ide/breakpoints.json` 持久化）；`add_watchpoint`/`remove_watchpoint`/`set_watchpoint_enabled` 管理数据观察点（读/写/读写访问类型）。
+
+外部工具（`.ns-ide/tools.json`）经 MCP 管理：`list_external_tools` 列出、`add_external_tool` 新增/替换（`id` 缺省由标题 slug 化并去重）、`remove_external_tool` 删除——与 `run_command` 一起构成完整的自定义命令“配置 + 运行”闭环。
+
+源码文本操作也经 MCP 暴露：`read_file_lines` 按 1 基行号高效读取文件的行区间（`start`/`count`，越界自动夹紧并返回 `total_lines`/`truncated`），适合大文件分块读取；`replace_in_files` 跨项目文本替换（`from`/`to` + 可选 `case_sensitive`/`whole_word`/`path` 过滤/`dry_run`，跳过 .git/build/target/node_modules 与二进制/超大文件，返回逐文件替换计数与总数），`dry_run` 先预览不落盘；`diff_text` 计算两个文本块的统一行 diff（LCS，3 行上下文，返回 `added`/`removed`/`hunks`/`diff` 行数组）。三者让 LLM 能对大模型生成的代码做可预览的批量改写与前后对比。
+
+命令执行与会话也可经 MCP 驱动：`run_external_tool` 按 `id` 运行 `.ns-ide/tools.json` 中已配置的外部工具（自动使用其 `cwd`，支持 `args` 追加与 `timeout_ms`），与 `list/add/remove_external_tool` 构成完整闭环；`run_command` 新增可选 `timeout_ms`（超时后终止子进程并报错，避免挂起的构建/脚本无限阻塞 MCP 调用）；`get_session`/`save_session` 读写 IDE 会话（`.ns-ide/session.json` 的打开标签、活动索引、每文件光标/滚动/缩放/缩进/软换行与分屏）。
+
+LSP 语言服务也可经 MCP 驱动：`lsp_session_start` 启动（或复用）某语言的语言服务器会话（C/C++→clangd、Rust→rust-analyzer、Zig→zls、ZR→`zr lsp`，按 `language` 显式指定或回退到项目主语言/文件扩展名），`lsp_session_end` 关闭会话；`lsp_hover` 取类型/签名悬停，`lsp_definition` 跳转定义，`lsp_references` 查找引用，`lsp_completion` 请求补全——均以 1 基 `line`/`column` 定位并自动 `didOpen`/`didChange` 同步文件内容，超时（`timeout_ms`，默认 10s）返回错误而非阻塞。会话句柄在 MCP 调用间保活，同一语言复用同一服务器进程。
+
+其中 19 个为**有状态调试会话（DAP/lldb-dap）工具**：会话启动/停止/状态、继续/暂停/步过/步入/步出/单指令步进、断点增删查（含条件/命中次数/日志/硬件）、内存读/写、调用栈、变量与寄存器、反汇编与表达式求值。会话句柄在 MCP 调用间保持存活，真实 `lldb-dap` 端到端用例覆盖启动、命中断点、栈/变量/寄存器/内存/反汇编/求值、步过、断点清空与停止。
+
+注意：`debug_write_memory` 与 `debug_step_instruction` 依赖 DAP 适配器能力。本机 `lldb-dap` 对写内存与单指令步进会直接退出，工具保留，可接入支持这些能力的 DAP 适配器（如嵌入式 GDB/LLDB 会话）。
+
+详见 [AGENTS.md](AGENTS.md) §5.1 P52。
 
 ## 环境备注
 

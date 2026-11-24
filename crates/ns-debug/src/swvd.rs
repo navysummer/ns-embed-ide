@@ -294,7 +294,7 @@ pub fn scope_reference(scope: &str) -> u64 {
 }
 
 /// One decoded SWV trace packet.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Packet {
     /// Instrumentation (printf) message on `port`.
     Stimulus { port: u8, payload: Vec<u8> },

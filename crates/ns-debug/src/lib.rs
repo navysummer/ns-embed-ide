@@ -22,9 +22,11 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 pub mod embedded;
+pub mod fault;
 pub mod profile;
 pub mod rtos;
 pub mod swvd;
+pub mod waveform;
 
 pub use dap::{read_message, wait_for_response, write_message};
 pub use embedded::{
@@ -409,6 +411,14 @@ pub enum DebugCommand {
         expression: String,
         scope_name: String,
     },
+    /// Evaluate an expression in the context of a specific stack frame.
+    /// `frameId` is the DAP frame id reported by a stack trace; unlike the
+    /// `Evaluate` variant this works with lldb-dap without a fake scope
+    /// `variablesReference`.
+    EvaluateFrame {
+        expression: String,
+        frame_id: u64,
+    },
     // Internal: used to shut the command thread down when the adapter exits.
     #[doc(hidden)]
     InternalExit,
@@ -434,6 +444,11 @@ enum PendingRequest {
     Evaluate {
         expression: String,
         scope: String,
+    },
+    /// Expression and DAP frame id of an `evaluate` request.
+    EvaluateFrame {
+        expression: String,
+        frame_id: u64,
     },
     /// A `setVariable` request: the (reference, name) so the response can be
     /// attributed back to the caller.
@@ -953,6 +968,33 @@ pub fn spawn(config: &DebugConfig) -> Result<DebugHandle> {
                                 // to look the expression up in that scope first.
                                 "variablesReference": swvd::scope_reference(&scope_name),
                                 "frameId": 0,
+                                "context": "repl",
+                            }),
+                        );
+                    }
+                    DebugCommand::EvaluateFrame {
+                        expression,
+                        frame_id,
+                    } => {
+                        let seq = sequence;
+                        sequence += 1;
+                        command_pending
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(
+                                seq,
+                                PendingRequest::EvaluateFrame {
+                                    expression: expression.clone(),
+                                    frame_id,
+                                },
+                            );
+                        request(
+                            &mut stdin,
+                            seq,
+                            "evaluate",
+                            json!({
+                                "expression": expression,
+                                "frameId": frame_id,
                                 "context": "repl",
                             }),
                         );
@@ -1708,6 +1750,10 @@ fn translate_response(
         "evaluate" => {
             let context = match pending_take(pending, request_seq) {
                 Some(PendingRequest::Evaluate { expression, scope }) => (expression, scope),
+                Some(PendingRequest::EvaluateFrame {
+                    expression,
+                    frame_id,
+                }) => (expression, format!("frame:{frame_id}")),
                 _ => return,
             };
             let (expression, scope) = context;

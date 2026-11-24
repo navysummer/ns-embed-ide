@@ -1309,6 +1309,26 @@ impl EmbeddedSession {
                     type_name: None,
                 });
             }
+            DebugCommand::EvaluateFrame { expression, .. } => {
+                let output =
+                    self.mi_command(&format!("data-evaluate-expression \"{expression}\""))?;
+                let result = mi_done(
+                    output
+                        .splitn(2, '\n')
+                        .next()
+                        .unwrap_or("")
+                        .trim_start_matches("^done"),
+                )
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or(&output)
+                .to_string();
+                let _ = self.messages.send(DebugMessage::Evaluated {
+                    expression,
+                    result,
+                    type_name: None,
+                });
+            }
             DebugCommand::ConfigureTrace(_) | DebugCommand::StopTrace => {
                 let _ = self.messages.send(DebugMessage::Error(
                     "嵌入式目标暂不支持 SWO 跟踪窗口（需硬件 trace 探针）。".to_string(),

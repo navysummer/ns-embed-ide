@@ -1,0 +1,25 @@
+[package]
+name = "ns-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+walkdir = "2"
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+ns-project = { path = "../ns-project" }
+ns-build = { path = "../ns-build" }
+ns-flash = { path = "../ns-flash" }
+ns-device = { path = "../ns-device" }
+ns-sim = { path = "../ns-sim" }
+ns-debug = { path = "../ns-debug" }
+ns-lsp = { path = "../ns-lsp" }
+
+[[bin]]
+name = "ns-mcp"
+path = "src/main.rs"

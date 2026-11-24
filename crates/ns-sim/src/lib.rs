@@ -1821,10 +1821,7 @@ impl Simulator {
         // Poll DMA channels for transfer completion interrupts
         if let Some(dma) = self.peripherals.dma.as_ref() {
             for ch in &dma.channels {
-                if ch.en
-                    && ch.is_tc_with_irq()
-                    && ch.irq_line >= 0
-                    && ch.irq_line < self.peripherals.irq_pending.len()
+                if ch.en && ch.is_tc_with_irq() && ch.irq_line < self.peripherals.irq_pending.len()
                 {
                     self.peripherals.irq_pending[ch.irq_line] = true;
                 }
@@ -5143,33 +5140,6 @@ fn snapshot_save_load_roundtrip() {
 
     // Cleanup
     let _ = fs::remove_file(path);
-
-    /// `memsearch` finds all occurrences of a byte pattern in the memory image.
-    #[test]
-    fn memsearch_finds_single_and_multiple_occurrences() {
-        let mut sim = Simulator::for_arch(Arch::RiscV).unwrap();
-        // Seed the simulator's flat memory array with a known pattern.
-        let data: Vec<u8> = vec![0x11, 0x22, 0x33, 0x11, 0x22, 0x33, 0xFF];
-        sim.write_bytes(0, &data);
-
-        assert_eq!(sim.memsearch(0, 7, &[0x11]), vec![0, 3],);
-        // Search with overlap window: pattern len=3, length=7 → offsets 0..3.
-        // Offset 0 matches 0x11,0x22,0x33; offset 3 matches 0x11,0x22,0x33.
-        assert_eq!(sim.memsearch(0, 7, &[0x11, 0x22, 0x33]), vec![0, 3],);
-        assert!(sim.memsearch(0, 7, &[0xDE, 0xAD]).is_empty());
-        assert!(sim.memsearch(0, 7, &[]).is_empty());
-        assert!(sim.memsearch(0, 0, &[0x11]).is_empty());
-    }
-
-    /// `memsearch` treats reads crossing into unmapped regions as non-matching.
-    #[test]
-    fn memsearch_handles_unmapped_regions() {
-        let mut sim = Simulator::for_arch(Arch::RiscV).unwrap();
-        sim.write_bytes(0, &[0xAA, 0xBB]);
-        // Byte at index 2 stays zero (unmapped effectively).
-        assert_eq!(sim.memsearch(0, 3, &[0xAA, 0xBB]), vec![0],);
-        assert!(sim.memsearch(0, 3, &[0xAA, 0xBB, 0xCC]).is_empty());
-    }
 }
 /// `memsearch` finds all occurrences of a byte pattern in the memory image.
 #[test]
